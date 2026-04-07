@@ -66,11 +66,11 @@ TCLLIB = -ltcl$(TCLVERS)
 # use these if you want to use Aqua Tcl on macOSX
 #TCLINC = -I/Library/Frameworks/Tcl.framework/Headers
 #TCLLIB = -framework Tcl
-PCREINC = $(shell pcre-config --cflags)
-PCRELIB = $(shell pcre-config --libs)
+PCREINC = $(shell pcre2-config --cflags)
+PCRELIB = $(shell pcre2-config --libs8)
 CASESENSITIVE = "yes"
 ifeq ($(CASESENSITIVE), "no")
-	PCRE_OPT=PCRE_CASELESS
+	PCRE_OPT=PCRE2_CASELESS
 	REGCOMP_OPT=REG_ICASE
 else
 	PCRE_OPT=0
