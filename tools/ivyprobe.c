@@ -408,7 +408,11 @@ int main(int argc, char *argv[])
 				printf("usage: %s %s",argv[0],helpmsg);
 				exit(1);
 			}
-	snprintf(agentready, sizeof(agentready), "%s Ready", agentname);
+	{
+		static const char ready[] = " Ready";
+		snprintf(agentready, sizeof(agentready), "%.*s%s",
+			 (int) (sizeof(agentready) - sizeof(ready)), agentname, ready);
+	}
 
 	/* Mainloop management */
 #ifdef XTMAINLOOP
