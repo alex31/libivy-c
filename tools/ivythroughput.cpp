@@ -62,7 +62,7 @@ typedef struct {
   unsigned int currentBind;
   unsigned int totalBind;
 } InfoBind;
-typedef std::map<pcrecpp::string, InfoBind> MapBindByClnt;
+typedef std::map<std::string, InfoBind> MapBindByClnt;
 
 #define MILLISEC 1000.0
 
@@ -299,7 +299,7 @@ void recepteur_tp (const char* bus, KindOfTest kod, unsigned int inst,
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
     debugInt++;
-    pcrecpp::string reg = *iter;
+    std::string reg = *iter;
     if (regexpAreUniq) { ((reg += "(") += stream.str()) += ")?";}
     IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str());
   }
@@ -337,7 +337,7 @@ void recepteur_ml (const char* bus, KindOfTest kod, unsigned int inst,
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
     debugInt++;
-    pcrecpp::string reg = *iter;
+    std::string reg = *iter;
     if (regexpAreUniq) { (reg += " ") += stream.str();}
     bindIdList.push_back (IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str()));
   }
@@ -373,7 +373,7 @@ bool getMessages (const char*fileName, ListOfString &messages, unsigned int numM
   FILE *infile;
   char buffer [1024*64];
   pcrecpp::RE pcreg ("\"(.*)\"$");
-  pcrecpp::string  aMsg;
+  std::string  aMsg;
 
   infile = fopen(fileName, "r");
   if (!infile) {
@@ -406,7 +406,7 @@ bool getRegexps (const char*fileName, ListOfString &regexps, unsigned int numReg
   char buffer [1024*64];
   pcrecpp::RE pcreg1 ("add regexp \\d+ : (.*)$");
   pcrecpp::RE pcreg2 ("(\\^.*)$");
-  pcrecpp::string  aMsg;
+  std::string  aMsg;
 
   infile = fopen(fileName, "r");
   if (!infile) {
@@ -459,7 +459,7 @@ double currentTime()
 */
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event )
 {
-  pcrecpp::string appName = IvyGetApplicationName( app );
+  std::string appName = IvyGetApplicationName( app );
   static MapBindByClnt bindByClnt;
 
   if (bindByClnt.find (appName) == bindByClnt.end()) {
@@ -496,7 +496,7 @@ void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyB
 
 void congestCB ( IvyClientPtr app, void *user_data, IvyApplicationEvent event )
 {
-  pcrecpp::string appName = IvyGetApplicationName( app );
+  std::string appName = IvyGetApplicationName( app );
 
   switch ( event ) {
 #if IVYMINOR_VERSION >= 11
@@ -618,7 +618,7 @@ void desabonneEtReabonneCB (TimerId id, void *user_data, unsigned long delta)
   // REABONNE
   ListOfString::const_iterator  iter2;
   for (iter2=mds->regexps->begin(); iter2 != mds->regexps->end(); iter2++) {
-    pcrecpp::string reg = *iter2;
+    std::string reg = *iter2;
     mds->bindIdList->push_back (IvyBindMsg (recepteurCB, (void *) long(mds->inst),
 					    "%s", reg.c_str()));
   }
