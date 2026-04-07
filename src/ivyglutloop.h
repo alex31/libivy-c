@@ -2,12 +2,12 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-1999
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Main loop based on GLUT ( OpenGL ) Toolkit
  *
- *	Authors: François-Régis Colin <colin@cenatoulouse.dgac.fr>
- *		 Stéphane Chatty <chatty@cenatoulouse.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <colin@cenatoulouse.dgac.fr>
+ *		 StÃ©phane Chatty <chatty@cenatoulouse.dgac.fr>
  *
  *	$Id: ivyglutloop.h 3061 2007-02-13 08:35:08Z fourdan $
  * 

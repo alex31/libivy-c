@@ -2,12 +2,12 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Main loop handling around select
  *
- *	Authors: François-Régis Colin <fcolin@cena.dgac.fr>
- *		 Stéphane Chatty <chatty@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.dgac.fr>
+ *		 StÃ©phane Chatty <chatty@cena.dgac.fr>
  *
  *	$Id: ivyloop.h 3464 2011-01-25 17:34:23Z bustico $
  * 
@@ -37,13 +37,13 @@ extern "C" {
 #endif
 
 /*
-Boucle principale d'IVY baseé sur un select
+Boucle principale d'IVY baseÃ© sur un select
 les fonctions hook et unhook encradre le select 
 de la maniere suivante:
 
 	BeforeSelect est appeler avant l'appel system select
 	AfterSelect est appeler avent l'appel system select
-	ces function peuvent utilisées pour depose un verrou dans le cas 
+	ces function peuvent utilisÃ©es pour depose un verrou dans le cas 
 	d'utilisation de la mainloop Ivy dans une thread separe
 	
 	BeforeSelect ==> on libere l'acces avant la mise en attente sur le select

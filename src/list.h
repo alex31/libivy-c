@@ -2,11 +2,11 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2008
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Simple lists in C
  *
- *	Authors: François-Régis Colin <fcolin@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.dgac.fr>
  *
  *	$Id: list.h 3301 2008-05-20 13:58:45Z fcolin $
  * 

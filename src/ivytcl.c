@@ -2,11 +2,11 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Main loop based on Tcl
  *
- *	Authors: François-Régis Colin <fcolin@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.dgac.fr>
  *
  *	$Id: ivytcl.c 3627 2015-01-07 14:01:47Z bustico $
  * 

@@ -2,12 +2,12 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2006
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  *	Bind syntax for extracting message comtent 
  *  using regexp or other 
  *
- *	Authors: François-Régis Colin <fcolin@cena.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.fr>
  *
  *	$Id: ivybind.h 3475 2011-02-08 16:38:55Z fcolin $
  * 

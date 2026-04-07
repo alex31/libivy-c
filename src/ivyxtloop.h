@@ -2,12 +2,12 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Main loop based on the X Toolkit
  *
- *	Authors: François-Régis Colin <colin@cena.dgac.fr>
- *		 Stéphane Chatty <chatty@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <colin@cena.dgac.fr>
+ *		 StÃ©phane Chatty <chatty@cena.dgac.fr>
  *
  *	$Id: ivyxtloop.h 1231 2006-04-21 16:34:15Z fcolin $
  * 

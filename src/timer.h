@@ -2,11 +2,11 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  *	Timers for select-based main loop
  *
- *	Authors: François-Régis Colin <fcolin@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.dgac.fr>
  *
  *	$Id: timer.h 3591 2013-06-20 17:23:52Z bustico $
  * 
