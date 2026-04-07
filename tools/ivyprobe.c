@@ -2,11 +2,11 @@
  *	Ivy probe
  *
  *	Copyright (C) 1997-2004
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Main and only file
  *
- *	Authors: François-Régis Colin <fcolin@cena.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.fr>
  * 	         Yannick Jestin <jestin@cena.fr>
  *
  *	Please refer to file version.h for the
@@ -408,7 +408,7 @@ int main(int argc, char *argv[])
 				printf("usage: %s %s",argv[0],helpmsg);
 				exit(1);
 			}
-	sprintf(agentready,"%s Ready",agentname);
+	snprintf(agentready, sizeof(agentready), "%s Ready", agentname);
 
 	/* Mainloop management */
 #ifdef XTMAINLOOP
@@ -472,4 +472,3 @@ int main(int argc, char *argv[])
 #endif
 	return 0;
 }
-

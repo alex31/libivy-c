@@ -422,7 +422,7 @@ RegexpCall (const MsgSndDictPtr msg, const char * const message)
 
   IVY_LIST_EACH(msg->clientList, clnt ) {
 
-    sprintf (bufferId, "%d %d" ARG_START ,Msg, clnt->id);
+    snprintf (bufferId, sizeof(bufferId), "%d %d" ARG_START ,Msg, clnt->id);
     state = SocketSendRawWithId(clnt->client, bufferId, bufferArg.data , bufferArg.offset);
     match_count++;
 
@@ -504,7 +504,7 @@ RegexpCallUnique (const MsgSndDictPtr msg, const char * const message, const
   IVY_LIST_EACH(msg->clientList, clnt ) {
     if (clientUnique != clnt->client)
       continue;
-    sprintf (bufferId, "%d %d" ARG_START ,Msg, clnt->id);
+    snprintf (bufferId, sizeof(bufferId), "%d %d" ARG_START ,Msg, clnt->id);
     state = SocketSendRawWithId(clnt->client, bufferId, bufferArg.data , bufferArg.offset);
     match_count++;
     
@@ -1719,7 +1719,7 @@ static void addRegexpToDictionary (const char* regexp, IvyClientPtr client)
     
     msgSendDict->binding = IvyBindingCompile(regexp, & erroffset, & errbuf );
     if (msgSendDict->binding  == NULL ) {
-			sprintf( errorbuffer, "Error compiling '%s', %s", regexp, errbuf); 
+			snprintf(errorbuffer, sizeof(errorbuffer), "Error compiling '%s', %s", regexp, errbuf); 
       printf("%s\n", errorbuffer);
       MsgSendTo(client, Error, erroffset, errorbuffer );
     }
