@@ -6,7 +6,7 @@
  */
 
 
-// g++ ivythroughput.cpp -o ivythroughput -L/usr/local/lib64/ -Wl,-rpath,/usr/local/lib64/ -livy -lpcrecpp
+// g++ ivythroughput.cpp -o ivythroughput -L/usr/local/lib64/ -Wl,-rpath,/usr/local/lib64/ -livy -lpcre2-8
 
 /* SCENARIO
 
@@ -47,7 +47,6 @@
 #include "ivy.h"
 #include "timer.h"
 #include "ivyloop.h"
-#include <pcrecpp.h>
 
 #include <string>
 #include <list>
@@ -62,7 +61,7 @@ typedef struct {
   unsigned int currentBind;
   unsigned int totalBind;
 } InfoBind;
-typedef std::map<pcrecpp::string, InfoBind> MapBindByClnt;
+typedef std::map<std::string, InfoBind> MapBindByClnt;
 
 #define MILLISEC 1000.0
 
@@ -89,6 +88,7 @@ void emetteur (const char* bus, KindOfTest kod, int testDuration,
 
 bool getMessages (const char*fileName, ListOfString &messages, unsigned int numMess);
 bool getRegexps (const char*fileName, ListOfString &regexps, unsigned int numReg);
+static void trimLineEnd(std::string& line);
 
 double currentTime();
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event ) ;
@@ -299,7 +299,7 @@ void recepteur_tp (const char* bus, KindOfTest kod, unsigned int inst,
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
     debugInt++;
-    pcrecpp::string reg = *iter;
+    std::string reg = *iter;
     if (regexpAreUniq) { ((reg += "(") += stream.str()) += ")?";}
     IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str());
   }
@@ -337,7 +337,7 @@ void recepteur_ml (const char* bus, KindOfTest kod, unsigned int inst,
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
     debugInt++;
-    pcrecpp::string reg = *iter;
+    std::string reg = *iter;
     if (regexpAreUniq) { (reg += " ") += stream.str();}
     bindIdList.push_back (IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str()));
   }
@@ -372,8 +372,6 @@ bool getMessages (const char*fileName, ListOfString &messages, unsigned int numM
 {
   FILE *infile;
   char buffer [1024*64];
-  pcrecpp::RE pcreg ("\"(.*)\"$");
-  pcrecpp::string  aMsg;
 
   infile = fopen(fileName, "r");
   if (!infile) {
@@ -382,10 +380,22 @@ bool getMessages (const char*fileName, ListOfString &messages, unsigned int numM
   }
 
   while ((fgets (buffer, sizeof (buffer), infile) != NULL) && (nbMess < numMess)) {
-    if (pcreg.PartialMatch (buffer, &aMsg)) {
-      messages.push_back (aMsg);
-      nbMess++;
+    std::string line(buffer);
+    size_t firstQuote, lastQuote;
+
+    trimLineEnd(line);
+    lastQuote = line.rfind('"');
+    if (lastQuote == std::string::npos || lastQuote == 0 || lastQuote != line.size() - 1) {
+      continue;
     }
+
+    firstQuote = line.find('"');
+    if (firstQuote == std::string::npos || firstQuote >= lastQuote) {
+      continue;
+    }
+
+    messages.push_back(line.substr(firstQuote + 1, lastQuote - firstQuote - 1));
+      nbMess++;
   }
   fclose (infile);
   return (true);
@@ -404,9 +414,6 @@ bool getRegexps (const char*fileName, ListOfString &regexps, unsigned int numReg
 {
   FILE *infile;
   char buffer [1024*64];
-  pcrecpp::RE pcreg1 ("add regexp \\d+ : (.*)$");
-  pcrecpp::RE pcreg2 ("(\\^.*)$");
-  pcrecpp::string  aMsg;
 
   infile = fopen(fileName, "r");
   if (!infile) {
@@ -415,11 +422,24 @@ bool getRegexps (const char*fileName, ListOfString &regexps, unsigned int numReg
   }
 
   while ((fgets (buffer, sizeof (buffer), infile) != NULL) && (nbReg < numReg)) {
-    if (pcreg1.PartialMatch (buffer, &aMsg)) {
-      regexps.push_back (aMsg);
-      nbReg++;
-    } else if (pcreg2.PartialMatch (buffer, &aMsg)) {
-      regexps.push_back (aMsg);
+    std::string line(buffer);
+    size_t prefixPos, sepPos, regexpPos;
+
+    trimLineEnd(line);
+
+    prefixPos = line.find("add regexp ");
+    if (prefixPos != std::string::npos) {
+      sepPos = line.find(" : ", prefixPos);
+      if (sepPos != std::string::npos) {
+        regexps.push_back(line.substr(sepPos + 3));
+        nbReg++;
+        continue;
+      }
+    }
+
+    regexpPos = line.find('^');
+    if (regexpPos != std::string::npos) {
+      regexps.push_back(line.substr(regexpPos));
       nbReg++;
     }
   }
@@ -448,6 +468,13 @@ double currentTime()
   return  current;
 }
 
+static void trimLineEnd(std::string& line)
+{
+  while (!line.empty() && (line[line.size() - 1] == '\n' || line[line.size() - 1] == '\r')) {
+    line.erase(line.size() - 1);
+  }
+}
+
 
 /*
 #                 _       _             _____   ____
@@ -459,7 +486,7 @@ double currentTime()
 */
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event )
 {
-  pcrecpp::string appName = IvyGetApplicationName( app );
+  std::string appName = IvyGetApplicationName( app );
   static MapBindByClnt bindByClnt;
 
   if (bindByClnt.find (appName) == bindByClnt.end()) {
@@ -496,7 +523,7 @@ void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyB
 
 void congestCB ( IvyClientPtr app, void *user_data, IvyApplicationEvent event )
 {
-  pcrecpp::string appName = IvyGetApplicationName( app );
+  std::string appName = IvyGetApplicationName( app );
 
   switch ( event ) {
 #if IVYMINOR_VERSION >= 11
@@ -618,7 +645,7 @@ void desabonneEtReabonneCB (TimerId id, void *user_data, unsigned long delta)
   // REABONNE
   ListOfString::const_iterator  iter2;
   for (iter2=mds->regexps->begin(); iter2 != mds->regexps->end(); iter2++) {
-    pcrecpp::string reg = *iter2;
+    std::string reg = *iter2;
     mds->bindIdList->push_back (IvyBindMsg (recepteurCB, (void *) long(mds->inst),
 					    "%s", reg.c_str()));
   }
