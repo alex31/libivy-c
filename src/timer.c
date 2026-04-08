@@ -152,7 +152,6 @@ void TimerScan()
 	TimerId timer;
 	TimerId next;
 	unsigned long delta;
-	int timer_echu = 0;
 	
 	stamp = currentTime();
 
@@ -161,7 +160,6 @@ void TimerScan()
 	{
 	  if ( timer->when <= stamp && (!timer->mark2Remove) )
 	    {
-	      timer_echu++;
 	      delta = stamp - timer->when;
 	      /* call callback */
 	      (*timer->callback)( timer, timer->user_data, delta );

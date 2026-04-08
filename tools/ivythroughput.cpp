@@ -295,10 +295,8 @@ void recepteur_tp (const char* bus, KindOfTest kod, unsigned int inst,
   printf ("DBG> recepteur_%d start, pid=%d\n", inst, getpid());
   IvyInit (agentName.c_str(), agentNameReady.c_str(), congestCB, NULL,NULL,NULL);
 
-  unsigned int debugInt = 0;
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
-    debugInt++;
     std::string reg = *iter;
     if (regexpAreUniq) { ((reg += "(") += stream.str()) += ")?";}
     IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str());
@@ -333,10 +331,8 @@ void recepteur_ml (const char* bus, KindOfTest kod, unsigned int inst,
   printf ("DBG> recepteur_%d start, pid=%d\n", inst, getpid());
   IvyInit (agentName.c_str(), agentNameReady.c_str(), congestCB, NULL,NULL,NULL);
 
-  unsigned int debugInt = 0;
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
-    debugInt++;
     std::string reg = *iter;
     if (regexpAreUniq) { (reg += " ") += stream.str();}
     bindIdList.push_back (IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str()));

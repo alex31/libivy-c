@@ -1,64 +1,107 @@
-TARGETS = ivyprobe ivythroughput ivyperf #ivyprobe_efence 
-OMP_TARGET= ivyprobe_omp ivythroughput_omp 
-OMPLIB = -lgomp -lpthread
-OMPCC = gcc-mp-4.4  
-OMPCPP =  g++-mp-4.4
-CC = gcc -g -Wall
-CPP='g++'
-#CC = $(OMPCC)
-#CPP= $(OMPCPP)
+TARGETS = ivyprobe ivythroughput ivyperf
+OMP_TARGET = ivyprobe_omp ivythroughput_omp
 
-PCRELIB = `pcre2-config --libs8`
-PCREINCL = `pcre2-config --cflags`
-EXTRALIB= -L../src 
-EXTRAINC=-I../src
+ARCH := $(shell uname -m)
 
-.SUFFIXES: .c .o
+ifeq ($(ARCH),arm64)
+	HOMEBREW_PREFIX ?= /opt/homebrew
+else
+	HOMEBREW_PREFIX ?= /usr/local
+endif
+
+XCRUN_CLANG := $(shell xcrun --find clang 2>/dev/null)
+XCRUN_CLANGXX := $(shell xcrun --find clang++ 2>/dev/null)
+SDKROOT := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+SYSROOT_FLAGS := $(if $(SDKROOT),-isysroot $(SDKROOT),)
+CC := $(if $(XCRUN_CLANG),$(XCRUN_CLANG),clang)
+CXX := $(if $(XCRUN_CLANGXX),$(XCRUN_CLANGXX),clang++)
+OMPCC ?= $(CC)
+OMPCXX ?= $(CXX)
+
+FPIC ?= -fPIC
+
+ifeq ($(ARCH),x86_64)
+	DARWIN_ARCH_CFLAGS ?= -march=x86-64-v3 -mtune=generic
+else
+	DARWIN_ARCH_CFLAGS ?=
+endif
+
+CFLAGS ?= -g -Wall -Wshadow $(FPIC) $(DARWIN_ARCH_CFLAGS) $(SYSROOT_FLAGS)
+CXXFLAGS ?= $(CFLAGS)
+
+PCRE2_CONFIG ?= $(shell command -v pcre2-config 2>/dev/null)
+ifeq ($(PCRE2_CONFIG),)
+	PCRE2_CONFIG := $(HOMEBREW_PREFIX)/opt/pcre2/bin/pcre2-config
+endif
+
+ifeq ($(wildcard $(PCRE2_CONFIG)),)
+	PCRELIB = $(shell pkg-config --libs libpcre2-8 2>/dev/null)
+	PCREINC = $(shell pkg-config --cflags libpcre2-8 2>/dev/null)
+else
+	PCRELIB = $(shell $(PCRE2_CONFIG) --libs8)
+	PCREINC = $(shell $(PCRE2_CONFIG) --cflags)
+endif
+
+LIBOMP_PREFIX ?= $(HOMEBREW_PREFIX)/opt/libomp
+ifneq ($(wildcard $(LIBOMP_PREFIX)/include),)
+	OPENMP_CPPFLAGS ?= -I$(LIBOMP_PREFIX)/include
+	OPENMP_LDFLAGS ?= -L$(LIBOMP_PREFIX)/lib -Wl,-rpath,$(LIBOMP_PREFIX)/lib
+else
+	OPENMP_CPPFLAGS ?=
+	OPENMP_LDFLAGS ?=
+endif
+
+LDFLAGS += $(SYSROOT_FLAGS)
+
+OMP_CFLAGS = $(CFLAGS) $(OPENMP_CPPFLAGS) -Xpreprocessor -fopenmp
+OMP_CXXFLAGS = $(CXXFLAGS) $(OPENMP_CPPFLAGS) -Xpreprocessor -fopenmp
+OMPLIB = $(OPENMP_LDFLAGS) -lomp
+
+EXTRALIB = -L../src
+EXTRAINC = -I../src
+
+.SUFFIXES: .c .o .cpp
 
 .c.o:
 	$(CC) $(CFLAGS) $(EXTRAINC) -c $*.c
-.cpp.o:
-	$(CPP) $(CFLAGS) $(EXTRAINC) $(PCREINCL) -c $*.cpp
 
+.cpp.o:
+	$(CXX) $(CXXFLAGS) $(EXTRAINC) -c $*.cpp
 
 all: $(TARGETS)
 omp: $(OMP_TARGET)
 
 ivyprobe: ivyprobe.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(FPIC) $(EXTRAINC) -o $@ ivyprobe.o -L../src -livy $(PCRELIB) $(EXTRALIB) 
+	$(CC) $(LDFLAGS) $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o ../src/libivy.a $(PCRELIB)
 
 ivythroughput: ivythroughput.o ../src/libivy.a
-	$(CPP)  $(CFLAGS) $(FPIC) $(EXTRAINC) -o $@ ivythroughput.o -L../src -livy $(PCRELIB) $(EXTRALIB)
+	$(CXX) $(LDFLAGS) $(CXXFLAGS) $(EXTRAINC) -o $@ ivythroughput.o ../src/libivy.a $(PCRELIB)
 
 ivyprobe_efence: ivyprobe.o ../src/libivy.a
-	$(CPP)  $(CFLAGS) $(FPIC) $(EXTRAINC) -o $@ ivyprobe.o -L../src -livy $(PCRELIB) $(EXTRALIB) -lefence
-
-
+	$(CC) $(LDFLAGS) $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o ../src/libivy.a $(PCRELIB) -lefence
 
 ivyprobe_omp: ivyprobe.o ../src/libivy_omp.a
-	$(OMPCC)  $(CFLAGS) $(FPIC) $(EXTRAINC) $(PCREINCL) -o $@ ivyprobe.o -L../src -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB) -lgcc_s.1
+	$(OMPCC) $(LDFLAGS) $(OMP_CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o ../src/libivy_omp.a $(PCRELIB) $(OMPLIB)
 
 ivythroughput_omp: ivythroughput.o ../src/libivy_omp.a
-	$(OMPCPP)  $(CFLAGS) $(FPIC)$(EXTRAINC) $(PCREINCL) -o $@ ivythroughput.o -L../src -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB) -lgcc_s.1
+	$(OMPCXX) $(LDFLAGS) $(OMP_CXXFLAGS) $(EXTRAINC) -o $@ ivythroughput.o ../src/libivy_omp.a $(PCRELIB) $(OMPLIB)
 
-ivyprobe.o : ivyprobe.c 
-	$(CC)  $(CFLAGS) $(FPIC) $(EXTRAINC) $(REGEXP) -c ivyprobe.c -o $@
+ivyprobe.o: ivyprobe.c
+	$(CC) $(CFLAGS) $(EXTRAINC) $(REGEXP) $(PCREINC) -c ivyprobe.c -o $@
 
 ivyperf: ivyperf.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(FPIC) $(EXTRAINC) -o $@ ivyperf.o -L../src -livy $(PCRELIB) $(EXTRALIB)
-
+	$(CC) $(LDFLAGS) $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o ../src/libivy.a $(PCRELIB)
 
 installbins: $(TARGETS)
 	test -d $(DESTDIR)$(PREFIX)/bin || mkdir -p $(DESTDIR)$(PREFIX)/bin
 	install -m755 ivyprobe $(DESTDIR)$(PREFIX)/bin
 
-installbins_omp:  $(OMP_TARGET)
+installbins_omp: $(OMP_TARGET)
 	test -d $(DESTDIR)$(PREFIX)/bin || mkdir -p $(DESTDIR)$(PREFIX)/bin
 	install -m755 ivyprobe_omp $(DESTDIR)$(PREFIX)/bin
 
-install: installbins 
+install: installbins
 install_omp: installbins_omp
 
-
 clean:
-	rm -fR $(TARGETS) *~ *.o
+	rm -fR $(TARGETS) $(OMP_TARGET) *~ *.o
