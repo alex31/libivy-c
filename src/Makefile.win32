@@ -4,81 +4,82 @@
 #	Copyright (C) 1997-2002
 #	Centre d'Études de la Navigation Aérienne
 #
-# 	Makefile
+#	Makefile.win32
 #
 #	Authors: François-Régis Colin <fcolin@cena.fr>
-# 		 Stéphane Chatty <chatty@cena.fr>
-# 		 Yannick Jestin <jestin@cena.fr>
+#		 Stéphane Chatty <chatty@cena.fr>
+#		 Yannick Jestin <jestin@cena.fr>
 #
 #	Please refer to file version.h for the
 #	copyright notice regarding this software
 #
 
-
 # change this in version.h too !!!!
 MAJOR=3
-MINOR=11
+MINOR=16
 
-PCREINC = -I "..\..\pcre-7.5\\" 
-PCRELIB = ..\..\pcre\x64\Release\pcre.lib
+!IFNDEF PLATFORM
+PLATFORM=x64
+!ENDIF
 
-#PCREINC = -I "C:\Program Files\GnuWin32\include" #`pcre-config --cflags`
-#PCRELIB = "C:\Program Files\GnuWin32\lib\libpcre.lib" #`pcre-config --libs`
+!IFNDEF CONFIGURATION
+CONFIGURATION=Release
+!ENDIF
 
-PCRE_OPT = PCRE_CASELESS
+!IFNDEF PCRE2_INC
+PCRE2_INC=/I"..\..\pcre2\include"
+!ENDIF
+
+!IFNDEF PCRE2_LIB
+PCRE2_LIB="..\..\pcre2\build\$(PLATFORM)\$(CONFIGURATION)\pcre2-8.lib"
+!ENDIF
+
+CASESENSITIVE = yes
+!IF "$(CASESENSITIVE)" == "no"
+PCRE_OPT = PCRE2_CASELESS
 REGCOMP_OPT = REG_ICASE
+!ELSE
+PCRE_OPT = 0
+REGCOMP_OPT = REG_EXTENDED
+!ENDIF
 
-#	PCRE_OPT = 0
-#	REGCOMP_OPT = REG_EXTENDED	
+CC=cl
+CXX=cl
+AR=lib
+CFLAGS=/nologo /W4 /O2 /MD /DWIN32 /DWINVER=0x0601 /D_WIN32_WINNT=0x0601 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
+LDFLAGS=/nologo
+LIBTOOL=$(AR) /nologo
+TOOLS_DIR=..\tools
 
+REGEXP=/DUSE_PCRE_REGEX /DPCRE_OPT=$(PCRE_OPT)
 
-#PCREOBJ = `pcre-config --prefix`/lib/libpcre.a
-PCREOBJ = 
-
-#CC=gcc
-#CFLAGS = -g -Wall
-CFLAGS = /W3 /DWIN32 /D_CRT_SECURE_NO_DEPRECATE /nologo
-#LIBTOOL=ar q # linux and solaris
-#LIBTOOL=libtool -static -o
-LIBTOOL=lib /nologo
-TOOLS_DIR = tools
-
-#REGEXP = -DGNU_REGEXP  -DREGCOMP_OPT=$(REGCOMP_OPT) # deprecated !
-REGEXP= /DUSE_PCRE_REGEX /DPCRE_OPT=$(PCRE_OPT)
-# on activeTCL , set #define CHANNEL to null, and add ivyloop.obj in the ivytcl target,
-# see below
-CHANNEL = -DTCL_CHANNEL_INTEGRATION 
-
-OBJ = intervalRegexp.obj ivyloop.obj timer.obj ivysocket.obj ivy.obj param.obj\
-      ivybuffer.obj ivyfifo.obj ivybind.obj
-
-# WINDOWS add ivyloop.obj if TCL_CHANNEL_INTEGRATION is not set
+OBJ=intervalRegexp.obj ivyloop.obj timer.obj ivysocket.obj ivy.obj param.obj ivybuffer.obj ivyfifo.obj ivybind.obj
 TARGETLIBS=ivy.dll
 
 .c.obj:
 	$(CC) $(CFLAGS) /c $*.c
 
-all: static-libs  shared-libs tools
+.cpp.obj:
+	$(CXX) $(CFLAGS) /c $*.cpp
+
+all: static-libs shared-libs tools
 
 static-libs: libivy.lib
 
 shared-libs: $(TARGETLIBS)
 
 ivybind.obj: ivybind.c
-	$(CC) $(CFLAGS) $(REGEXP) $(PCREINC) /c ivybind.c
-
-
+	$(CC) $(CFLAGS) $(REGEXP) $(PCRE2_INC) /c ivybind.c
 
 libivy.lib: $(OBJ)
-	del /f $@
-	$(LIBTOOL) /out:$@ $(OBJ) 
+	-del /f $@
+	$(LIBTOOL) /out:$@ $(OBJ)
 
 ivy.dll: $(OBJ)
-	LINK /dll /out:$@ /DEF:libivy.def $(OBJ) $(PCRELIB) wsock32.lib
+	link $(LDFLAGS) /dll /out:$@ /DEF:libIvy.def $(OBJ) $(PCRE2_LIB) ws2_32.lib
 
-tools: static-libs 
+tools: static-libs
 	@(cd $(TOOLS_DIR) && $(MAKE) -f Makefile.win32)
-
 
 clean:
 	-del /f $(TARGETLIBS) *.obj *.lib *.dll *~
