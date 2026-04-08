@@ -24,6 +24,14 @@ LIB = /lib
 
 # by default use fPIC on all systems
 FPIC ?= -fPIC
+ARCH := $(shell uname -m)
+
+# Default x86-64 builds to a more recent baseline while keeping the flag overridable.
+ifeq ($(ARCH),x86_64)
+	X86_64_CFLAGS ?= -march=x86-64-v3 -mtune=generic
+else
+	X86_64_CFLAGS ?=
+endif
 
 ifndef PREFIX
 	export PREFIX=/usr/local
@@ -100,9 +108,9 @@ REGEXP= -DUSE_PCRE_REGEX -DPCRE_OPT=$(PCRE_OPT)
 CHANNEL = -DTCL_CHANNEL_INTEGRATION
 
 # DEBUG
-CFLAGS_DEBUG = -g -Wall -Wshadow $(FPIC)
+CFLAGS_DEBUG = -g -Wall -Wshadow $(FPIC) $(X86_64_CFLAGS)
 # RELEASE
-CFLAGS_RELEASE = -O2 -Wall -Wshadow $(FPIC)
+CFLAGS_RELEASE = -O2 -Wall -Wshadow $(FPIC) $(X86_64_CFLAGS)
 
 ifdef DEBUG
 	export CFLAGS += $(CFLAGS_DEBUG)

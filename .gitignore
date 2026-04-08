@@ -5,4 +5,7 @@ src/*.so*
 src/libivy.pc
 tools/*.o
 tools/ivyprobe
-
+tools/ivythroughput
+tools/ivyperf
+tools/ivytestready
+tools/*_omp
