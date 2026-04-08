@@ -4,6 +4,9 @@
 #include <string.h>
 #include <stdarg.h>
 #include <unistd.h>
+#ifndef __cplusplus
+#include <stdbool.h>
+#endif
 
 #include "intervalRegexp.h"
 
@@ -34,10 +37,6 @@ typedef struct  {
   int rank;
 } NextMax ;
 
-
-#ifndef __cplusplus
-typedef  char bool;
-#endif
 
 const bool success = 1;
 const bool fail = 0;
