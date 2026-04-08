@@ -1,9 +1,19 @@
+ivy-c (3.16.0) unstable; urgency=low
+
+  * migrate the regexp backend from PCRE1 to native PCRE2
+  * update throughput and example builds for PCRE2
+  * modernize macOS and Windows build files for the new regex dependency
+  * raise the Linux x86-64 baseline to x86-64-v3
+  * bump the library release to 3.16
+
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Wed, 08 Apr 2026 21:00:00 +0200
+
 ivy-c (3.15.1) unstable; urgency=low
 
   * pkg-config: use Libs.private for pcre and extra libs
   * compile with fPIC by default
 
- -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 19 January 2015 18:37:00 +0200
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 19 Jan 2015 18:37:00 +0200
 
 ivy-c (3.15.0) unstable; urgency=low
 
@@ -12,31 +22,31 @@ ivy-c (3.15.0) unstable; urgency=low
   * add some pkg-config configuration file
   * use header file from tcl-dev (which need to be installed)
 
- -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 7 January 2015 18:37:00 +0200
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 7 Jan 2015 18:37:00 +0200
 
 ivy-c (3.14.3) unstable; urgency=low
 
   * protect some gcc pragma not available on old gcc version
 
- -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 20 June 2013 18:37:00 +0200
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 20 Jun 2013 18:37:00 +0200
 
 ivy-c (3.14.2) unstable; urgency=low
 
   * initial windows support for ping/pong implementation, to be tested and validated
 
- -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 20 June 2013 18:37:00 +0200
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 20 Jun 2013 18:37:00 +0200
 
 ivy-c (3.14.1) unstable; urgency=low
 
   * fix compilation warning
 
- -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 20 June 2013 10:37:00 +0200
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Thu, 20 Jun 2013 10:37:00 +0200
 
 ivy-c (3.14.0) unstable; urgency=low
 
   * complete implementation of ping/pong protocol message
 
- -- Alexandre Bustico <alexandre.bustico@enac.fr>  Wed, 19 June 2013 14:37:00 +0200
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Wed, 19 Jun 2013 14:37:00 +0200
 
 ivy-c (3.13.0) unstable; urgency=low
 
@@ -49,13 +59,13 @@ ivy-c (3.11.10) unstable; urgency=low
 
   * mkdirhier replaced by mkdir -p in all Makefile(s)
 
- -- Jean-Paul Imbert <imbert@cena.fr>  Fri, 15 March 2013 10:03:00 +0100
+ -- Jean-Paul Imbert <imbert@cena.fr>  Fri, 15 Mar 2013 10:03:00 +0100
 
 ivy-c (3.11.9) unstable; urgency=low
 
   * headers path modification in ivytestreplay.c
 
- -- Alexandre Bustico <bustico@cena.fr>  Wed, 21 December 2011 10:03:00 +0100
+ -- Alexandre Bustico <bustico@cena.fr>  Wed, 21 Dec 2011 10:03:00 +0100
 
 ivy-c (3.11.8) unstable; urgency=low
 
@@ -374,7 +384,7 @@ ivy-c (3.1-5) unstable; urgency=low
 
   * add a dependance for utils-c-dev, which provides list.h ...
 
- -- Yannick Jestin <jestin@cena.fr>  Fri,  Jan 14 15:58:52 CET 2000
+ -- Yannick Jestin <jestin@cena.fr>  Fri, 14 Jan 2000 15:58:52 +0100
 
 ivy-c (3.1-4) unstable; urgency=low
 

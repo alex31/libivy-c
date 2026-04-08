@@ -9,3 +9,11 @@ tools/ivythroughput
 tools/ivyperf
 tools/ivytestready
 tools/*_omp
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.debhelper.log
+debian/*.substvars
+debian/tmp/
+debian/ivy-c/
+debian/ivy-c-dev/

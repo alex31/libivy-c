@@ -14,17 +14,19 @@
 
 
 SED_COMMAND='s/.*(\([^)]*\)).*/\1/p'
-MAJOR := $(shell sed -n $(SED_COMMAND) debian/changelog | head -1 | sed -n 's/\([0-9]*\)\..*/\1/p')
-MINOR := $(shell sed -n $(SED_COMMAND) debian/changelog | head -1 | sed -n 's/[0-9]*\.\([0-9\.]*\).*/\1/p')
+UPSTREAM_VERSION := $(shell sed -n $(SED_COMMAND) debian/changelog | head -1)
+MAJOR := $(word 1,$(subst ., ,$(UPSTREAM_VERSION)))
+MINOR := $(word 2,$(subst ., ,$(UPSTREAM_VERSION)))
+MINOR2 := $(word 3,$(subst ., ,$(UPSTREAM_VERSION)))
 
 override_dh_auto_build :
-	cd src && $(MAKE) all MAJOR=$(MAJOR) MINOR=$(MINOR)
+	cd src && $(MAKE) all MAJOR=$(MAJOR) MINOR=$(MINOR) MINOR2=$(MINOR2)
 
 override_dh_auto_clean :
 	cd src && $(MAKE) clean
 
 override_dh_auto_install :
-	cd src && $(MAKE) install DESTDIR=$(CURDIR)/debian/tmp PREFIX=/usr LIB=/lib
+	cd src && $(MAKE) install DESTDIR=$(CURDIR)/debian/tmp PREFIX=/usr LIB=/lib MAJOR=$(MAJOR) MINOR=$(MINOR) MINOR2=$(MINOR2)
 
 override_dh_auto_binary-arch:
 	dh_install --source=$(CURDIR)/debian/tmp
