@@ -34,6 +34,24 @@ typedef  struct _clnt_lst_dict *RWIvyClientPtr;
 typedef  const struct _clnt_lst_dict *IvyClientPtr;
 typedef  struct IvyContext IvyContext;
 
+typedef enum {
+	IVY_OK = 0,
+	IVY_ESTOPPED = -1,
+	IVY_ESTATE = -2,
+	IVY_EINVAL = -3,
+	IVY_ENOMEM = -4,
+	IVY_EIO = -5
+} IvyStatus;
+
+typedef enum {
+	IVY_CTX_CREATED,
+	IVY_CTX_STARTING,
+	IVY_CTX_RUNNING,
+	IVY_CTX_STOPPING,
+	IVY_CTX_STOPPED,
+	IVY_CTX_DESTROYED
+} IvyContextState;
+
 typedef enum { IvyApplicationConnected, IvyApplicationDisconnected, 
 	       IvyApplicationCongestion , IvyApplicationDecongestion,
 	       IvyApplicationFifoFull } IvyApplicationEvent;
@@ -72,14 +90,18 @@ IvyContext *IvyContextCreate(
 	 IvyDieCallback die_callback,
 	 void *die_data
 	 );
-void IvyContextDestroy(IvyContext *ctx);
+int IvyContextStart(IvyContext *ctx, const char *bus);
+int IvyContextStop(IvyContext *ctx);
+int IvyContextDestroy(IvyContext *ctx);
+IvyContextState IvyContextGetState(const IvyContext *ctx);
+IvyStatus IvyGetLastError(void);
 
 /* filtrage des regexps */
-void IvySetFilter( int argc, const char **argv);
-void IvyAddFilter( const char *arg);
-void IvyRemoveFilter( const char *arg);
+int IvySetFilter( int argc, const char **argv);
+int IvyAddFilter( const char *arg);
+int IvyRemoveFilter( const char *arg);
 
-void IvyInit(
+int IvyInit(
 	 const char *AppName,		/* nom de l'application */
 	 const char *ready,		/* ready Message peut etre NULL */
 	 IvyApplicationCallback callback, /* callback appele sur connection deconnection d'une appli */
@@ -87,16 +109,16 @@ void IvyInit(
 	 IvyDieCallback die_callback,	/* last change callback before die */
 	 void *die_data 		/* user data */
 	 );
-void IvyTerminate(void);
+int IvyTerminate(void);
   
-void IvySetBindCallback(	 
+int IvySetBindCallback(
 			  IvyBindCallback bind_callback,
 			  void *bind_data );
-void IvySetPongCallback(	 
+int IvySetPongCallback(
 			  IvyPongCallback pong_callback );
 
-void IvyStart (const char*);
-void IvyStop (void);
+int IvyStart (const char*);
+int IvyStop (void);
 
 /* query sur les applications connectees */
 const char *IvyGetApplicationName( IvyClientPtr app );
@@ -111,14 +133,14 @@ __attribute__((format(printf,3,4))) ; /* avec sprintf prealable */
 MsgRcvPtr IvyChangeMsg (MsgRcvPtr msg, const char *fmt_regex, ... )
 __attribute__((format(printf,2,3))); /* avec sprintf prealable */
 
-void IvyUnbindMsg( MsgRcvPtr id );
+int IvyUnbindMsg( MsgRcvPtr id );
 
 /* emission d'un message d'erreur */
-void IvySendError(IvyClientPtr app, int id, const char *fmt, ... )
+int IvySendError(IvyClientPtr app, int id, const char *fmt, ... )
 __attribute__((format(printf,3,4))) ; /* avec sprintf prealable */
 
 /* emmission d'un message die pour terminer l'application */
-void IvySendDieMsg(IvyClientPtr app );
+int IvySendDieMsg(IvyClientPtr app );
 
 /* emission d'un message retourne le nb effectivement emis */
 
@@ -127,8 +149,8 @@ __attribute__((format(printf,1,2))); /* avec sprintf prealable */
 
 /* Message Direct Inter-application */
 
-void IvyBindDirectMsg( MsgDirectCallback callback, void *user_data);
-void IvySendDirectMsg( IvyClientPtr app, int id, char *msg );
+int IvyBindDirectMsg( MsgDirectCallback callback, void *user_data);
+int IvySendDirectMsg( IvyClientPtr app, int id, char *msg );
 
   /* to use ping protocol, you need to bind a callback to pong with IvySetPongCallback 
    prior to sending ping 
@@ -138,7 +160,7 @@ void IvySendDirectMsg( IvyClientPtr app, int id, char *msg );
                          which has not yet been answered
    see ivyprobe.c to see a simple example of usage
 */
-void IvySendPing( IvyClientPtr app);
+int IvySendPing( IvyClientPtr app);
 
 #ifdef __cplusplus
 }
