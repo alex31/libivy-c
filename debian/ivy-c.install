@@ -1,3 +1,5 @@
 usr/lib/*.so.*
 usr/bin/*
-usr/man/man1/*
+doc/ivy-c.1 usr/share/man/man1
+doc/ivy-c-functions.1 usr/share/man/man1
+doc/ivyprobe.1 usr/share/man/man1

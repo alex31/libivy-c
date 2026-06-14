@@ -2,11 +2,11 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Basic I/O handling
  *
- *	Authors: François-Régis Colin <fcolin@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.dgac.fr>
  *
  *	$Id: ivychannel.h 3460 2011-01-24 13:39:15Z bustico $
  * 

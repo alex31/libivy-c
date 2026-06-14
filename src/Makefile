@@ -17,13 +17,21 @@
 
 # change this in version.h too !!!!
 MAJOR=3
-MINOR=15
+MINOR=16
 MINOR2=9
 
 LIB = /lib
 
 # by default use fPIC on all systems
 FPIC ?= -fPIC
+ARCH := $(shell uname -m)
+
+# Default x86-64 builds to a more recent baseline while keeping the flag overridable.
+ifeq ($(ARCH),x86_64)
+	X86_64_CFLAGS ?= -march=x86-64-v3 -mtune=generic
+else
+	X86_64_CFLAGS ?=
+endif
 
 ifndef PREFIX
 	export PREFIX=/usr/local
@@ -66,11 +74,11 @@ TCLLIB = -ltcl$(TCLVERS)
 # use these if you want to use Aqua Tcl on macOSX
 #TCLINC = -I/Library/Frameworks/Tcl.framework/Headers
 #TCLLIB = -framework Tcl
-PCREINC = $(shell pcre-config --cflags)
-PCRELIB = $(shell pcre-config --libs)
+PCREINC = $(shell pcre2-config --cflags)
+PCRELIB = $(shell pcre2-config --libs8)
 CASESENSITIVE = "yes"
 ifeq ($(CASESENSITIVE), "no")
-	PCRE_OPT=PCRE_CASELESS
+	PCRE_OPT=PCRE2_CASELESS
 	REGCOMP_OPT=REG_ICASE
 else
 	PCRE_OPT=0
@@ -100,9 +108,9 @@ REGEXP= -DUSE_PCRE_REGEX -DPCRE_OPT=$(PCRE_OPT)
 CHANNEL = -DTCL_CHANNEL_INTEGRATION
 
 # DEBUG
-CFLAGS_DEBUG = -g -Wall -Wshadow $(FPIC)
+CFLAGS_DEBUG = -g -Wall -Wshadow $(FPIC) $(X86_64_CFLAGS)
 # RELEASE
-CFLAGS_RELEASE = -O2 -Wall -Wshadow $(FPIC)
+CFLAGS_RELEASE = -O2 -Wall -Wshadow $(FPIC) $(X86_64_CFLAGS)
 
 ifdef DEBUG
 	export CFLAGS += $(CFLAGS_DEBUG)

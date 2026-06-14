@@ -2,11 +2,11 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  *	Timers used in select based main loop
  *
- *	Authors: François-Régis Colin <fcolin@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.dgac.fr>
  *
  *	$Id: timer.c 3591 2013-06-20 17:23:52Z bustico $
  * 
@@ -152,7 +152,6 @@ void TimerScan()
 	TimerId timer;
 	TimerId next;
 	unsigned long delta;
-	int timer_echu = 0;
 	
 	stamp = currentTime();
 
@@ -161,7 +160,6 @@ void TimerScan()
 	{
 	  if ( timer->when <= stamp && (!timer->mark2Remove) )
 	    {
-	      timer_echu++;
 	      delta = stamp - timer->when;
 	      /* call callback */
 	      (*timer->callback)( timer, timer->user_data, delta );

@@ -16,7 +16,7 @@
  */
 
 /*
-  TODO :  ° faire un configure
+  TODO :  Â° faire un configure
 */
 
 #ifdef OPENMP
@@ -24,6 +24,7 @@
 #endif
 
 #include <stdlib.h>
+#include <stdint.h>
 #ifdef __MINGW32__
 #include <sys/time.h>
 #include <Ws2tcpip.h>
@@ -86,7 +87,7 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 
 /* stringification et concatenation du domaine et du port en 2 temps :
  * Obligatoire puisque la substitution de domain, et de bus n'est pas
- * effectuée si on stringifie directement dans la macro GenerateIvyBus */
+ * effectuÃ©e si on stringifie directement dans la macro GenerateIvyBus */
 #define str(bus) #bus
 #define GenerateIvyBus(domain,bus) str(domain)":"str(bus)
 #define       MIN(a, b)   ((a) > (b) ? (b) : (a))
@@ -104,7 +105,7 @@ typedef enum {
 	DirectMsg,		/* message direct a destination de l'appli */
 	Die,			/* demande de terminaison de l'appli */
 	Ping,			/* message de controle ivy */
-	Pong			/* ivy doit renvoyer ce message à la reception d'un ping */
+	Pong			/* ivy doit renvoyer ce message Ã  la reception d'un ping */
 } MsgType;	
 
 
@@ -152,7 +153,7 @@ struct _clnt_lst_dict {
 
 	char *app_name;			/* nom de l'application */
 	unsigned short app_port;	/* port de l'application */
-	int id;                         /* l'id n'est pas liée uniquement
+	int id;                         /* l'id n'est pas liÃ©e uniquement
  					   a la regexp, mais au couple
 	 				   regexp, client */
         GlobRegPtr srcRegList;          /* liste de regexp source */
@@ -162,7 +163,7 @@ struct _clnt_lst_dict {
        int readyToSend;		        /* comptage des endRegexps recu et emis */
        int ignore_subsequent_msg;	/* pour ignorer les messages venant
 					   d'une socket ferme, mais donc les donnees sont deja en buffer */
-       struct  _ping_timestamp ping_timestamp;   /* on enregistre le timestamp du ping pour envoyer le roundtrip à 
+       struct  _ping_timestamp ping_timestamp;   /* on enregistre le timestamp du ping pour envoyer le roundtrip Ã  
 					   la reception du pong */
 };
 
@@ -222,6 +223,7 @@ static MsgSndDictPtr messSndByRegexp = NULL;
 
 static const char *ready_message = NULL;
 static void substituteInterval (IvyBuffer *src);
+static int ParseIvyIPv4Broadcast(const char *start, const char *end, uint32_t *out);
 
 static int RegexpCall (const MsgSndDictPtr msg, const char * const message);
 static int RegexpCallUnique (const MsgSndDictPtr msg, const char * const message, 
@@ -391,11 +393,11 @@ RegexpCall (const MsgSndDictPtr msg, const char * const message)
 
 #ifdef OPENMP
 #pragma omp threadprivate (bufferArg)
-  /* d'après la doc openmp : 
+  /* d'aprÃ¨s la doc openmp : 
      Variables with automatic storage duration which are declared in a scope inside the
      construct are private.
-  Il n'y aurait donc rien à faire pour s'assurer que les variables automatiques soient
-  privées au thread */
+  Il n'y aurait donc rien Ã  faire pour s'assurer que les variables automatiques soient
+  privÃ©es au thread */
 #endif // OPENMP
 
   match_count = 0;
@@ -422,7 +424,7 @@ RegexpCall (const MsgSndDictPtr msg, const char * const message)
 
   IVY_LIST_EACH(msg->clientList, clnt ) {
 
-    sprintf (bufferId, "%d %d" ARG_START ,Msg, clnt->id);
+    snprintf (bufferId, sizeof(bufferId), "%d %d" ARG_START ,Msg, clnt->id);
     state = SocketSendRawWithId(clnt->client, bufferId, bufferArg.data , bufferArg.offset);
     match_count++;
 
@@ -504,7 +506,7 @@ RegexpCallUnique (const MsgSndDictPtr msg, const char * const message, const
   IVY_LIST_EACH(msg->clientList, clnt ) {
     if (clientUnique != clnt->client)
       continue;
-    sprintf (bufferId, "%d %d" ARG_START ,Msg, clnt->id);
+    snprintf (bufferId, sizeof(bufferId), "%d %d" ARG_START ,Msg, clnt->id);
     state = SocketSendRawWithId(clnt->client, bufferId, bufferArg.data , bufferArg.offset);
     match_count++;
     
@@ -1009,15 +1011,51 @@ void IvyStop (void)
 	IvyChannelStop();
 }
 
+static int ParseIvyIPv4Broadcast(const char *start, const char *end, uint32_t *out)
+{
+	uint32_t mask = UINT32_MAX;
+	uint32_t elem = 0;
+	int numdigit = 0;
+	int numelem = 0;
+	const char *p;
+
+	if (!start || !end || !out || start == end)
+		return 0;
+
+	for (p = start; ; p++) {
+		const int c = (p < end) ? (unsigned char)*p : '\0';
+
+		if (isdigit(c)) {
+			if (numdigit >= 3 || numelem >= 4)
+				return 0;
+			elem = 10u * elem + (uint32_t)(c - '0');
+			numdigit++;
+			if (elem > 255u)
+				return 0;
+		} else if (c == '.' || c == '\0') {
+			if (numdigit == 0 || numelem >= 4)
+				return 0;
+
+			const uint32_t shift = 8u * (uint32_t)(3 - numelem);
+			mask = (mask ^ (0xffu << shift)) | (elem << shift);
+			if (c == '\0') {
+				*out = mask;
+				return 1;
+			}
+
+			numelem++;
+			numdigit = 0;
+			elem = 0;
+		} else if (c != ' ') {
+			return 0;
+		}
+	}
+}
 
 void IvyStart (const char* bus)
 {
 	struct in6_addr ipv6addr;
 	struct in_addr baddr;
-	unsigned int mask = 0xffffffff; 
-	unsigned char elem = 0;
-	int numdigit = 0;
-	int numelem = 0;
 	int error = 0;
 	const char* p = bus;	/* used for decoding address list */
 	const char* q;			/* used for decoding port number */
@@ -1102,25 +1140,13 @@ void IvyStart (const char* bus)
 	   This is painful but inet_aton is sloppy.
 	   If someone knows other builtin routines that do that... */
 	for (;;) {
-		/* address elements are up to 3 digits... */
-		if (!error && isdigit (*p)) {
-			if (numdigit < 3 && numelem < 4) {
-				elem = 10 * elem +  *p -'0';
-			} else {
-				error = 1;
-			}
+		const char *addr_start = p;
+		uint32_t mask;
 
-		/* ... terminated by a point, a comma or a colon, or the end of string */
-		} else if (!error && (*p == '.' || *p == ',' || *p == ':' || *p == '\0')) {
-			mask = (mask ^ (0xff << (8*(3-numelem)))) | (elem << (8*(3-numelem)));
+		while (*p && *p != ',' && *p != ':')
+			p++;
 
-			/* after a point, expect next address element */
-			if (*p == '.') {
-				numelem++;
-
-			/* addresses are terminated by a comma or end of string */
-			} else {
-
+		if (ParseIvyIPv4Broadcast(addr_start, p, &mask)) {
 				baddr.s_addr = htonl(mask);
 				printf ("Broadcasting on network %s, port %d\n", 
 					inet_ntoa(baddr), SupervisionPort);
@@ -1131,27 +1157,8 @@ void IvyStart (const char* bus)
 				SocketSendBroadcast (broadcast, mask, SupervisionPort, 
 						     "%d %hu %s %s\n", IVYMAJOR_VERSION, ApplicationPort, 
 						     ApplicationID, ApplicationName); 
-				numelem = 0;
-				mask = 0xffffffff;
-			}
-			numdigit = 0;
-			elem = 0;
-
-		/* recover from bad addresses at next comma or colon or at end of string */
-		} else if (*p == ',' || *p == ':' || *p == '\0') {
-			fprintf (stderr, "bad broadcast address\n");
-			elem = 0;
-			numelem = 0;
-			numdigit = 0;
-			mask = 0xffffffff;
-			error = 0;
-
-		/* ignore spaces */
-		} else if (*p == ' ') {
-
-		  /* everything else is illegal */
 		} else {
-			error = 1;
+			fprintf (stderr, "bad broadcast address\n");
 		}
 
 		/* end of string or colon */
@@ -1250,7 +1257,7 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
  static IvyBuffer buffer = { NULL, 0, 0}; /* Use static mem to eliminate multiple call to malloc /free */
   va_list ap;
   
-  /* construction du buffer message à partir du format et des arguments */
+  /* construction du buffer message Ã  partir du format et des arguments */
   if( fmt == 0 || strlen(fmt) == 0 ) return 0;	
   va_start( ap, fmt );
   buffer.offset = 0;
@@ -1279,7 +1286,7 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
 #pragma omp parallel  default(none) private(count) shared(ompDictCache, buffer) \
                       reduction(+:match_count) 
   {
-#pragma omp for schedule(guided) // après debug mettre  schedule(guided, 10)
+#pragma omp for schedule(guided) // aprÃ¨s debug mettre  schedule(guided, 10)
   for(count=0; count<ompDictCache.numPtr; count++) {
 		match_count += RegexpCall (ompDictCache.msgPtrArray[count], buffer.data);
 		}
@@ -1502,7 +1509,7 @@ char **IvyGetApplicationMessages( IvyClientPtr app )
 
 static void substituteInterval (IvyBuffer *src)
 {
-  /* pas de traitement couteux s'il n'y a rien à interpoler */
+  /* pas de traitement couteux s'il n'y a rien Ã  interpoler */
   if (strstr (src->data, "(?I") == NULL) {
     return;
   } else {
@@ -1514,7 +1521,7 @@ static void substituteInterval (IvyBuffer *src)
 
     curPos = src->data;
     while ((itvPos = strstr (curPos, "(?I")) != NULL) {
-      /* copie depuis la position courante jusqu'à l'intervalle */
+      /* copie depuis la position courante jusqu'Ã  l'intervalle */
       int lenCp, min,max;
       char withDecimal;
       lenCp = itvPos-curPos;
@@ -1522,7 +1529,7 @@ static void substituteInterval (IvyBuffer *src)
       curPos=itvPos;
       dst.offset += lenCp;
 
-      /* extraction des paramètres de l'intervalle */
+      /* extraction des paramÃ¨tres de l'intervalle */
       sscanf (itvPos, "(?I%d#%d%c", &min, &max, &withDecimal);
 
       /*      printf ("DBG> substituteInterval min=%d max=%d withDecimal=%d\n",  */
@@ -1532,7 +1539,7 @@ static void substituteInterval (IvyBuffer *src)
       regexpGen (&(dst.data[dst.offset]), dst.size-dst.offset, min, max, (withDecimal != 'i'));
       dst.offset = strlen (dst.data);
 
-      /* consommation des caractères décrivant intervalle dans la chaine source */
+      /* consommation des caractÃ¨res dÃ©crivant intervalle dans la chaine source */
       curPos = strstr (curPos, ")");
       curPos++;
     }
@@ -1598,10 +1605,10 @@ static void delOneIvyClientFromDictionaryEntry (MsgSndDictPtr msgSendDict,
 
 
   //    printf ("DBG> delRegexpForOneClientFromDictionary, regexp '%s' found\n", regexp);
-  /* la clef est trouvée, on itere sur la liste de client associée */
+  /* la clef est trouvÃ©e, on itere sur la liste de client associÃ©e */
   IVY_LIST_EACH_SAFE ( msgSendDict->clientList, client_itr, next) { 
-    /* pour tester 2 IvyClientPtr, on teste la similarité 
-       des pointeur Client qui doivent être uniques */
+    /* pour tester 2 IvyClientPtr, on teste la similaritÃ© 
+       des pointeur Client qui doivent Ãªtre uniques */
     if ((client_itr->client == client->client) && (client_itr->id == client->id)) {
       /* on a trouve le client : on l'enleve */
       free (client_itr->app_name);
@@ -1610,18 +1617,18 @@ static void delOneIvyClientFromDictionaryEntry (MsgSndDictPtr msgSendDict,
       IVY_LIST_REMOVE (msgSendDict->clientList, client_itr);
     }
   }
-  /* si la liste de clients associée à cette regexp est vide */
+  /* si la liste de clients associÃ©e Ã  cette regexp est vide */
   if ((msgSendDict->clientList == NULL) || 
       (IVY_LIST_IS_EMPTY (msgSendDict->clientList))) {
     TRACE ("delRegexpForOneClientFromDictionary : IvyBindingFree, free, hash_del\n");
     //printf ("DBG> delRegexpForOneClientFromDictionary : IvyBindingFree, free, hash_del\n");
     /* on efface le binding */
     IvyBindingFree (msgSendDict->binding);
-    /* on enlève l'entrée regexp de la table de hash */
+    /* on enlÃ¨ve l'entrÃ©e regexp de la table de hash */
     HASH_DEL (messSndByRegexp, msgSendDict);
     /* on efface la clef (regexp source) */
     free (msgSendDict->regexp_src);
-    /* on libère la structure */
+    /* on libÃ¨re la structure */
     free (msgSendDict);
   }
 }
@@ -1633,10 +1640,10 @@ static void delOneClientFromDictionaryEntry (MsgSndDictPtr msgSendDict,
 {
   RWIvyClientPtr  client_itr, next;
 
-    /* la clef est trouvée, on itere sur la liste de client associée */
+    /* la clef est trouvÃ©e, on itere sur la liste de client associÃ©e */
   IVY_LIST_EACH_SAFE ( msgSendDict->clientList, client_itr, next) { 
-    /* pour tester 2 IvyClientPtr, on teste la similarité 
-       des pointeur Client qui doivent être uniques */
+    /* pour tester 2 IvyClientPtr, on teste la similaritÃ© 
+       des pointeur Client qui doivent Ãªtre uniques */
     if (client_itr->client == client) {
       /* on a trouve le client : on l'enleve */
       free (client_itr->app_name);
@@ -1645,17 +1652,17 @@ static void delOneClientFromDictionaryEntry (MsgSndDictPtr msgSendDict,
       IVY_LIST_REMOVE (msgSendDict->clientList, client_itr);
     }
   }
-  /* si la liste de clients associée à cette regexp est vide */
+  /* si la liste de clients associÃ©e Ã  cette regexp est vide */
   if ((msgSendDict->clientList == NULL) || 
       (IVY_LIST_IS_EMPTY (msgSendDict->clientList))) {
     TRACE ("delRegexpForOneClientFromDictionary : IvyBindingFree, free, hash_del\n");
     /* on efface le binding */
     IvyBindingFree (msgSendDict->binding);
-    /* on enlève l'entrée regexp de la table de hash */
+    /* on enlÃ¨ve l'entrÃ©e regexp de la table de hash */
     HASH_DEL (messSndByRegexp, msgSendDict);
     /* on efface la clef (regexp source) */
     free (msgSendDict->regexp_src);
-    /* on libère la structure */
+    /* on libÃ¨re la structure */
     free (msgSendDict);
   }
 
@@ -1682,7 +1689,7 @@ static void delAllRegexpsFromDictionary ()
     HASH_DEL(messSndByRegexp, msgSendDict);
     /* on efface la clef (regexp source) */
     free (msgSendDict->regexp_src);
-    /* on libère la structure */
+    /* on libÃ¨re la structure */
     //    free (msgSendDict);
   }
 
@@ -1707,7 +1714,7 @@ static void addRegexpToDictionary (const char* regexp, IvyClientPtr client)
   MsgSndDictPtr msgSendDict = NULL;
   RWIvyClientPtr  newClient = NULL;
   static char errorbuffer[1024];
-  /* on cherche si une entrée existe deja pour cette regexp source */
+  /* on cherche si une entrÃ©e existe deja pour cette regexp source */
   HASH_FIND_STR(messSndByRegexp, regexp, msgSendDict);
     /* l'entree n'existe pas dans le dictionnaire : on la cree */
   if (msgSendDict == NULL) {
@@ -1719,7 +1726,7 @@ static void addRegexpToDictionary (const char* regexp, IvyClientPtr client)
     
     msgSendDict->binding = IvyBindingCompile(regexp, & erroffset, & errbuf );
     if (msgSendDict->binding  == NULL ) {
-			sprintf( errorbuffer, "Error compiling '%s', %s", regexp, errbuf); 
+			snprintf(errorbuffer, sizeof(errorbuffer), "Error compiling '%s', %s", regexp, errbuf); 
       printf("%s\n", errorbuffer);
       MsgSendTo(client, Error, erroffset, errorbuffer );
     }
@@ -1751,9 +1758,9 @@ static void addRegexpToDictionary (const char* regexp, IvyClientPtr client)
 #endif
 
 #ifdef OPENMP
-    // On ne regenere le cache qu'après recpetion du endregexp, ça permet d'eviter
-    // de regenerer inutilement le cache à chaqye nouvelle regexp initiale
-    // par contre, après le end regexp, il faut regenerer le cache à chaque
+    // On ne regenere le cache qu'aprÃ¨s recpetion du endregexp, Ã§a permet d'eviter
+    // de regenerer inutilement le cache Ã  chaqye nouvelle regexp initiale
+    // par contre, aprÃ¨s le end regexp, il faut regenerer le cache Ã  chaque
     // nouvel abonnement
     if (client->endRegexpReceived == 1)
       addRegToPtrArrayCache (msgSendDict);  
@@ -1761,7 +1768,7 @@ static void addRegexpToDictionary (const char* regexp, IvyClientPtr client)
   } 
 
 
-  /* on ajoute le client à la liste des clients abonnés */
+  /* on ajoute le client Ã  la liste des clients abonnÃ©s */
   IVY_LIST_ADD_START (msgSendDict->clientList, newClient);
   newClient->app_name = strdup (client->app_name);
   newClient->app_port = client->app_port;
@@ -1803,7 +1810,7 @@ static void delOneClient (const Client client)
 	/* on met a jour la liste des clients associee a la regexp source */
 	delRegexpForOneClient (client_itr, regxpSrc->id);
 	/* on libere la memoire associee a la regexp source */
-	/* probablement deja fait ailleurs d'après valgrind */
+	/* probablement deja fait ailleurs d'aprÃ¨s valgrind */
 	/*      if (regxpSrc->str_regexp != NULL) { */
 	/* 	free (regxpSrc->str_regexp); */
 	/* 	regxpSrc->str_regexp = NULL; */
@@ -1821,11 +1828,11 @@ static void delOneClient (const Client client)
 
   
   /* on cherche dans le dictionnaire des regexps, les regexps qui ont
-     ce client dans leur liste de client associés et on vire les entrées*/
+     ce client dans leur liste de client associÃ©s et on vire les entrÃ©es*/
 
 
-  // forme un peu compliquée pour faire un parcours de liste "securisé" car
-  // on libère la mémoire de l'element courrant dans le corp de la boucle
+  // forme un peu compliquÃ©e pour faire un parcours de liste "securisÃ©" car
+  // on libÃ¨re la mÃ©moire de l'element courrant dans le corp de la boucle
   // ce qui oblige a recuperer le champ next avant de faire ce free
   for ( msgSendDict = messSndByRegexp ; 
 	(mnext = msgSendDict ? (MsgSndDictPtr) msgSendDict->hh.next
@@ -1926,7 +1933,7 @@ static void addRegexp (const char* regexp, IvyClientPtr client)
     fprintf(stderr, "addRegexp ERROR\n");
   }
 
-  /* on ajoute la regexp à la liste de regexps */
+  /* on ajoute la regexp Ã  la liste de regexps */
   IVY_LIST_ADD_START (client_itr->srcRegList, regxpSrc);
   regxpSrc->id = client->id;
   regxpSrc->str_regexp = strdup (regexp);

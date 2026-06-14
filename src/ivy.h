@@ -2,12 +2,12 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Main functions
  *
- *	Authors: François-Régis Colin <fcolin@cena.dgac.fr>
- *		 Stéphane Chatty <chatty@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.dgac.fr>
+ *		 StÃ©phane Chatty <chatty@cena.dgac.fr>
  *
  *	$Id: ivy.h 3588 2013-06-19 12:39:15Z bustico $
  * 
@@ -122,8 +122,8 @@ void IvySendDirectMsg( IvyClientPtr app, int id, char *msg );
   /* to use ping protocol, you need to bind a callback to pong with IvySetPongCallback 
    prior to sending ping 
    When pong is received, your supplied callback will be called with an int argument which is :
-   ° if positive value : the round trip time in micro seconds
-   ° if negative value : the timout of the previous ping (for the same application) 
+   Â° if positive value : the round trip time in micro seconds
+   Â° if negative value : the timout of the previous ping (for the same application) 
                          which has not yet been answered
    see ivyprobe.c to see a simple example of usage
 */

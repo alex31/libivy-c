@@ -595,8 +595,8 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
 #else
       if (errno == EWOULDBLOCK) {
 #endif
-	// Aucun octet n'a été envoyé, mais le send ne rend pas 0
-	// car 0 peut être une longueur passée au send, donc dans ce cas
+	// Aucun octet n'a Ã©tÃ© envoyÃ©, mais le send ne rend pas 0
+	// car 0 peut Ãªtre une longueur passÃ©e au send, donc dans ce cas
 	// send renvoie -1 et met errno a EWOULDBLOCK
 	client->ifb = IvyFifoNew ();
 	IvyFifoWrite (client->ifb, buffer, len);
@@ -608,12 +608,12 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
 	state = SendError; // ERREUR
       }
     } else {
-      // socket congestionnée
-      // on initialise une fifo pour accumuler les données
+      // socket congestionnÃ©e
+      // on initialise une fifo pour accumuler les donnÃ©es
       client->ifb = IvyFifoNew ();
       IvyFifoWrite (client->ifb, &(buffer[reallySent]), len-reallySent);
       // on ajoute un fdset pour que le select appelle une callback pour vider
-      // le buffer quand la socket sera à nouveau libre
+      // le buffer quand la socket sera Ã  nouveau libre
       IvyChannelAddWritableEvent (client->channel);
       state = SendStateChangeToCongestion;
     }
@@ -1133,6 +1133,7 @@ Multicast datagrams with initial TTL 255 are unrestricted in scope.
 extern void SocketSetUuid (Client client, const char *uuid)
 {
   strncpy (client->app_uuid, uuid, sizeof (client->app_uuid));
+  client->app_uuid[sizeof client->app_uuid - 1] = '\0';
 }
 
 const char* SocketGetUuid (const Client client)

@@ -2,11 +2,11 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'Études de la Navigation Aérienne
+ *	Centre d'Ã‰tudes de la Navigation AÃ©rienne
  *
  * 	Main loop based on the Gtk Toolkit
  *
- *	Authors: François-Régis Colin <fcolin@cena.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.fr>
  *
  *	$Id: ivyglibloop.c 3460 2011-01-24 13:39:15Z bustico $
  * 

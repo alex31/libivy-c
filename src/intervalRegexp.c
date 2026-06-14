@@ -4,6 +4,9 @@
 #include <string.h>
 #include <stdarg.h>
 #include <unistd.h>
+#ifndef __cplusplus
+#include <stdbool.h>
+#endif
 
 #include "intervalRegexp.h"
 
@@ -34,10 +37,6 @@ typedef struct  {
   int rank;
 } NextMax ;
 
-
-#ifndef __cplusplus
-typedef  char bool;
-#endif
 
 const bool success = 1;
 const bool fail = 0;
@@ -141,7 +140,7 @@ static bool strictPosRegexpGen (char *regexp, size_t buflen, long min, long max,
 #define digitRegSize 128
 
   char		regList[maxSubReg][digitRegSize];
-  char		locBuf[maxSubReg*digitRegSize] ;
+  char		locBuf[maxSubReg*digitRegSize] = "" ;
   size_t	regIndex = 0,i;
   char		maxAsString[32], minAsString[32];
   NextMax	nMax;
@@ -149,7 +148,7 @@ static bool strictPosRegexpGen (char *regexp, size_t buflen, long min, long max,
 
   if ((min <= 0) || (max <= 0)) return Perr ("min or max <= 0");
   if (min == max) {
-    sprintf (EndLocBuf, "%ld", max);
+    snprintf (EndLocBuf, sizeof (locBuf)-strlen(locBuf), "%ld", max);
   } else {
       
     max--;
@@ -166,14 +165,14 @@ static bool strictPosRegexpGen (char *regexp, size_t buflen, long min, long max,
 
     locBuf[0] = 0;
     for (i=0; i<regIndex; i++) {
-      sprintf (EndLocBuf, "(?:%s%s)|", regList[i], decimalPart);
+      snprintf (EndLocBuf, sizeof (locBuf)-strlen(locBuf), "(?:%s%s)|", regList[i], decimalPart);
     }
     
     if (locBuf[strlen(locBuf)-1] == '|') {
       locBuf[strlen(locBuf)-1] = 0;
     }
     max++;
-    sprintf (EndLocBuf, "|(?:%s%s)",  
+    snprintf (EndLocBuf, sizeof (locBuf)-strlen(locBuf), "|(?:%s%s)",  
 	     longtoa (maxAsString, sizeof (maxAsString), max), boundDecimalPart);
   }
 
@@ -217,9 +216,9 @@ static NextMax nextMax (const char *min, const char *max)
 
   /*  printf ("DBG> nextMaxi rev(%s)=%s rev(%s)=%s rankForw=%d\n", min, revMin, max, revMax, rankForw); */
 
-  /*  en partant des unitées (digit de poids faible), premier digit de min != 0 */
+  /*  en partant des unitÃ©es (digit de poids faible), premier digit de min != 0 */
   while ((revMin[rankRev] == '0') && (rankRev < nbDigitsMax)) rankRev++; 
-  /*  en partant du digit de poids fort, premier digit de max != du même digit de revMin */
+  /*  en partant du digit de poids fort, premier digit de max != du mÃªme digit de revMin */
   while ((revMin[rankForw] == revMax[rankForw]) && rankForw > 0) rankForw--;
 
   if (rankForw <= rankRev) {
@@ -322,9 +321,9 @@ static bool genRank (char *outRank, size_t buflen, const char *min, const char *
     locBuf[0] = lmin;
     locBuf[1] = 0;
   } else if (lmax == (lmin+1)) {
-    sprintf (locBuf, "[%c%c]", lmin, lmax);
+    snprintf (locBuf, sizeof(locBuf), "[%c%c]", lmin, lmax);
   } else {
-    sprintf (locBuf, "[%c-%c]", lmin, lmax);
+    snprintf (locBuf, sizeof(locBuf), "[%c-%c]", lmin, lmax);
   }
 
   CHECK_AND_RETURN (outRank);
@@ -345,9 +344,9 @@ static bool genPostRank (char *postRank, size_t buflen, int rank)
   if (rank <= 1) {
     strcpy (locBuf, "");
   } else if (rank == 2) {
-    sprintf (locBuf, "\\d");
+    snprintf (locBuf, sizeof(locBuf), "\\d");
   } else {
-    sprintf (locBuf, "\\d{%d}", rank -1);
+    snprintf (locBuf, sizeof(locBuf), "\\d{%d}", rank -1);
   }
 
   CHECK_AND_RETURN (postRank);

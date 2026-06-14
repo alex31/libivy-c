@@ -2,12 +2,12 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'…tudes de la Navigation AÈrienne
+ *	Centre d'√âtudes de la Navigation A√©rienne
  *
  *	Bind syntax for extracting message comtent 
  *  using regexp or other 
  *
- *	Authors: FranÁois-RÈgis Colin <fcolin@cena.fr>
+ *	Authors: Fran√ßois-R√©gis Colin <fcolin@cena.fr>
  *
  *	$Id: ivybind.c 3627 2015-01-07 14:01:47Z bustico $
  * 
@@ -31,7 +31,8 @@
 
 
 #ifdef USE_PCRE_REGEX
-#include <pcre.h>
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
 #else  /* we don't USE_PCRE_REGEX */
 #define MAX_MSG_FIELDS 200
 #include <regex.h>
@@ -41,20 +42,22 @@
 #include "ivybind.h"
 
 static int err_offset;
+static char err_buf[4096];
 
 #ifdef USE_PCRE_REGEX
-	static const char *err_buf;
-#else  /* we don't USE_PCRE_REGEX */
-	static char err_buf[4096];
+#if defined(_MSC_VER)
+#define IVY_TLS __declspec(thread)
+#elif defined(__GNUC__)
+#define IVY_TLS __thread
+#else
+#define IVY_TLS _Thread_local
+#endif
 #endif /* USE_PCRE_REGEX */
 
 struct _binding {
 #ifdef USE_PCRE_REGEX
-	pcre *regexp;
-	pcre_extra *inspect;
-	int nb_match;
-	int *ovector;
-	int ovectorsize;
+	pcre2_code *regexp;
+	uint32_t capture_count;
 #else  /* we don't USE_PCRE_REGEX */
 	regex_t regexp;						/* la regexp sous forme machine */
 	regmatch_t match[MAX_MSG_FIELDS+1];	/* resultat du match */
@@ -72,6 +75,33 @@ static FiltredWordPtr messages_classes =0 ;
 /* regexp d'extraction du mot clef des regexp client pour le filtrage des regexp , ca va c'est clair ??? */
 static IvyBinding token_extract =0;
 
+#ifdef USE_PCRE_REGEX
+static IVY_TLS pcre2_match_data *thread_match_data = NULL;
+static IVY_TLS uint32_t thread_capture_count = 0;
+static IVY_TLS PCRE2_SIZE *thread_ovector = NULL;
+static IVY_TLS int thread_nb_match = 0;
+static IVY_TLS IvyBinding thread_last_bind = NULL;
+
+static int IvyBindingPrepareMatchData(IvyBinding bind)
+{
+	uint32_t required_capture_count;
+
+	required_capture_count = bind->capture_count + 1;
+	if (thread_match_data != NULL && thread_capture_count >= required_capture_count)
+		return 1;
+
+	if (thread_match_data != NULL)
+		pcre2_match_data_free(thread_match_data);
+
+	thread_match_data = pcre2_match_data_create(required_capture_count, NULL);
+	if (thread_match_data == NULL)
+		return 0;
+
+	thread_capture_count = required_capture_count;
+	return 1;
+}
+#endif /* USE_PCRE_REGEX */
+
 IvyBinding IvyBindingCompile( const char * expression,  int *erroffset, const char **errmessage )
 {
 /*    static int called = 0;  */
@@ -79,11 +109,18 @@ IvyBinding IvyBindingCompile( const char * expression,  int *erroffset, const ch
 /*    if ((called %1000) == 0) {  */
 /*      printf ("DBG> IvyBindingCompile called =%d\n", called);  */
 /*    }  */
-	int capture_count=0;
 	IvyBinding bind=0;
 #ifdef USE_PCRE_REGEX
-	pcre *regexp;
-	regexp = pcre_compile(expression, PCRE_OPT,&err_buf,&err_offset,NULL);
+	pcre2_code *regexp;
+	int errcode;
+	PCRE2_SIZE pcre2_err_offset;
+
+	regexp = pcre2_compile((PCRE2_SPTR)expression,
+			       PCRE2_ZERO_TERMINATED,
+			       PCRE_OPT,
+			       &errcode,
+			       &pcre2_err_offset,
+			       NULL);
 	if ( regexp != NULL )
 		{
 			bind = (IvyBinding)malloc( sizeof( struct _binding ));
@@ -94,21 +131,16 @@ IvyBinding IvyBindingCompile( const char * expression,  int *erroffset, const ch
 			}
 			memset( bind, 0, sizeof(*bind ) );
 			bind->regexp = regexp;
-			bind->inspect = pcre_study(regexp,0,&err_buf);
-			if (err_buf!=NULL)
-				{
-					printf("Error studying %s, message: %s\n",expression,err_buf);
-				}
-			pcre_fullinfo( bind->regexp, bind->inspect, PCRE_INFO_CAPTURECOUNT, &capture_count );
-			if ( bind->ovector != NULL )
-				free( bind->ovector );
-			// + 1 pour la capture totale
-			bind->ovectorsize = (capture_count+1) * 3;
-			bind->ovector = (int *) malloc( sizeof( int )* bind->ovectorsize);
+			pcre2_pattern_info(bind->regexp, PCRE2_INFO_CAPTURECOUNT, &bind->capture_count);
+			/* JIT is optional; matching still works if it is unavailable. */
+			(void)pcre2_jit_compile(bind->regexp, PCRE2_JIT_COMPLETE);
 		}
 		else
 		{
+		err_offset = (int)pcre2_err_offset;
 		*erroffset = err_offset;
+		if (pcre2_get_error_message(errcode, (PCRE2_UCHAR *)err_buf, sizeof(err_buf)) < 0)
+			snprintf(err_buf, sizeof(err_buf), "PCRE2 error %d", errcode);
 		*errmessage = err_buf;
 		printf("Error compiling '%s', %s\n", expression, err_buf);
 		}
@@ -130,7 +162,7 @@ IvyBinding IvyBindingCompile( const char * expression,  int *erroffset, const ch
 		else
 		{
 		regerror (reg, &regexp, err_buf, sizeof(err_buf) );
-		*erroffset = err_offset;
+		*erroffset = 0;
 		*errmessage = err_buf;
 		printf("Error compiling '%s', %s\n", expression, err_buf);
 		}
@@ -147,12 +179,7 @@ void IvyBindingFree( IvyBinding bind )
 /*   } */
 	if( bind == NULL ) return;
 #ifdef USE_PCRE_REGEX
-	if ( bind->ovector != NULL )
-				free( bind->ovector );
-			
-  if (bind->inspect!=NULL)
-    pcre_free(bind->inspect);
-  pcre_free(bind->regexp);
+  pcre2_code_free(bind->regexp);
 #else  /* we don't USE_PCRE_REGEX */
   regfree( &bind->regexp );
 #endif /* USE_PCRE_REGEX */
@@ -165,18 +192,27 @@ int IvyBindingExec( IvyBinding bind, const char * message )
 	int nb_match = 0;
 	if( bind == NULL ) return nb_match;
 #ifdef USE_PCRE_REGEX
-	
-	nb_match = pcre_exec(
-					bind->regexp,
-					bind->inspect,
-					message,
-					strlen(message),
-					0, /* debut */
-					0, /* no other regexp option */
-					bind->ovector,
-					bind->ovectorsize);
-	if (nb_match<1) return 0; /* no match */
-	bind->nb_match = nb_match;
+	int match_rc;
+
+	if (!IvyBindingPrepareMatchData(bind))
+		return 0;
+
+	match_rc = pcre2_match(bind->regexp,
+			       (PCRE2_SPTR)message,
+			       strlen(message),
+			       0, /* debut */
+			       0, /* no other regexp option */
+			       thread_match_data,
+			       NULL);
+	if (match_rc == PCRE2_ERROR_NOMATCH)
+		return 0;
+	if (match_rc < 0)
+		return 0;
+
+	thread_ovector = pcre2_get_ovector_pointer(thread_match_data);
+	thread_nb_match = match_rc;
+	thread_last_bind = bind;
+	nb_match = match_rc;
 #else  /* we don't USE_PCRE_REGEX */
 	{
 		int index;
@@ -198,9 +234,22 @@ void IvyBindingMatch( IvyBinding bind, const char *message, int argnum, int *arg
 {
 	if( bind == NULL ) return;
 #ifdef USE_PCRE_REGEX
-	
-		*arglen = bind->ovector[2*argnum+1]- bind->ovector[2*argnum];
-		*arg =   message + bind->ovector[2*argnum];
+	if (thread_last_bind != bind || thread_ovector == NULL || argnum < 0 || argnum >= thread_nb_match)
+		{
+		*arglen = 0;
+		*arg = NULL;
+		return;
+		}
+
+	if (thread_ovector[2*argnum] == PCRE2_UNSET || thread_ovector[2*argnum+1] == PCRE2_UNSET)
+		{
+		*arglen = 0;
+		*arg = NULL;
+		return;
+		}
+
+	*arglen = (int)(thread_ovector[2*argnum+1]- thread_ovector[2*argnum]);
+	*arg =   message + thread_ovector[2*argnum];
 #else  /* we don't USE_PCRE_REGEX */
 	
 	regmatch_t* p;
@@ -288,7 +337,7 @@ int IvyBindingFilter(const char *expression)
 		    return 1; 
 		    }
 		  /*		  else { */
-		  /*printf ("DBG> %s eliminÈ [%s]\n", token, expression); */
+		  /*printf ("DBG> %s elimin√© [%s]\n", token, expression); */
 		  /*} */
 		
  	}

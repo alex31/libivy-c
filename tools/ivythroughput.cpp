@@ -6,7 +6,7 @@
  */
 
 
-// g++ ivythroughput.cpp -o ivythroughput -L/usr/local/lib64/ -Wl,-rpath,/usr/local/lib64/ -livy -lpcrecpp
+// g++ ivythroughput.cpp -o ivythroughput -L/usr/local/lib64/ -Wl,-rpath,/usr/local/lib64/ -livy -lpcre2-8
 
 /* SCENARIO
 
@@ -47,7 +47,6 @@
 #include "ivy.h"
 #include "timer.h"
 #include "ivyloop.h"
-#include <pcrecpp.h>
 
 #include <string>
 #include <list>
@@ -89,6 +88,7 @@ void emetteur (const char* bus, KindOfTest kod, int testDuration,
 
 bool getMessages (const char*fileName, ListOfString &messages, unsigned int numMess);
 bool getRegexps (const char*fileName, ListOfString &regexps, unsigned int numReg);
+static void trimLineEnd(std::string& line);
 
 double currentTime();
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event ) ;
@@ -295,10 +295,8 @@ void recepteur_tp (const char* bus, KindOfTest kod, unsigned int inst,
   printf ("DBG> recepteur_%d start, pid=%d\n", inst, getpid());
   IvyInit (agentName.c_str(), agentNameReady.c_str(), congestCB, NULL,NULL,NULL);
 
-  unsigned int debugInt = 0;
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
-    debugInt++;
     std::string reg = *iter;
     if (regexpAreUniq) { ((reg += "(") += stream.str()) += ")?";}
     IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str());
@@ -333,10 +331,8 @@ void recepteur_ml (const char* bus, KindOfTest kod, unsigned int inst,
   printf ("DBG> recepteur_%d start, pid=%d\n", inst, getpid());
   IvyInit (agentName.c_str(), agentNameReady.c_str(), congestCB, NULL,NULL,NULL);
 
-  unsigned int debugInt = 0;
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
-    debugInt++;
     std::string reg = *iter;
     if (regexpAreUniq) { (reg += " ") += stream.str();}
     bindIdList.push_back (IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str()));
@@ -372,8 +368,6 @@ bool getMessages (const char*fileName, ListOfString &messages, unsigned int numM
 {
   FILE *infile;
   char buffer [1024*64];
-  pcrecpp::RE pcreg ("\"(.*)\"$");
-  std::string  aMsg;
 
   infile = fopen(fileName, "r");
   if (!infile) {
@@ -382,10 +376,22 @@ bool getMessages (const char*fileName, ListOfString &messages, unsigned int numM
   }
 
   while ((fgets (buffer, sizeof (buffer), infile) != NULL) && (nbMess < numMess)) {
-    if (pcreg.PartialMatch (buffer, &aMsg)) {
-      messages.push_back (aMsg);
-      nbMess++;
+    std::string line(buffer);
+    size_t firstQuote, lastQuote;
+
+    trimLineEnd(line);
+    lastQuote = line.rfind('"');
+    if (lastQuote == std::string::npos || lastQuote == 0 || lastQuote != line.size() - 1) {
+      continue;
     }
+
+    firstQuote = line.find('"');
+    if (firstQuote == std::string::npos || firstQuote >= lastQuote) {
+      continue;
+    }
+
+    messages.push_back(line.substr(firstQuote + 1, lastQuote - firstQuote - 1));
+      nbMess++;
   }
   fclose (infile);
   return (true);
@@ -404,9 +410,6 @@ bool getRegexps (const char*fileName, ListOfString &regexps, unsigned int numReg
 {
   FILE *infile;
   char buffer [1024*64];
-  pcrecpp::RE pcreg1 ("add regexp \\d+ : (.*)$");
-  pcrecpp::RE pcreg2 ("(\\^.*)$");
-  std::string  aMsg;
 
   infile = fopen(fileName, "r");
   if (!infile) {
@@ -415,11 +418,24 @@ bool getRegexps (const char*fileName, ListOfString &regexps, unsigned int numReg
   }
 
   while ((fgets (buffer, sizeof (buffer), infile) != NULL) && (nbReg < numReg)) {
-    if (pcreg1.PartialMatch (buffer, &aMsg)) {
-      regexps.push_back (aMsg);
-      nbReg++;
-    } else if (pcreg2.PartialMatch (buffer, &aMsg)) {
-      regexps.push_back (aMsg);
+    std::string line(buffer);
+    size_t prefixPos, sepPos, regexpPos;
+
+    trimLineEnd(line);
+
+    prefixPos = line.find("add regexp ");
+    if (prefixPos != std::string::npos) {
+      sepPos = line.find(" : ", prefixPos);
+      if (sepPos != std::string::npos) {
+        regexps.push_back(line.substr(sepPos + 3));
+        nbReg++;
+        continue;
+      }
+    }
+
+    regexpPos = line.find('^');
+    if (regexpPos != std::string::npos) {
+      regexps.push_back(line.substr(regexpPos));
       nbReg++;
     }
   }
@@ -446,6 +462,13 @@ double currentTime()
   gettimeofday( &stamp, NULL );
   current = (double)stamp.tv_sec * MILLISEC + (double)(stamp.tv_usec/MILLISEC);
   return  current;
+}
+
+static void trimLineEnd(std::string& line)
+{
+  while (!line.empty() && (line[line.size() - 1] == '\n' || line[line.size() - 1] == '\r')) {
+    line.erase(line.size() - 1);
+  }
 }
 
 

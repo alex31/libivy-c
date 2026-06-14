@@ -2,11 +2,11 @@
  *	Ivy, C interface
  *
  *	Copyright (C) 1997-2000
- *	Centre d'�tudes de la Navigation A�rienne
+ *	Centre d'Ãtudes de la Navigation AÃ©rienne
  *
  * 	Main loop based on Tcl
  *
- *	Authors: Fran�ois-R�gis Colin <fcolin@cena.dgac.fr>
+ *	Authors: FranÃ§ois-RÃ©gis Colin <fcolin@cena.dgac.fr>
  *
  *	$Id: ivytcl.c 3627 2015-01-07 14:01:47Z bustico $
  * 
@@ -258,7 +258,7 @@ IvyDieCB(IvyClientPtr	app,
   char		idstr[INTEGER_SPACE];
   char		*script_to_call;
 
-  sprintf(idstr, "%d", id);
+  snprintf(idstr, sizeof(idstr), "%d", id);
   size = strlen(filter->script) + INTEGER_SPACE + 1;
   script_to_call = ckalloc(size);
   strcpy(script_to_call, filter->script);
@@ -326,7 +326,7 @@ IvyDirectMsgCB(IvyClientPtr	app,
   char		*script_to_call;
   char		int_buffer[INTEGER_SPACE];
 
-  sprintf(int_buffer, "%d", id);
+  snprintf(int_buffer, sizeof(int_buffer), "%d", id);
   
   size = strlen(filter->script) + 1;
   size += strlen(int_buffer) + 1;
@@ -434,7 +434,7 @@ IvyBindCmd(ClientData	clientData,
   filter->interp = interp;
   entry = Tcl_CreateHashEntry(&filter_table, (char *) (long) filter_id, &dummy);
   Tcl_SetHashValue(entry, (ClientData) filter);
-  sprintf(msg, "%d", filter_id); 
+  snprintf(msg, sizeof(msg), "%d", filter_id); 
   filter_id++;
   
   Tcl_SetResult(interp, msg, TCL_VOLATILE);
@@ -660,6 +660,5 @@ Tclivy_Init(Tcl_Interp *interp)
 #endif
   return TCL_OK;
 }
-
 
 

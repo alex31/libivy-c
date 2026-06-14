@@ -1,58 +1,65 @@
-PCREINC = -I "..\..\pcre-7.5\\" 
-PCRELIB = ..\..\..\pcre\x64\Release\pcre.lib
-IVYLIB = ..\ivy.lib
+!IFNDEF PLATFORM
+PLATFORM=x64
+!ENDIF
+
+!IFNDEF CONFIGURATION
+CONFIGURATION=Release
+!ENDIF
+
+!IFNDEF PCRE2_INC
+PCRE2_INC=/I"..\..\pcre2\include"
+!ENDIF
+
+!IFNDEF PCRE2_LIB
+PCRE2_LIB="..\..\pcre2\build\$(PLATFORM)\$(CONFIGURATION)\pcre2-8.lib"
+!ENDIF
+
+IVYLIB=..\src\libivy.lib
 EXTRALIB=
-EXTRAINC=-I..
+EXTRAINC=/I"..\src"
 
-#PCREINC = -I "C:\Program Files\GnuWin32\include" #`pcre-config --cflags`
-#PCRELIB = "C:\Program Files\GnuWin32\lib\libpcre.lib" #`pcre-config --libs`
-
-PCRE_OPT = PCRE_CASELESS
+CASESENSITIVE = yes
+!IF "$(CASESENSITIVE)" == "no"
+PCRE_OPT = PCRE2_CASELESS
 REGCOMP_OPT = REG_ICASE
+!ELSE
+PCRE_OPT = 0
+REGCOMP_OPT = REG_EXTENDED
+!ENDIF
 
-#	PCRE_OPT = 0
-#	REGCOMP_OPT = REG_EXTENDED	
+CC=cl
+CXX=cl
+CFLAGS=/nologo /W4 /O2 /MD /DWIN32 /DWINVER=0x0601 /D_WIN32_WINNT=0x0601 /D_CRT_SECURE_NO_WARNINGS /D_CRT_NONSTDC_NO_WARNINGS
+LDFLAGS=/nologo
 
+REGEXP=/DUSE_PCRE_REGEX /DPCRE_OPT=$(PCRE_OPT)
 
-#PCREOBJ = `pcre-config --prefix`/lib/libpcre.a
-PCREOBJ = 
-
-#CC=gcc
-#CFLAGS = -g -Wall
-CFLAGS = /W3 /DWIN32 /D_CRT_SECURE_NO_DEPRECATE /nologo
-#LIBTOOL=ar q # linux and solaris
-#LIBTOOL=libtool -static -o
-LIBTOOL=lib /nologo /out:
-
-#REGEXP = -DGNU_REGEXP  -DREGCOMP_OPT=$(REGCOMP_OPT) # deprecated !
-REGEXP= /DUSE_PCRE_REGEX /DPCRE_OPT=$(PCRE_OPT)
-# on activeTCL , set #define CHANNEL to null, and add ivyloop.obj in the ivytcl target,
-# see below
-CHANNEL = -DTCL_CHANNEL_INTEGRATION 
-
-# WINDOWS add ivyloop.obj if TCL_CHANNEL_INTEGRATION is not set
-TARGETS = ivyprobe.exe ivyperf.exe 
+# ivythroughput is intentionally omitted here: it still depends on POSIX
+# process APIs (fork, waitpid, kill, usleep) that are not portable to the
+# MSVC/nmake build.
+TARGETS=ivyprobe.exe ivyperf.exe
 
 .c.obj:
 	$(CC) $(CFLAGS) /c $*.c
+
+.cpp.obj:
+	$(CXX) $(CFLAGS) /c $*.cpp
 
 all: commands
 
 commands: $(TARGETS)
 
 ivyprobe.exe: ivyprobe.obj getopt.obj $(IVYLIB)
-	$(CC)  $(LFLAGS) /Fe$@ ivyprobe.obj getopt.obj $(IVYLIB) wsock32.lib $(PCRELIB) $(EXTRALIB)
+	$(CC) $(LDFLAGS) /Fe$@ ivyprobe.obj getopt.obj $(IVYLIB) ws2_32.lib $(PCRE2_LIB) $(EXTRALIB)
 
-ivyprobe.obj : ivyprobe.c 
-	$(CC) $(CFLAGS) $(EXTRAINC) $(REGEXP) $(PCREINC) $(EXTRAINC) /c ivyprobe.c
+ivyprobe.obj: ivyprobe.c
+	$(CC) $(CFLAGS) $(EXTRAINC) $(REGEXP) $(PCRE2_INC) /c ivyprobe.c
 
-ivyperf.obj : ivyperf.c 
-	$(CC) $(CFLAGS) $(EXTRAINC) $(REGEXP) $(PCREINC) $(EXTRAINC) /c ivyperf.c
+ivyperf.obj: ivyperf.c
+	$(CC) $(CFLAGS) $(EXTRAINC) $(REGEXP) $(PCRE2_INC) /c ivyperf.c
 
 ivyperf.exe: ivyperf.obj getopt.obj $(IVYLIB)
-	$(CC) $(LFLAGS) /Fe$@ ivyperf.obj getopt.obj $(IVYLIB) wsock32.lib $(PCRELIB) $(EXTRALIB)
-
+	$(CC) $(LDFLAGS) /Fe$@ ivyperf.obj getopt.obj $(IVYLIB) ws2_32.lib $(PCRE2_LIB) $(EXTRALIB)
 
 clean:
-	-del /f $(TARGETS)  *.obj *.lib *.dll *~
-
+	-del /f $(TARGETS) *.obj *.lib *.dll *~
