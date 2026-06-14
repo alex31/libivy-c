@@ -92,7 +92,8 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #define GenerateIvyBus(domain,bus) str(domain)":"str(bus)
 #define       MIN(a, b)   ((a) > (b) ? (b) : (a))
 
-static const char* DefaultIvyBus = GenerateIvyBus(DEFAULT_DOMAIN,IVY_DEFAULT_BUS);
+#define DefaultIvyBus GenerateIvyBus(DEFAULT_DOMAIN,IVY_DEFAULT_BUS)
+#define MAX_APPLICATION_MESSAGES 4096
 
 typedef enum {
 	Bye,			/* l'application emettrice se termine */
@@ -167,61 +168,78 @@ struct _clnt_lst_dict {
 					   la reception du pong */
 };
 
-/* flag pour le debug en cas de Filter de regexp */
-int debug_filter = 0;
+struct IvyContext {
+  /* flag pour le debug en cas de Filter de regexp */
+  int ivy_debug_filter;
+  /* flag pour le debug en cas de message binaire */
+  int ivy_debug_binary_msg;
+  /* mode IPV6 pour les sockets */
+  int ivy_ipv6;
+  /* server  pour la socket application */
+  Server ivy_server;
+  /* numero de port TCP en mode serveur */
+  unsigned short ivy_application_port;
+  /* numero de port UDP */
+  unsigned short ivy_supervision_port;
+  /* client pour la socket supervision */
+  Client ivy_broadcast;
+  char *ivy_application_name;
+  const char *ivy_application_id;
+  char ivy_application_id_buffer[128];
 
-/* flag pour le debug en cas de Filter de regexp */
-int debug_binary_msg = 0;
+  /* callback appele sur reception d'un message direct */
+  MsgDirectCallback ivy_direct_callback;
+  void *ivy_direct_user_data;
 
-/* mode IPV6 pour les sockets */
-static int ipv6 = 0; /* IPV4 par default */
+  /* callback appele sur changement d'etat d'application */
+  IvyApplicationCallback ivy_application_callback;
+  void *ivy_application_user_data;
 
-/* server  pour la socket application */
-static Server server;
+  /* callback appele sur ajout suppression de regexp */
+  IvyBindCallback ivy_application_bind_callback;
+  void *ivy_application_bind_data;
 
-/* numero de port TCP en mode serveur */
-static unsigned short ApplicationPort;
+  /* callback appele sur demande de terminaison d'application */
+  IvyDieCallback ivy_application_die_callback;
+  void *ivy_application_die_user_data;
 
-/* numero de port UDP */
-static unsigned short SupervisionPort;
+  /* callback appele sur reception d'une trame PONG */
+  IvyPongCallback ivy_application_pong_callback;
 
-/* client pour la socket supervision */
-static Client broadcast;
+  /* liste des messages a recevoir */
+  MsgRcvPtr ivy_msg_recv;
 
-static const char *ApplicationName = NULL;
-static const char *ApplicationID = NULL;
+  /* liste des clients connectes */
+  RWIvyClientPtr ivy_all_clients;
 
+  /* dictionnaire clef : regexp, valeur : liste de clients IvyClientPtr */
+  MsgSndDictPtr ivy_mess_snd_by_regexp;
 
-/* callback appele sur reception d'un message direct */
-static MsgDirectCallback direct_callback = NULL;
-static  void *direct_user_data = NULL;
+  char *ivy_ready_message;
+  int ivy_recv_id;
+  IvyBuffer ivy_bind_buffer;
+  IvyBuffer ivy_change_buffer;
+  IvyBuffer ivy_send_buffer;
+  IvyBuffer ivy_send_error_buffer;
+  IvyBuffer ivy_regexp_call_buffer;
+  IvyBuffer ivy_regexp_call_unique_buffer;
+  char ivy_application_list[4096];
+  char *ivy_application_messages[MAX_APPLICATION_MESSAGES + 1];
+  char ivy_regexp_error_buffer[1024];
+  char *ivy_next_arg_start;
+  char *ivy_next_arg_end;
+#ifdef OPENMP
+  struct {
+    MsgSndDictPtr *msgPtrArray;
+    int size;
+    int numPtr;
+  } ivy_omp_dict_cache;
+#endif
+};
 
-/* callback appele sur changement d'etat d'application */
-static IvyApplicationCallback application_callback;
-static void *application_user_data = NULL;
+static IvyContext *default_ctx = NULL;
 
-/* callback appele sur ajout suppression de regexp */
-static IvyBindCallback application_bind_callback;
-static void *application_bind_data = NULL;
-
-/* callback appele sur demande de terminaison d'application */
-static IvyDieCallback application_die_callback;
-static void *application_die_user_data = NULL;
-
-/* callback appele sur reception d'une trame PONG */
-static IvyPongCallback application_pong_callback = NULL;
-
-
-/* liste des messages a recevoir */
-static MsgRcvPtr msg_recv = NULL;
-
-/* liste des clients connectes */
-static RWIvyClientPtr allClients = NULL;
-
-/* dictionnaire clef : regexp, valeur : liste de clients IvyClientPtr */
-static MsgSndDictPtr messSndByRegexp = NULL;
-
-static const char *ready_message = NULL;
+static IvyContext *IvyGetDefaultContext(void);
 static void substituteInterval (IvyBuffer *src);
 static int ParseIvyIPv4Broadcast(const char *start, const char *end, uint32_t *out);
 
@@ -250,33 +268,130 @@ static int IvyCheckBuffer( const char* buffer );
 #ifdef OPENMP
 static void regenerateRegPtrArrayCache ();
 static void addRegToPtrArrayCache (MsgSndDictPtr newReg);
-static struct  {
-  MsgSndDictPtr *msgPtrArray;
-  int size;
-  int numPtr;
-} ompDictCache  = {NULL, 0, 0}; 
 #endif 
 
+#define debug_filter (IvyGetDefaultContext()->ivy_debug_filter)
+#define debug_binary_msg (IvyGetDefaultContext()->ivy_debug_binary_msg)
+#define ipv6 (IvyGetDefaultContext()->ivy_ipv6)
+#define server (IvyGetDefaultContext()->ivy_server)
+#define ApplicationPort (IvyGetDefaultContext()->ivy_application_port)
+#define SupervisionPort (IvyGetDefaultContext()->ivy_supervision_port)
+#define broadcast (IvyGetDefaultContext()->ivy_broadcast)
+#define ApplicationName (IvyGetDefaultContext()->ivy_application_name)
+#define ApplicationID (IvyGetDefaultContext()->ivy_application_id)
+#define direct_callback (IvyGetDefaultContext()->ivy_direct_callback)
+#define direct_user_data (IvyGetDefaultContext()->ivy_direct_user_data)
+#define application_callback (IvyGetDefaultContext()->ivy_application_callback)
+#define application_user_data (IvyGetDefaultContext()->ivy_application_user_data)
+#define application_bind_callback (IvyGetDefaultContext()->ivy_application_bind_callback)
+#define application_bind_data (IvyGetDefaultContext()->ivy_application_bind_data)
+#define application_die_callback (IvyGetDefaultContext()->ivy_application_die_callback)
+#define application_die_user_data (IvyGetDefaultContext()->ivy_application_die_user_data)
+#define application_pong_callback (IvyGetDefaultContext()->ivy_application_pong_callback)
+#define msg_recv (IvyGetDefaultContext()->ivy_msg_recv)
+#define allClients (IvyGetDefaultContext()->ivy_all_clients)
+#define messSndByRegexp (IvyGetDefaultContext()->ivy_mess_snd_by_regexp)
+#define ready_message (IvyGetDefaultContext()->ivy_ready_message)
+#ifdef OPENMP
+#define ompDictCache (IvyGetDefaultContext()->ivy_omp_dict_cache)
+#endif
+
 #define MAXPORT(a,b)      ((a>b) ? a : b)
+
+IvyContext *IvyContextCreate(
+	 const char *appname,
+	 const char *ready,
+	 IvyApplicationCallback callback,
+	 void *data,
+	 IvyDieCallback die_callback,
+	 void *die_data
+	 )
+{
+	IvyContext *ctx = (IvyContext *) calloc(1, sizeof(*ctx));
+	if (!ctx)
+		return NULL;
+
+	if (appname)
+		ctx->ivy_application_name = strdup(appname);
+	ctx->ivy_application_callback = callback;
+	ctx->ivy_application_user_data = data;
+	ctx->ivy_application_die_callback = die_callback;
+	ctx->ivy_application_die_user_data = die_data;
+	if (ready)
+		ctx->ivy_ready_message = strdup(ready);
+	if (getenv("IVY_DEBUG_BINARY"))
+		ctx->ivy_debug_binary_msg = 1;
+	return ctx;
+}
+
+void IvyContextDestroy(IvyContext *ctx)
+{
+	MsgRcvPtr msg;
+	MsgRcvPtr next_msg;
+
+	if (!ctx)
+		return;
+
+	if (ctx == default_ctx)
+		default_ctx = NULL;
+
+	free(ctx->ivy_application_name);
+	free(ctx->ivy_ready_message);
+	free(ctx->ivy_bind_buffer.data);
+	free(ctx->ivy_change_buffer.data);
+	free(ctx->ivy_send_buffer.data);
+	free(ctx->ivy_send_error_buffer.data);
+	free(ctx->ivy_regexp_call_buffer.data);
+	free(ctx->ivy_regexp_call_unique_buffer.data);
+#ifdef OPENMP
+	free(ctx->ivy_omp_dict_cache.msgPtrArray);
+#endif
+
+	for (msg = ctx->ivy_msg_recv; msg; msg = next_msg) {
+		next_msg = msg->next;
+		free(msg->regexp);
+		free(msg);
+	}
+
+	free(ctx);
+}
+
+static IvyContext *IvyGetDefaultContext(void)
+{
+	if (!default_ctx) {
+		default_ctx = IvyContextCreate(NULL, NULL, NULL, NULL, NULL, NULL);
+		if (!default_ctx) {
+			perror("Ivy default context allocation");
+			exit(-1);
+		}
+	}
+	return default_ctx;
+}
+
+#ifdef IVY_TESTING
+int IvyLegacyDefaultContextIsInitialized(void)
+{
+	return default_ctx != NULL;
+}
+#endif
 
 /*
  * function like strok but do not eat consecutive separator
  * */
 static char * nextArg( char *s, const char *separator )
 {
-	static char *start = NULL;
-	static char *end = NULL;
+	IvyContext *ctx = IvyGetDefaultContext();
 	if ( s ) 
 	{
-		end = s;
+		ctx->ivy_next_arg_end = s;
 	}
-	start = end;
+	ctx->ivy_next_arg_start = ctx->ivy_next_arg_end;
 
-	while ( *end && *end != *separator )
-		end++;
-	if ( *end == *separator ) *end++ = '\0';  
-	if ( end == start ) return NULL;
-	return start;
+	while ( *ctx->ivy_next_arg_end && *ctx->ivy_next_arg_end != *separator )
+		ctx->ivy_next_arg_end++;
+	if ( *ctx->ivy_next_arg_end == *separator ) *ctx->ivy_next_arg_end++ = '\0';
+	if ( ctx->ivy_next_arg_end == ctx->ivy_next_arg_start ) return NULL;
+	return ctx->ivy_next_arg_start;
 }
 
 static SendState MsgSendTo(IvyClientPtr ivyClient, 
@@ -381,7 +496,7 @@ ClientCall (IvyClientPtr clnt, const char *message)
 static int
 RegexpCall (const MsgSndDictPtr msg, const char * const message)
 {
-  static IvyBuffer bufferArg = {NULL, 0, 0}; 
+  IvyBuffer *bufferArg = &IvyGetDefaultContext()->ivy_regexp_call_buffer;
   char   bufferId[16]; 
   int match_count ;
   SendState state;
@@ -391,21 +506,12 @@ RegexpCall (const MsgSndDictPtr msg, const char * const message)
   IvyClientPtr clnt;
   int rc;
 
-#ifdef OPENMP
-#pragma omp threadprivate (bufferArg)
-  /* d'après la doc openmp : 
-     Variables with automatic storage duration which are declared in a scope inside the
-     construct are private.
-  Il n'y aurait donc rien à faire pour s'assurer que les variables automatiques soient
-  privées au thread */
-#endif // OPENMP
-
   match_count = 0;
   rc= IvyBindingExec(msg->binding, message );
 	
   if (rc<1) return 0; /* no match */
 	
-  bufferArg.offset = 0;
+  bufferArg->offset = 0;
   //  bufferArg.size = bufferId.size = 0;
   //  bufferArg.data = bufferId.data = NULL;
 
@@ -418,14 +524,14 @@ RegexpCall (const MsgSndDictPtr msg, const char * const message)
   for(  indx=1; indx < rc ; indx++ )
     {
       IvyBindingMatch (msg->binding, message, indx, &arglen, & arg );
-      make_message_var( &bufferArg,  "%.*s" ARG_END , arglen, arg );
+      make_message_var( bufferArg,  "%.*s" ARG_END , arglen, arg );
     }
-  make_message_var( &bufferArg, "\n");
+  make_message_var( bufferArg, "\n");
 
   IVY_LIST_EACH(msg->clientList, clnt ) {
 
     snprintf (bufferId, sizeof(bufferId), "%d %d" ARG_START ,Msg, clnt->id);
-    state = SocketSendRawWithId(clnt->client, bufferId, bufferArg.data , bufferArg.offset);
+    state = SocketSendRawWithId(clnt->client, bufferId, bufferArg->data , bufferArg->offset);
     match_count++;
 
     if (application_callback != NULL) {
@@ -470,7 +576,7 @@ static int
 RegexpCallUnique (const MsgSndDictPtr msg, const char * const message, const 
 		  Client clientUnique)
 {
-  static IvyBuffer bufferArg = {NULL, 0, 0}; 
+  IvyBuffer *bufferArg = &IvyGetDefaultContext()->ivy_regexp_call_unique_buffer;
   char   bufferId[16];
   int match_count ;
   SendState state;
@@ -485,7 +591,7 @@ RegexpCallUnique (const MsgSndDictPtr msg, const char * const message, const
 	
   if (rc<1) return 0; /* no match */
 	
-  bufferArg.offset = 0;
+  bufferArg->offset = 0;
   //  bufferArg.size = bufferId.
   //  bufferArg.size = bufferId.size = 0;
   //  bufferArg.data = bufferId.data = NULL;
@@ -499,15 +605,15 @@ RegexpCallUnique (const MsgSndDictPtr msg, const char * const message, const
   for(  indx=1; indx < rc ; indx++ )
     {
       IvyBindingMatch (msg->binding, message, indx, &arglen, & arg );
-      make_message_var( &bufferArg,  "%.*s" ARG_END , arglen, arg );
+      make_message_var( bufferArg,  "%.*s" ARG_END , arglen, arg );
     }
-  make_message_var( &bufferArg, "\n");
+  make_message_var( bufferArg, "\n");
 
   IVY_LIST_EACH(msg->clientList, clnt ) {
     if (clientUnique != clnt->client)
       continue;
     snprintf (bufferId, sizeof(bufferId), "%d %d" ARG_START ,Msg, clnt->id);
-    state = SocketSendRawWithId(clnt->client, bufferId, bufferArg.data , bufferArg.offset);
+    state = SocketSendRawWithId(clnt->client, bufferId, bufferArg->data , bufferArg->offset);
     match_count++;
     
     if (( state == SendStateChangeToCongestion ) && (application_callback != NULL)) {
@@ -944,12 +1050,13 @@ static unsigned long currentTime()
 
 static const char * GenApplicationUniqueIdentifier()
 {
-	static char appid[128];
+	IvyContext *ctx = IvyGetDefaultContext();
 	unsigned long curtime;
 	curtime = currentTime();
 	srand( curtime );
-	snprintf(appid, sizeof (appid),  "%d:%lu:%d", rand(), curtime, ApplicationPort);
-	return appid;
+	snprintf(ctx->ivy_application_id_buffer, sizeof (ctx->ivy_application_id_buffer),
+		 "%d:%lu:%d", rand(), curtime, ApplicationPort);
+	return ctx->ivy_application_id_buffer;
 }
 
 void IvyInit (const char *appname, const char *ready, 
@@ -957,24 +1064,24 @@ void IvyInit (const char *appname, const char *ready,
 			 IvyDieCallback die_callback, void *die_data
 			 )
 {
-	SocketInit();
-	if ( appname )
-		ApplicationName = strdup(appname);
-	application_callback = callback;
-	application_user_data = data;
-	application_die_callback = die_callback;
-	application_die_user_data = die_data;
-	if ( ready )
-		ready_message = strdup(ready);
+	IvyContext *ctx = IvyGetDefaultContext();
 
-	if ( getenv( "IVY_DEBUG_BINARY" )) debug_binary_msg = 1;
+	SocketInit();
+	free(ctx->ivy_application_name);
+	ctx->ivy_application_name = appname ? strdup(appname) : NULL;
+	ctx->ivy_application_callback = callback;
+	ctx->ivy_application_user_data = data;
+	ctx->ivy_application_die_callback = die_callback;
+	ctx->ivy_application_die_user_data = die_data;
+	free(ctx->ivy_ready_message);
+	ctx->ivy_ready_message = ready ? strdup(ready) : NULL;
+
+	if ( getenv( "IVY_DEBUG_BINARY" )) ctx->ivy_debug_binary_msg = 1;
 }
 void IvyTerminate()
 {
-	if ( ApplicationName )
-	  free((void *) ApplicationName );
-	if ( ready_message )
-	  free((void *) ready_message );
+	if (default_ctx)
+	  IvyContextDestroy(default_ctx);
 	IvyBindingTerminate();
 }
 
@@ -1190,23 +1297,23 @@ IvyUnbindMsg (MsgRcvPtr msg)
 MsgRcvPtr
 IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 {
-	static IvyBuffer buffer = { NULL, 0, 0};
+	IvyContext *ctx = IvyGetDefaultContext();
+	IvyBuffer *buffer = &ctx->ivy_bind_buffer;
 	va_list ap;
-	static int recv_id = 0;
 	IvyClientPtr clnt;
 	MsgRcvPtr msg;
 
 	va_start (ap, fmt_regex );
-	buffer.offset = 0;
-	make_message( &buffer, fmt_regex, ap );
+	buffer->offset = 0;
+	make_message( buffer, fmt_regex, ap );
 	va_end  (ap );
 
-	substituteInterval (&buffer);
+	substituteInterval (buffer);
 
 	/* add Msg to the query list */
 	IVY_LIST_ADD_START( msg_recv, msg )
-		msg->id = recv_id++;
-		msg->regexp = strdup(buffer.data);
+		msg->id = ctx->ivy_recv_id++;
+		msg->regexp = strdup(buffer->data);
 		msg->callback = callback;
 		msg->user_data = user_data;
 	IVY_LIST_ADD_END( msg_recv, msg )
@@ -1222,20 +1329,20 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 MsgRcvPtr
 IvyChangeMsg (MsgRcvPtr msg, const char *fmt_regex, ... )
 {
-	static IvyBuffer buffer = { NULL, 0, 0};
+	IvyBuffer *buffer = &IvyGetDefaultContext()->ivy_change_buffer;
 	va_list ap;
 	IvyClientPtr clnt;
 
 	va_start (ap, fmt_regex );
-	buffer.offset = 0;
-	make_message( &buffer, fmt_regex, ap );
+	buffer->offset = 0;
+	make_message( buffer, fmt_regex, ap );
 	va_end  (ap );
 
-	substituteInterval (&buffer);
+	substituteInterval (buffer);
 
 	/* change Msg in the query list */
         free (msg->regexp);
-	msg->regexp = strdup(buffer.data);
+	msg->regexp = strdup(buffer->data);
 	
 	/* Send to already connected clients */
 	/* recherche dans la liste des requetes recues de mes clients */
@@ -1254,20 +1361,20 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
 #ifndef OPENMP 
   MsgSndDictPtr msgSendDict;
 #endif 
- static IvyBuffer buffer = { NULL, 0, 0}; /* Use static mem to eliminate multiple call to malloc /free */
+  IvyBuffer *buffer = &IvyGetDefaultContext()->ivy_send_buffer;
   va_list ap;
   
   /* construction du buffer message à partir du format et des arguments */
   if( fmt == 0 || strlen(fmt) == 0 ) return 0;	
   va_start( ap, fmt );
-  buffer.offset = 0;
-  make_message( &buffer, fmt, ap );
+  buffer->offset = 0;
+  make_message( buffer, fmt, ap );
   va_end ( ap );
 
   /* test du contenu du message */
   if ( debug_binary_msg  )
     {
-      if ( IvyCheckBuffer( buffer.data ) )
+      if ( IvyCheckBuffer( buffer->data ) )
 	return 0;
     }
 
@@ -1288,7 +1395,7 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
   {
 #pragma omp for schedule(guided) // après debug mettre  schedule(guided, 10)
   for(count=0; count<ompDictCache.numPtr; count++) {
-		match_count += RegexpCall (ompDictCache.msgPtrArray[count], buffer.data);
+		match_count += RegexpCall (ompDictCache.msgPtrArray[count], buffer->data);
 		}
   }  
 #endif // SCHEDULE_GUIDED
@@ -1299,7 +1406,7 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
 #pragma omp parallel for default(none) private(count) shared(ompDictCache, buffer) \
 			 reduction(+:match_count)
   for(count=0; count<ompDictCache.numPtr; count++) {
-    match_count += RegexpCall (ompDictCache.msgPtrArray[count], buffer.data);
+    match_count += RegexpCall (ompDictCache.msgPtrArray[count], buffer->data);
   }
 #endif // TABLEAU_PREALABLE
 
@@ -1307,7 +1414,7 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
 #ifdef  TABLEAU_PREALABLE_SEQUENTIEL
   int count; 
   for(count=0; count<ompDictCache.numPtr; count++) {
-    match_count += RegexpCall (ompDictCache.msgPtrArray[count], buffer.data);
+    match_count += RegexpCall (ompDictCache.msgPtrArray[count], buffer->data);
   }
 #endif // TABLEAU_PREALABLE_SEQUENTIEL
 
@@ -1317,7 +1424,7 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
 #pragma omp parallel  default(shared)  private(msgSendDict) reduction(+:match_count)
   for (msgSendDict=messSndByRegexp; msgSendDict ; msgSendDict=msgSendDict->hh.next) {
 #pragma omp single nowait 
-    match_count += RegexpCall (msgSendDict, buffer.data);
+    match_count += RegexpCall (msgSendDict, buffer->data);
   }
 #endif // SINGLE_NOWAIT
 
@@ -1325,7 +1432,7 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
   MsgSndDictPtr msgSendDict;
 
   for (msgSendDict=messSndByRegexp; msgSendDict ; msgSendDict=msgSendDict->hh.next) {
-    match_count += RegexpCall (msgSendDict, buffer.data);
+    match_count += RegexpCall (msgSendDict, buffer->data);
   }
 #endif // SEQUENTIEL_DEBUG
 
@@ -1334,15 +1441,15 @@ int IvySendMsg(const char *fmt, ...) /* version dictionnaire */
 #else // PAS OPENMP
 
   for (msgSendDict=messSndByRegexp; msgSendDict ; msgSendDict=(MsgSndDictPtr) msgSendDict->hh.next) {
-    match_count += RegexpCall (msgSendDict, buffer.data);
+    match_count += RegexpCall (msgSendDict, buffer->data);
   }
 #endif
 
-  TRACE_IF( match_count == 0, "Warning no recipient for %s\n",buffer.data);
+  TRACE_IF( match_count == 0, "Warning no recipient for %s\n",buffer->data);
   /* si le message n'est pas emit et qu'il y a des filtres alors WARNING */
   if ( match_count == 0 && debug_filter )
     {
-      IvyBindindFilterCheck( buffer.data );
+      IvyBindindFilterCheck( buffer->data );
     }
   return match_count;
 }
@@ -1367,14 +1474,14 @@ static int IvyCheckBuffer( const char* buffer )
 
 void IvySendError(IvyClientPtr app, int id, const char *fmt, ... )
 {
-	static IvyBuffer buffer = { NULL, 0, 0}; /* Use static mem to eliminate multiple call to malloc /free */
+	IvyBuffer *buffer = &IvyGetDefaultContext()->ivy_send_error_buffer;
 	va_list ap;
 	
 	va_start( ap, fmt );
-	buffer.offset = 0;
-	make_message( &buffer, fmt, ap );
+	buffer->offset = 0;
+	make_message( buffer, fmt, ap );
 	va_end ( ap );
-	MsgSendTo(app, Error, id, buffer.data);
+	MsgSendTo(app, Error, id, buffer->data);
 }
 
 void IvyBindDirectMsg( MsgDirectCallback callback, void *user_data)
@@ -1476,7 +1583,7 @@ IvyClientPtr IvyGetApplication( char *name )
 
 char *IvyGetApplicationList(const char *sep)
 {
-	static char applist[4096]; /* TODO remove that ugly Thing */
+	char *applist = IvyGetDefaultContext()->ivy_application_list; /* TODO remove that ugly Thing */
 	IvyClientPtr app;
 	applist[0] = '\0';
 	IVY_LIST_EACH( allClients, app )
@@ -1489,16 +1596,15 @@ char *IvyGetApplicationList(const char *sep)
 
 char **IvyGetApplicationMessages( IvyClientPtr app )
 {
-#define MAX_REGEXP 4096
-	static char *messagelist[MAX_REGEXP+1];/* TODO remove that ugly Thing */
+	char **messagelist = IvyGetDefaultContext()->ivy_application_messages;/* TODO remove that ugly Thing */
 	GlobRegPtr  msg;
 	int msgCount= 0;
-	memset( messagelist, 0 , sizeof( messagelist ));
+	memset( messagelist, 0 , sizeof(IvyGetDefaultContext()->ivy_application_messages) );
 	/* recherche dans la liste des requetes recues de ce client */
 	IVY_LIST_EACH( app->srcRegList, msg )
 	{
 	messagelist[msgCount++]= msg->str_regexp;
-	if ( msgCount >= MAX_REGEXP )
+	if ( msgCount >= MAX_APPLICATION_MESSAGES )
 		{
 		fprintf(stderr,"Too Much expression(%d) for buffer\n",msgCount);
 		break;
@@ -1713,7 +1819,7 @@ static void addRegexpToDictionary (const char* regexp, IvyClientPtr client)
 {
   MsgSndDictPtr msgSendDict = NULL;
   RWIvyClientPtr  newClient = NULL;
-  static char errorbuffer[1024];
+  char *errorbuffer = IvyGetDefaultContext()->ivy_regexp_error_buffer;
   /* on cherche si une entrée existe deja pour cette regexp source */
   HASH_FIND_STR(messSndByRegexp, regexp, msgSendDict);
     /* l'entree n'existe pas dans le dictionnaire : on la cree */
@@ -1726,7 +1832,7 @@ static void addRegexpToDictionary (const char* regexp, IvyClientPtr client)
     
     msgSendDict->binding = IvyBindingCompile(regexp, & erroffset, & errbuf );
     if (msgSendDict->binding  == NULL ) {
-			snprintf(errorbuffer, sizeof(errorbuffer), "Error compiling '%s', %s", regexp, errbuf); 
+			snprintf(errorbuffer, sizeof(IvyGetDefaultContext()->ivy_regexp_error_buffer), "Error compiling '%s', %s", regexp, errbuf);
       printf("%s\n", errorbuffer);
       MsgSendTo(client, Error, erroffset, errorbuffer );
     }

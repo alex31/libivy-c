@@ -32,6 +32,7 @@ extern "C" {
 
 typedef  struct _clnt_lst_dict *RWIvyClientPtr;
 typedef  const struct _clnt_lst_dict *IvyClientPtr;
+typedef  struct IvyContext IvyContext;
 
 typedef enum { IvyApplicationConnected, IvyApplicationDisconnected, 
 	       IvyApplicationCongestion , IvyApplicationDecongestion,
@@ -62,6 +63,16 @@ typedef void (*MsgDirectCallback)( IvyClientPtr app, void *user_data, int id, ch
 
 /* identifiant d'une expression reguliere ( Bind/Unbind ) */
 typedef struct _msg_rcv *MsgRcvPtr;
+
+IvyContext *IvyContextCreate(
+	 const char *AppName,
+	 const char *ready,
+	 IvyApplicationCallback callback,
+	 void *data,
+	 IvyDieCallback die_callback,
+	 void *die_data
+	 );
+void IvyContextDestroy(IvyContext *ctx);
 
 /* filtrage des regexps */
 void IvySetFilter( int argc, const char **argv);
