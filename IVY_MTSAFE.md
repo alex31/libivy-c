@@ -128,11 +128,25 @@ IvyStatus IvyGetLastError(void);
 L'API historique peut rester une façade :
 
 ```c
+static IvyContext *default_ctx;
+
+static IvyContext *IvyGetDefaultContext(void)
+{
+    if (default_ctx == NULL)
+        default_ctx = IvyContextCreateLegacyDefaults();
+    return default_ctx;
+}
+
 int IvyInit(...)              { return IvyDefaultContextInit(...); }
-int IvyStart(const char *bus) { return IvyContextStart(default_ctx, bus); }
-int IvyStop(void)             { return IvyContextStop(default_ctx); }
-MsgRcvPtr IvyBindMsg(...)     { return IvyContextBindMsg(default_ctx, ...); }
+int IvyStart(const char *bus) { return IvyContextStart(IvyGetDefaultContext(), bus); }
+int IvyStop(void)             { return IvyContextStop(IvyGetDefaultContext()); }
+MsgRcvPtr IvyBindMsg(...)     { return IvyContextBindMsg(IvyGetDefaultContext(), ...); }
 ```
+
+Le contexte par défaut de compatibilité doit être construit paresseusement :
+un programme qui utilise uniquement l'API contextuelle ne doit pas allouer ni
+initialiser `default_ctx`. Ce pointeur global reste le seul état global mutable
+accepté pour la compatibilité legacy ; il pointe vers un contexte ordinaire.
 
 Changer les fonctions historiques `void` en `int` ne casse pas les usages
 existants qui ignorent simplement la valeur de retour. Les fonctions qui
@@ -210,31 +224,48 @@ Le modèle validé est hybride :
 
 - chaque bus ou futur `IvyContext` a une boucle propriétaire ;
 - toute API Ivy peut être appelée depuis n'importe quel thread applicatif ;
-- l'état interne Ivy est sérialisé par un verrou de contexte, initialement un
-  verrou global récursif pour limiter la taille du patch ;
-- `bind`, `unbind`, `change`, `send`, `direct send`, `ping` et `stop` prennent
-  ce verrou, vérifient l'état du bus, puis effectuent l'opération ou retournent
-  une erreur ;
+- l'état de cycle de vie du contexte est protégé par `ctx->mutex` ;
+- le graphe des abonnements distants (`messSndByRegexp`, les bindings compilés
+  et les listes de clients attachées à chaque regexp) est protégé par un
+  `bindings_rwlock` ;
+- `bind`, `unbind`, `change`, la déconnexion client et la destruction du bus
+  prennent `bindings_rwlock` en écriture avant toute mutation ou libération ;
+- `IvySendMsg()` prend `bindings_rwlock` en lecture pendant le parcours et le
+  matching des regexps, afin que plusieurs threads appelants puissent matcher
+  en parallèle sur des bindings immuables ;
+- l'écriture sur une socket ou dans sa FIFO est sérialisée par un verrou
+  d'envoi par client ;
+- `direct send`, `ping`, `die` et les messages de protocole prennent aussi ce
+  verrou d'envoi du client cible ;
+- `stop` prend `ctx->mutex`, bascule l'état de cycle de vie, puis coordonne la
+  fermeture avec la boucle propriétaire ;
 - les callbacks utilisateur sont toujours appelés dans le thread propriétaire
   de la boucle ;
 - les opérations qui manipulent la toolkit ou l'event loop sont exécutées dans
   le thread propriétaire de la boucle ;
-- l'envoi normal reste direct sous verrou pour éviter une allocation et une
-  copie de chaîne par message.
+- l'envoi normal reste direct : il n'est pas posté dans une file de messages.
 
 Cette approche ne cherche pas le parallélisme maximal. Elle garantit surtout
-qu'aucun état Ivy mutable n'est modifié concurremment, que les octets envoyés
-sur une socket ne sont pas mélangés entre threads, et que les callbacks restent
-compatibles avec les toolkits graphiques non thread-safe.
+que les tables de regexps ne sont pas modifiées pendant leur parcours, que le
+parsing/matching des regexps peut avancer en parallèle entre threads, que les
+octets envoyés sur une même socket ne sont pas mélangés, et que les callbacks
+restent compatibles avec les toolkits graphiques non thread-safe.
 
 Le chemin chaud `IvySendMsg()` ne doit donc pas poster systématiquement une
 commande contenant le message. En régime nominal :
 
-1. le thread appelant prend le verrou Ivy ;
-2. le message est formaté dans un buffer protégé par ce verrou ;
-3. les regexps distantes sont parcourues ;
-4. les écritures socket sont faites en série ;
-5. la fonction retourne le nombre de destinataires, ou une erreur négative.
+1. le thread appelant formate le message dans un buffer local ou thread-local ;
+2. il prend `bindings_rwlock` en lecture ;
+3. il parcourt les regexps distantes et exécute les bindings compilés ;
+4. pour chaque destinataire correspondant, il prend le verrou d'envoi du client,
+   écrit l'identifiant et le payload dans la socket ou la FIFO, puis relâche ce
+   verrou ;
+5. il relâche `bindings_rwlock` ;
+6. il retourne le nombre de destinataires, ou une erreur négative.
+
+Les bindings PCRE2 compilés sont utilisables en parallèle si les résultats de
+match restent thread-local. C'est la condition à préserver pour que le
+`bindings_rwlock` en lecture ne redevienne pas un verrou global de fait.
 
 Une petite file de contrôle reste nécessaire pour les cas qui doivent être
 traités par la boucle propriétaire :
@@ -435,29 +466,75 @@ limitations.
 
 Garder peu de verrous, avec des responsabilités explicites :
 
-- `ctx->mutex` : protège l'état du contexte, les listes/hash Ivy, les buffers
-  statiques historiques utilisés comme scratch, la file de contrôle, la
-  condition de shutdown et les FIFO d'envoi ;
-- verrou récursif dans une première implémentation : permet à une callback Ivy
-  de rappeler l'API sans deadlock immédiat, le temps de retirer progressivement
+- `ctx->mutex` : protège l'état du contexte, la file de contrôle et la
+  condition de shutdown ;
+- `bindings_rwlock` : protège `messSndByRegexp`, les listes de clients par
+  regexp, les bindings compilés et leur durée de vie ;
+- `client->send_lock` : protège l'ordre des octets envoyés vers une socket, la
+  FIFO de congestion, et les transitions ajout/retrait de watch writable ;
+- verrou récursif transitoire, si nécessaire : permet à une callback Ivy de
+  rappeler l'API sans deadlock immédiat, le temps de retirer progressivement
   les callbacks des zones verrouillées ;
-- verrou d'envoi par client, optionnel et seulement comme optimisation
-  ultérieure : le verrou global suffit à sérialiser les octets dans la première
-  version ;
 - compteur de callbacks en cours, optionnel : permet à stop/destroy d'attendre
   que les callbacks soient revenues.
 
 À éviter :
 
-- tenir `ctx->mutex` pendant une I/O socket potentiellement bloquante ;
-- tenir `ctx->mutex` pendant un callback utilisateur ;
+- tenir `ctx->mutex`, `bindings_rwlock` en écriture, ou `client->send_lock`
+  pendant un callback utilisateur ;
+- tenir `bindings_rwlock` en écriture pendant une compilation de regexp ou une
+  I/O socket si le travail peut être préparé hors verrou ;
 - appeler une API GLib/Xt/Tcl/GLUT depuis un worker thread ;
 - poster tous les messages Ivy ordinaires dans une file intermédiaire ;
 - appeler `IvyContextJoin()` depuis le thread de boucle.
 
+## Optimisations ultérieures
+
+La première version peut garder `bindings_rwlock` en lecture pendant toute la
+durée de `IvySendMsg()`, y compris pendant les écritures socket protégées par
+`client->send_lock`. C'est simple et suffisant pour autoriser plusieurs threads
+à matcher les regexps en parallèle.
+
+Une optimisation ultérieure consiste à découper `IvySendMsg()` en deux phases :
+
+1. sous `bindings_rwlock` en lecture, matcher les regexps et construire une
+   liste de travaux d'envoi contenant le client cible, l'id de binding et les
+   arguments déjà extraits ;
+2. prendre une référence sur chaque client cible ou sur un objet d'envoi stable ;
+3. relâcher `bindings_rwlock` ;
+4. parcourir les travaux et envoyer sous `client->send_lock` uniquement ;
+5. relâcher les références client après envoi ou abandon.
+
+Cette variante évite qu'un thread bloqué par une socket congestionnée empêche
+un `bind`, `unbind`, `change` ou une déconnexion de prendre `bindings_rwlock`
+en écriture. Elle demande en revanche un vrai protocole de durée de vie :
+refcount client, état `closing`, et garantie qu'une socket ou sa FIFO ne sont
+pas libérées tant qu'un travail d'envoi les référence encore.
+
+Cette optimisation doit aussi éviter les callbacks utilisateur sous verrou.
+Les événements de congestion, FIFO pleine ou erreur d'envoi doivent être
+enregistrés pendant l'envoi puis dispatchés après libération de `client->send_lock`,
+idéalement par la boucle propriétaire.
+
 ## Plan de migration
 
-### Phase 1 : statut public et cycle de vie
+### Phase 1 : extraction mécanique du contexte
+
+- Ajouter `IvyContext` comme structure interne.
+- Déplacer l'état global de `src/ivy.c` dans ce contexte.
+- Déplacer les callbacks, le ready message, les flags de debug, les listes de
+  clients, le dictionnaire des regexps et les buffers scratch dans le contexte
+  ou dans des objets possédés par lui.
+- Garder un `default_ctx` global strictement limité à la compatibilité legacy.
+- Construire `default_ctx` paresseusement au premier appel d'une API legacy qui
+  en a besoin.
+- Convertir les fonctions internes pour recevoir `IvyContext *ctx`.
+- Conserver le comportement mono-bus via l'API historique.
+
+Cette phase doit être essentiellement mécanique. Elle prépare les verrous en
+leur donnant déjà un propriétaire clair : le contexte du bus.
+
+### Phase 2 : statut public et cycle de vie
 
 - Ajouter `IvyStatus` et `IvyGetLastError()`.
 - Changer les fonctions publiques `void` en `int` quand elles représentent une
@@ -465,20 +542,25 @@ Garder peu de verrous, avec des responsabilités explicites :
 - Réserver les retours négatifs aux erreurs Ivy.
 - Introduire l'état `CREATED/RUNNING/STOPPING/STOPPED`.
 - Faire retourner `IVY_ESTOPPED` ou `NULL` aux appels faits après `STOPPING`.
-- Garder l'API historique comme façade sur l'état global actuel.
+- Garder l'API historique comme façade sur le contexte par défaut legacy.
 
 Cette phase donne déjà aux threads un moyen simple et peu coûteux de découvrir
 qu'un autre thread a stoppé Ivy.
 
-### Phase 2 : verrou global récursif et owner thread
+### Phase 3 : verrous de base et owner thread
 
-- Ajouter un verrou global récursif pour protéger l'état Ivy existant.
+- Ajouter `ctx->mutex` pour l'état de cycle de vie et la file de contrôle.
+- Ajouter `bindings_rwlock` pour protéger le dictionnaire des regexps et les
+  listes de clients par regexp.
+- Ajouter un verrou d'envoi par client pour sérialiser les écritures socket et
+  les FIFO de congestion.
 - Enregistrer le thread propriétaire de la loop.
-- Prendre le verrou dans les API publiques et dans les callbacks channel.
+- Prendre `bindings_rwlock` en lecture dans `IvySendMsg()` et en écriture dans
+  `bind`, `unbind`, `change`, déconnexion client et cleanup.
 - Garantir que les callbacks utilisateur restent appelés par le thread de loop.
 - Vérifier que les callbacks peuvent rappeler l'API Ivy sans deadlock.
 
-### Phase 3 : wakeup et file de contrôle
+### Phase 4 : wakeup et file de contrôle
 
 - Ajouter le canal de réveil à la boucle.
 - Ajouter une file basse fréquence pour les événements de contrôle.
@@ -488,7 +570,7 @@ qu'un autre thread a stoppé Ivy.
 - Rendre `IvyStop()` synchrone : il réveille la loop, attend `STOPPED`, puis
   retourne.
 
-### Phase 4 : sécurité des callbacks
+### Phase 5 : sécurité des callbacks
 
 - Retirer les callbacks utilisateur des sections de mutation/verrouillage
   interne.
@@ -497,17 +579,6 @@ qu'un autre thread a stoppé Ivy.
   de durée de vie.
 - Définir explicitement le comportement de `stop` et `unbind` appelés depuis
   une callback.
-
-### Phase 5 : extraction mécanique du contexte
-
-- Ajouter `IvyContext` comme structure interne.
-- Déplacer l'état global de `src/ivy.c` dans ce contexte.
-- Garder un `default_ctx` global.
-- Convertir les fonctions internes pour recevoir `IvyContext *ctx`.
-- Conserver le comportement mono-bus via l'API historique.
-
-Cette phase peut arriver après le durcissement MT-safe du bus par défaut. Elle
-prépare le vrai multi-bus sans imposer tout le changement dans le même patch.
 
 ### Phase 6 : contextualiser loop, sockets et timers
 
@@ -529,27 +600,30 @@ prépare le vrai multi-bus sans imposer tout le changement dans le même patch.
 
 Afin de garantir l'absence de régressions lors de cette refonte architecturale complexe, il est fortement recommandé de développer les protocoles de tests en parallèle de la mise à jour du code. Chaque phase de la migration doit être validée par des tests automatisés, idéalement exécutés sous ThreadSanitizer (TSAN) et AddressSanitizer (ASAN).
 
-### Phase 1 : Statut public et cycle de vie
+### Phase 1 : Extraction mécanique du contexte
+- **Analyse des symboles globaux :** Vérifier via les outils binaires (`nm` ou `readelf`) qu'aucune des variables globales mutables historiques (`msg_recv`, `allClients`, etc.) ne subsiste dans la section `.bss`, à l'exception notable du pointeur de compatibilité `default_ctx`.
+- **Initialisation paresseuse legacy :** Démarrer un programme qui utilise seulement `IvyContextCreate()` et vérifier que `default_ctx` reste nul. Appeler ensuite une API legacy et vérifier qu'elle crée le contexte par défaut une seule fois.
+- **Validation Legacy :** Faire passer l'intégralité de la suite de tests legacy existante. Elle doit utiliser l'API de façade et réussir à 100%.
+
+### Phase 2 : Statut public et cycle de vie
 - **Séquence nominale :** Appeler `IvyInit()`, vérifier que l'état passe à `CREATED`. Appeler `IvyStart()`, vérifier le passage à `RUNNING`.
 - **Sémantique post-arrêt :** Appeler `IvyStop()` (état `STOPPED`), puis vérifier que les appels ultérieurs à `IvySendMsg()` échouent immédiatement en renvoyant `IVY_ESTOPPED` ou via `IvyGetLastError()`.
 - **Compatibilité ABI :** Vérifier que les applications C legacy ignorant le code de retour compilent toujours sans avertissement bloquant.
 
-### Phase 2 : Verrou global récursif et owner thread
-- **Anti-Data Race (TSAN) :** Lancer la boucle dans un thread, et forcer l'appel concurrent intensif à `IvySendMsg()` depuis 3 worker threads. TSAN ne doit signaler aucune course aux données sur les buffers statiques.
-- **Réentrance :** S'abonner à un message. Dans son callback de réception, appeler à nouveau `IvySendMsg()`. Le verrou récursif doit permettre l'opération sans deadlock.
+### Phase 3 : Verrous de base et owner thread
+- **Anti-Data Race (TSAN) :** Lancer la boucle dans un thread, et forcer l'appel concurrent intensif à `IvySendMsg()` depuis 3 worker threads. TSAN ne doit signaler aucune course aux données sur les buffers scratch, les bindings, les listes de clients, les FIFO ou les sockets.
+- **Parallélisme de matching :** Instrumenter temporairement `IvyBindingExec()` ou utiliser des regexps coûteuses pour vérifier que deux threads appelant `IvySendMsg()` peuvent matcher simultanément sous `bindings_rwlock` en lecture.
+- **Sérialisation d'envoi :** Envoyer depuis plusieurs threads vers le même client et vérifier que chaque trame Ivy conserve l'ordre `id + payload` sans mélange d'octets.
+- **Réentrance :** S'abonner à un message. Dans son callback de réception, appeler à nouveau `IvySendMsg()`. L'appel ne doit ni deadlocker ni exécuter un callback utilisateur sous `bindings_rwlock` ou `client->send_lock`.
 - **Vérification du Owner Thread :** Ajouter un `assert(pthread_self() == owner_thread)` (ou équivalent) avant tout callback applicatif pour garantir que l'exécution réseau n'échappe jamais à la boucle principale.
 
-### Phase 3 : Wakeup et file de contrôle
+### Phase 4 : Wakeup et file de contrôle
 - **Réveil asynchrone :** Plonger la boucle dans un `select()` sans aucun trafic réseau. Appeler `IvyStop()` depuis un thread secondaire. Prouver (en mesurant le temps de réaction) que la boucle est débloquée instantanément par le canal de réveil (pipe ou socketpair).
 - **File de contrôle :** Générer une congestion d'écriture depuis un worker thread, et valider que l'événement (`IVY_CTL_ADD_WRITABLE_WATCH`) est correctement posté dans la file, puis dépilé par le thread de la boucle sans erreur.
 
-### Phase 4 : Sécurité des callbacks
+### Phase 5 : Sécurité des callbacks
 - **Invalidation d'itérateur :** Dans le callback d'une expression régulière, appeler `IvyUnbindMsg()` sur une autre regexp de la liste. Valider que la boucle interne d'itération (dans `ClientCall`) ne segfault pas, validant ainsi la stratégie des snapshots.
 - **Auto-destruction :** Appeler `IvyStop()` ou `IvyContextStop()` directement depuis une callback de réception de message. Vérifier que la boucle procède à un arrêt différé propre, sans deadlock avec le mutex courant.
-
-### Phase 5 : Extraction mécanique du contexte
-- **Analyse des symboles globaux :** Vérifier via les outils binaires (`nm` ou `readelf`) qu'aucune des variables globales mutables historiques (`msg_recv`, `allClients`, etc.) ne subsiste dans la section `.bss`, à l'exception notable du pointeur de compatibilité `default_ctx`.
-- **Validation Legacy :** Faire passer l'intégralité de la suite de tests legacy existante. Elle doit utiliser l'API de façade et réussir à 100%.
 
 ### Phase 6 : Contextualiser loop, sockets et timers
 - **Étanchéité Multi-Bus :** Instancier deux contextes (A et B) sur deux bus/ports distincts dans le même processus. Émettre un message sur le bus B et garantir par une assertion stricte que les clients abonnés du bus A ne reçoivent aucun callback croisé.
@@ -582,9 +656,10 @@ d'absence. `IvyGetLastError()` thread-local permet de distinguer :
 - appel invalide : l'API retourne `NULL` et `IvyGetLastError()` vaut
   `IVY_EINVAL` ou `IVY_ESTATE`.
 
-Pour les buffers statiques historiques, le verrou global les rend utilisables
-dans une première version MT-safe, mais seulement jusqu'au prochain appel Ivy
-dans le même processus. Les nouvelles API contextuelles devront proposer des
+Pour les buffers statiques historiques, le verrouillage ne suffit pas toujours :
+un `bindings_rwlock` en lecture autorise plusieurs threads dans `IvySendMsg()`.
+Les buffers scratch du chemin d'envoi doivent donc devenir locaux, thread-local
+ou portés par le contexte. Les nouvelles API contextuelles devront proposer des
 buffers fournis par l'appelant ou des objets résultat à libération explicite.
 
 ## Questions ouvertes
@@ -605,10 +680,11 @@ buffers fournis par l'appelant ou des objets résultat à libération explicite.
 L'invariant de conception devrait être :
 
 > Toute API Ivy peut être appelée depuis n'importe quel thread. L'état Ivy
-> interne est sérialisé par un verrou de contexte. Les callbacks utilisateur et
-> les opérations toolkit/event-loop sont exécutées uniquement dans le thread
-> propriétaire de la boucle. L'envoi normal reste direct sous verrou ; seuls les
-> événements de contrôle passent par une file de réveil.
+> interne est protégé par des verrous aux responsabilités distinctes : cycle de
+> vie du contexte, graphe des bindings et écriture socket. Les callbacks
+> utilisateur et les opérations toolkit/event-loop sont exécutées uniquement
+> dans le thread propriétaire de la boucle. L'envoi normal reste direct ; seuls
+> les événements de contrôle passent par une file de réveil.
 
 Cet invariant limite la taille du premier patch, évite le coût d'une file de
 messages pour chaque `IvySendMsg()`, et donne à `stop` un protocole clair :
