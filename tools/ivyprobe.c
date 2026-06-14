@@ -41,6 +41,7 @@
 #include "getopt.h"
 #endif
 #else
+#include <pthread.h>
 #include <sys/time.h>
 #include <unistd.h>
 #ifdef __INTERIX
@@ -79,6 +80,43 @@ int filter_count = 0;
 const char *filter[4096];
 char *classes;
 
+#define PROBE_MAX_THREADS 10
+
+#ifndef WIN32
+typedef struct ProbeCommand {
+	struct ProbeCommand *next;
+	char *line;
+} ProbeCommand;
+
+typedef struct {
+	int id;
+	int started;
+	pthread_t thread;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	ProbeCommand *head;
+	ProbeCommand *tail;
+	unsigned int queue_size;
+} ProbeWorker;
+
+static ProbeWorker probe_workers[PROBE_MAX_THREADS];
+#endif
+
+static int current_probe_thread = 0;
+
+static void ExecuteProbeCommand(char *line);
+static void DispatchProbeCommand(char *line);
+
+static char *ProbeStrtok(char *str, const char *delim, char **saveptr)
+{
+#ifdef WIN32
+	(void)saveptr;
+	return strtok(str, delim);
+#else
+	return strtok_r(str, delim, saveptr);
+#endif
+}
+
 void DirectCallback(IvyClientPtr app, void *user_data, int id, char *msg ) 
 {
 	printf("%s sent a direct message, id=%d, message=%s\n",
@@ -115,28 +153,223 @@ char * Chop(char *arg)
 	return arg;
 }
 
-void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
+#ifndef WIN32
+static void *ProbeWorkerMain(void *data)
+{
+	ProbeWorker *worker = (ProbeWorker *)data;
+
+	for (;;) {
+		ProbeCommand *command;
+
+		pthread_mutex_lock(&worker->mutex);
+		while (worker->head == NULL)
+			pthread_cond_wait(&worker->cond, &worker->mutex);
+
+		command = worker->head;
+		worker->head = command->next;
+		if (worker->head == NULL)
+			worker->tail = NULL;
+		worker->queue_size--;
+		pthread_mutex_unlock(&worker->mutex);
+
+		ExecuteProbeCommand(command->line);
+		free(command->line);
+		free(command);
+	}
+	return NULL;
+}
+
+static int ProbeEnsureWorker(int id)
+{
+	ProbeWorker *worker;
+
+	if (id <= 0 || id >= PROBE_MAX_THREADS)
+		return 0;
+
+	worker = &probe_workers[id];
+	if (worker->started)
+		return 1;
+
+	worker->id = id;
+	if (pthread_mutex_init(&worker->mutex, NULL) != 0)
+		return 0;
+	if (pthread_cond_init(&worker->cond, NULL) != 0) {
+		pthread_mutex_destroy(&worker->mutex);
+		return 0;
+	}
+	if (pthread_create(&worker->thread, NULL, ProbeWorkerMain, worker) != 0) {
+		pthread_cond_destroy(&worker->cond);
+		pthread_mutex_destroy(&worker->mutex);
+		return 0;
+	}
+	pthread_detach(worker->thread);
+	worker->started = 1;
+	return 1;
+}
+
+static int ProbeQueueWorkerCommand(int id, const char *line)
+{
+	ProbeWorker *worker;
+	ProbeCommand *command;
+
+	if (!ProbeEnsureWorker(id))
+		return 0;
+
+	command = (ProbeCommand *)calloc(1, sizeof(*command));
+	if (!command)
+		return 0;
+	command->line = strdup(line);
+	if (!command->line) {
+		free(command);
+		return 0;
+	}
+
+	worker = &probe_workers[id];
+	pthread_mutex_lock(&worker->mutex);
+	if (worker->tail)
+		worker->tail->next = command;
+	else
+		worker->head = command;
+	worker->tail = command;
+	worker->queue_size++;
+	pthread_cond_signal(&worker->cond);
+	pthread_mutex_unlock(&worker->mutex);
+	return 1;
+}
+#endif
+
+static int ProbeLineCommandIs(const char *line, const char *command)
+{
+	size_t len;
+
+	if (!line || line[0] != '.')
+		return 0;
+
+	len = strlen(command);
+	if (strncmp(line + 1, command, len) != 0)
+		return 0;
+
+	return line[1 + len] == '\0' ||
+	       line[1 + len] == '\n' ||
+	       line[1 + len] == ' ' ||
+	       line[1 + len] == '\t' ||
+	       line[1 + len] == ':';
+}
+
+static void ProbePrintCurrentThread(void)
+{
+	if (current_probe_thread == 0)
+		printf("Current command thread: 0 (loop)\n");
+	else
+		printf("Current command thread: %d\n", current_probe_thread);
+}
+
+static void ProbePrintThreads(void)
+{
+	int id;
+
+	printf("Thread 0: loop%s\n", current_probe_thread == 0 ? " *" : "");
+	for (id = 1; id < PROBE_MAX_THREADS; id++) {
+#ifndef WIN32
+		ProbeWorker *worker = &probe_workers[id];
+		if (worker->started) {
+			unsigned int queue_size;
+			pthread_mutex_lock(&worker->mutex);
+			queue_size = worker->queue_size;
+			pthread_mutex_unlock(&worker->mutex);
+			printf("Thread %d: worker queue=%u%s\n",
+			       id, queue_size, current_probe_thread == id ? " *" : "");
+		}
+#endif
+	}
+}
+
+static void ProbeHandleThreadCommand(char *line)
+{
+	char *saveptr = NULL;
+	char *cmd;
+	char *arg;
+	int id;
+
+	cmd = ProbeStrtok(line, ".: \t\n", &saveptr);
+	(void)cmd;
+	arg = ProbeStrtok(NULL, " \t\n", &saveptr);
+	if (!arg) {
+		ProbePrintCurrentThread();
+		return;
+	}
+
+	if (strcmp(arg, "loop") == 0) {
+		current_probe_thread = 0;
+		ProbePrintCurrentThread();
+		return;
+	}
+
+	if (arg[0] < '0' || arg[0] > '9' || arg[1] != '\0') {
+		printf(".thread expects loop or a value from 0 to 9\n");
+		return;
+	}
+
+	id = arg[0] - '0';
+	if (id > 0) {
+#ifdef WIN32
+		printf("Worker command threads are not available on Windows ivyprobe\n");
+		return;
+#else
+		if (!ProbeEnsureWorker(id)) {
+			printf("Unable to start command thread %d\n", id);
+			return;
+		}
+#endif
+	}
+	current_probe_thread = id;
+	ProbePrintCurrentThread();
+}
+
+static void DispatchProbeCommand(char *line)
+{
+	if (ProbeLineCommandIs(line, "thread")) {
+		char copy[4096];
+		snprintf(copy, sizeof(copy), "%s", line);
+		ProbeHandleThreadCommand(copy);
+		return;
+	}
+
+	if (ProbeLineCommandIs(line, "threads")) {
+		ProbePrintThreads();
+		return;
+	}
+
+	if (current_probe_thread == 0) {
+		ExecuteProbeCommand(line);
+		return;
+	}
+
+#ifdef WIN32
+	ExecuteProbeCommand(line);
+#else
+	if (!ProbeQueueWorkerCommand(current_probe_thread, line))
+		printf("Unable to queue command on thread %d\n", current_probe_thread);
+#endif
+}
+
+static void ExecuteProbeCommand(char *line)
 {
 	static const char *separator = "#";
-	char buf[4096];
-	char *line;
+	char *saveptr = NULL;
+	char *list_saveptr = NULL;
 	char *cmd;
 	char *arg;
 	int id;
 	IvyClientPtr app;
 	int err;
-	line = fgets(buf, 4096, stdin);
-	if  (!line)	{
-
-		IvyChannelRemove (channel);
-		IvyStop();
-		return;
-	}
 	if  (*line == '.') {
-		cmd = strtok (line, ".: \n");
+		cmd = ProbeStrtok(line, ".: \t\n", &saveptr);
+		if (!cmd)
+			return;
 
 		if  (strcmp (cmd, "die") == 0) {
-			arg = strtok (NULL, " \n");
+			arg = ProbeStrtok(NULL, " \t\n", &saveptr);
 			if  (arg) {
 				app = IvyGetApplication (arg);
 				if  (app)
@@ -146,7 +379,7 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 
 		} else if (strcmp(cmd, "dieall-yes-i-am-sure") == 0) {
 			arg = IvyGetApplicationList(separator);
-			arg = strtok (arg, separator);
+			arg = ProbeStrtok(arg, separator, &list_saveptr);
 			while  (arg) {
 				app = IvyGetApplication (arg);
 				if  (app)
@@ -156,11 +389,11 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 				}
 				else
 					printf ("No Application %s!!!\n",arg);
-				arg = strtok (NULL, separator);
+				arg = ProbeStrtok(NULL, separator, &list_saveptr);
 			}
 			
 		} else if (strcmp(cmd,  "bind") == 0) {
-		  arg = strtok (NULL, "'");
+		  arg = ProbeStrtok(NULL, "'", &saveptr);
 		  Chop(arg);
 		  if  (arg) {
 		    IvyBinding binding;
@@ -176,7 +409,7 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 		  }
 
 		} else if  (strcmp(cmd,  "where") == 0) {
-			arg = strtok (NULL, " \n");
+			arg = ProbeStrtok(NULL, " \t\n", &saveptr);
 			if  (arg) {
 				app = IvyGetApplication (arg);
 				if  (app)
@@ -184,13 +417,13 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 					else printf ("No Application %s!!!\n",arg);
 			}
 		} else if  (strcmp(cmd, "direct") == 0) {
-			arg = strtok (NULL, " \n");
+			arg = ProbeStrtok(NULL, " \t\n", &saveptr);
 			if  (arg) {
 				app = IvyGetApplication (arg);
 				if  (app) {
-					arg = strtok (NULL, " ");
+					arg = ProbeStrtok(NULL, " ", &saveptr);
 					id = atoi (arg) ;
-					arg = strtok (NULL, "'");
+					arg = ProbeStrtok(NULL, "'", &saveptr);
 					IvySendDirectMsg (app, id, Chop(arg));
 				} else
 					printf ("No Application %s!!!\n",arg);
@@ -200,7 +433,7 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 			printf("Apps: %s\n", IvyGetApplicationList(","));
 
 		} else if  (strcmp(cmd, "ping") == 0) {
-		  arg = strtok (NULL, " \n");
+		  arg = ProbeStrtok(NULL, " \t\n", &saveptr);
 		  if  (arg) {
 		    app = IvyGetApplication (arg);
 		    if  (app) {
@@ -220,6 +453,8 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 			printf("	.where appname				- on which host is appname\n");
 			printf("	.bind 'regexp'				- add a msg to receive\n");
 			printf("	.showbind					- show bindings \n");
+			printf("	.thread [0-9|loop]			- select command execution thread, 0 is loop\n");
+			printf("	.threads					- list command threads\n");
 			
 			printf("	.who				- who is on the bus\n");
 		} else if  (strcmp(cmd, "showbind") == 0) {
@@ -234,10 +469,27 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 			exit(0);
 		}
 	} else {
-		cmd = strtok (buf, "\n");
+		cmd = ProbeStrtok(line, "\n", &saveptr);
 		err = IvySendMsg ("%s", cmd);
 		printf("-> Sent to %d peer%s\n", err, err == 1 ? "" : "s");
 	}
+}
+
+void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
+{
+	char buf[4096];
+	char *line;
+
+	(void)fd;
+	(void)data;
+
+	line = fgets(buf, 4096, stdin);
+	if  (!line)	{
+		IvyChannelRemove (channel);
+		IvyStop();
+		return;
+	}
+	DispatchProbeCommand(line);
 }
 
 void ApplicationCallback (IvyClientPtr app, void *user_data, IvyApplicationEvent event)
