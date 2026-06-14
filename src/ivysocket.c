@@ -139,6 +139,9 @@ static void DeleteSocket(void *data)
 	  IvyFifoDelete (client->ifb);
 	  client->ifb = NULL;
 	}
+	free (client->buffer);
+	client->buffer = NULL;
+	client->ptr = NULL;
 	IVY_LIST_REMOVE (clients_list, client );
 }
 
@@ -480,8 +483,8 @@ unsigned short int SocketGetRemotePort ( Client client )
 	if (!client)
 		return 0;
 	if ( client->from.ss_family == AF_INET6 )
-		return ((struct sockaddr_in6*)(&client->from ))->sin6_port;
-	return ((struct sockaddr_in*)(&client->from ))->sin_port;
+		return ntohs(((struct sockaddr_in6*)(&client->from ))->sin6_port);
+	return ntohs(((struct sockaddr_in*)(&client->from ))->sin_port);
 }
 
 struct sockaddr_storage * SocketGetRemoteAddr (Client client )
@@ -554,7 +557,7 @@ SendState SocketSendRaw (const Client client, const char *buffer, const int len 
 {
   SendState state;
   
-  if (!client)
+  if (!client || !buffer || len < 0)
     return SendParamError;
   
 #ifdef OPENMP
@@ -593,17 +596,21 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
 #ifdef WIN32
 	if ( WSAGetLastError() == WSAEWOULDBLOCK) {
 #else
-      if (errno == EWOULDBLOCK) {
+      if (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR) {
 #endif
 	// Aucun octet n'a été envoyé, mais le send ne rend pas 0
 	// car 0 peut être une longueur passée au send, donc dans ce cas
 	// send renvoie -1 et met errno a EWOULDBLOCK
 	client->ifb = IvyFifoNew ();
-	IvyFifoWrite (client->ifb, buffer, len);
-	// on ajoute un fdset pour que le select appelle une callback pour vider
-	// le buffer quand la socket sera ?? nouveau libre
-	IvyChannelAddWritableEvent (client->channel);
-	state = SendStateChangeToCongestion;
+	if (client->ifb == NULL) {
+	  state = SendError;
+	} else {
+	  IvyFifoWrite (client->ifb, buffer, len);
+	  // on ajoute un fdset pour que le select appelle une callback pour vider
+	  // le buffer quand la socket sera ?? nouveau libre
+	  IvyChannelAddWritableEvent (client->channel);
+	  state = SendStateChangeToCongestion;
+	}
       } else {
 	state = SendError; // ERREUR
       }
@@ -611,11 +618,15 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
       // socket congestionnée
       // on initialise une fifo pour accumuler les données
       client->ifb = IvyFifoNew ();
-      IvyFifoWrite (client->ifb, &(buffer[reallySent]), len-reallySent);
-      // on ajoute un fdset pour que le select appelle une callback pour vider
-      // le buffer quand la socket sera à nouveau libre
-      IvyChannelAddWritableEvent (client->channel);
-      state = SendStateChangeToCongestion;
+      if (client->ifb == NULL) {
+	state = SendError;
+      } else {
+	IvyFifoWrite (client->ifb, &(buffer[reallySent]), len-reallySent);
+	// on ajoute un fdset pour que le select appelle une callback pour vider
+	// le buffer quand la socket sera à nouveau libre
+	IvyChannelAddWritableEvent (client->channel);
+	state = SendStateChangeToCongestion;
+      }
     }
   }
 
@@ -660,6 +671,9 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
 SendState SocketSendRawWithId( const Client client, const char *id, const char *buffer, const int len )
 {
   SendState s1, s2;
+
+  if (!client || !id || !buffer || len < 0)
+    return SendParamError;
   
 #ifdef OPENMP
   omp_set_lock (&(client->fdLock));
@@ -702,8 +716,10 @@ SendState SocketSend (Client client, const char *fmt, ... )
   va_start (ap, fmt );
   buffer.offset = 0;
   len = make_message (&buffer, fmt, ap );
-  state = SocketSendRaw (client, buffer.data, len );
   va_end (ap );
+  if (len < 0)
+    return SendError;
+  state = SocketSendRaw (client, buffer.data, len );
   return state;
 }
 
@@ -724,8 +740,11 @@ void SocketBroadcast ( char *fmt, ... )
 	int len;
 	
 	va_start (ap, fmt );
+	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
 	va_end (ap );
+	if (len < 0)
+		return;
 	IVY_LIST_EACH (clients_list, client )
 		{
 		SocketSendRaw (client, buffer.data, len );
@@ -1014,6 +1033,8 @@ void SocketSendBroadcast (Client client, unsigned long host, unsigned short port
 	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
 	va_end (ap );
+	if (len < 0)
+		return;
 	/* Send UDP packet to the dest */
 	memset( &remote,0,sizeof(remote) );
 	remote.sin_family = AF_INET;
@@ -1045,6 +1066,8 @@ void SocketSendBroadcast6 (Client client, struct in6_addr* host, unsigned short 
 	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
 	va_end (ap );
+	if (len < 0)
+		return;
 	/* Send UDP packet to the dest */
 	memset( &remote,0,sizeof(remote) );
 	remote.sin6_family = AF_INET6;
@@ -1145,5 +1168,3 @@ extern int  SocketCmpUuid (const Client c1, const Client c2)
 {
   return strncmp (c1->app_uuid, c2->app_uuid, sizeof (c1->app_uuid));
 }
-
-

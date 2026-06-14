@@ -46,6 +46,7 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #include <string.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <errno.h>
 
 #include <fcntl.h>
 
@@ -996,7 +997,7 @@ static void BroadcastReceive( Client client, const void *data, char *line )
 
 	memset( appid, 0, sizeof( appid ) );
 	memset( appname, 0, sizeof( appname ) );
-	err = sscanf (line,"%d %hu %s %[^\n]", &version, &serviceport, appid, appname);
+	err = sscanf (line,"%d %hu %127s %2047[^\n]", &version, &serviceport, appid, appname);
 	if ( err < 2 ) {
 		/* ignore the message */
 		SocketGetRemoteHost (client, &remotehost, &remoteport );
@@ -1166,8 +1167,7 @@ void IvyStart (const char* bus)
 	int error = 0;
 	const char* p = bus;	/* used for decoding address list */
 	const char* q;			/* used for decoding port number */
-	char addr[1024];	/* used for decoding addr */
-	unsigned short port=0;
+	char addr[1024] = "";	/* used for decoding addr */
 
 	
 	
@@ -1186,11 +1186,27 @@ void IvyStart (const char* bus)
 
 	/* then, let's get a port number */
 	q = strrchr (p, ':');
-	if (q && (port = atoi (q+1)))
+	if (q)
 	{
-		SupervisionPort = port;
-		strncpy( addr, p, q-p );
-		addr[q-p] ='\0';
+		char *endptr = NULL;
+		unsigned long parsed_port;
+
+		errno = 0;
+		parsed_port = strtoul(q + 1, &endptr, 10);
+		if (errno == 0 && endptr != q + 1 && *endptr == '\0' &&
+		    parsed_port > 0 && parsed_port <= 65535UL) {
+			size_t addr_len = (size_t)(q - p);
+
+			if (addr_len >= sizeof(addr)) {
+				fprintf(stderr, "Ivy bus address too long\n");
+				return;
+			}
+			SupervisionPort = (unsigned short)parsed_port;
+			memcpy(addr, p, addr_len);
+			addr[addr_len] = '\0';
+		} else {
+			SupervisionPort = IVY_DEFAULT_BUS;
+		}
 	}
 	else
 		SupervisionPort = IVY_DEFAULT_BUS;
@@ -1907,14 +1923,21 @@ static void delOneClient (const Client client)
 
   /* on cherche le client dans la liste globale des clients */
   IVY_LIST_EACH_SAFE(allClients, client_itr, next) {
-    GlobRegPtr   regxpSrc =NULL, next2;
     /* si on le trouve */
     if (client_itr->client == client) {
 
       /* pour chaque regexp source de ce client */
-      IVY_LIST_EACH_SAFE (client_itr->srcRegList, regxpSrc, next2) {
+      while (client_itr->srcRegList != NULL) {
+	int regexp_id = client_itr->srcRegList->id;
 	/* on met a jour la liste des clients associee a la regexp source */
-	delRegexpForOneClient (client_itr, regxpSrc->id);
+	if (!delRegexpForOneClient (client_itr, regexp_id)) {
+	  GlobRegPtr regxpSrc = client_itr->srcRegList;
+	  if (regxpSrc->str_regexp != NULL) {
+	    free (regxpSrc->str_regexp);
+	    regxpSrc->str_regexp = NULL;
+	  }
+	  IVY_LIST_REMOVE (client_itr->srcRegList, regxpSrc);
+	}
 	/* on libere la memoire associee a la regexp source */
 	/* probablement deja fait ailleurs d'après valgrind */
 	/*      if (regxpSrc->str_regexp != NULL) { */

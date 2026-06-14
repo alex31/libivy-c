@@ -320,7 +320,7 @@ int IvyBindingFilter(const char *expression)
 	int err;
 	int regexp_ok = 1; /* accepte tout par default */
 	int tokenlen = 0;
-	const char *token;
+	const char *token = NULL;
 	
 	if ( *expression =='^' && messages_classes !=0 )
 	{
@@ -330,8 +330,9 @@ int IvyBindingFilter(const char *expression)
 		err = IvyBindingExec( token_extract, expression );
 		if ( err < 1 ) return 1;
 		IvyBindingMatch( token_extract, expression , 1, &tokenlen, &token );
+		if ( token == NULL || tokenlen <= 0 ) return 1;
 
-		IVY_LIST_ITER( messages_classes, word, strncmp( word->word, token, tokenlen ) != 0);
+		IVY_LIST_ITER( messages_classes, word, strncmp( word->word, token, (size_t)tokenlen ) != 0);
 
 		if (word) {
 		    return 1; 
