@@ -93,6 +93,33 @@ IvyContext *IvyContextCreate(
 int IvyContextStart(IvyContext *ctx, const char *bus);
 int IvyContextStop(IvyContext *ctx);
 int IvyContextDestroy(IvyContext *ctx);
+void IvyContextMainLoop(IvyContext *ctx);
+void IvyContextIdle(IvyContext *ctx);
+int IvyContextSetBindCallback(IvyContext *ctx,
+			  IvyBindCallback bind_callback,
+			  void *bind_data );
+int IvyContextSetPongCallback(IvyContext *ctx,
+			  IvyPongCallback pong_callback );
+int IvyContextBindDirectMsg(IvyContext *ctx,
+			  MsgDirectCallback callback, void *user_data);
+MsgRcvPtr IvyContextBindMsg(IvyContext *ctx,
+	 MsgCallback callback, void *user_data, const char *fmt_regexp, ... )
+__attribute__((format(printf,4,5))) ;
+MsgRcvPtr IvyContextChangeMsg(IvyContext *ctx,
+	 MsgRcvPtr msg, const char *fmt_regex, ... )
+__attribute__((format(printf,3,4)));
+int IvyContextUnbindMsg(IvyContext *ctx, MsgRcvPtr msg);
+int IvyContextSendError(IvyContext *ctx,
+	 IvyClientPtr app, int id, const char *fmt, ... )
+__attribute__((format(printf,4,5))) ;
+int IvyContextSendMsg(IvyContext *ctx, const char *fmt_message, ... )
+__attribute__((format(printf,2,3)));
+int IvyContextSendDirectMsg(IvyContext *ctx, IvyClientPtr app, int id, char *msg);
+int IvyContextSendDieMsg(IvyContext *ctx, IvyClientPtr app);
+int IvyContextSendPing(IvyContext *ctx, IvyClientPtr app);
+IvyClientPtr IvyContextGetApplication(IvyContext *ctx, char *name);
+char *IvyContextGetApplicationList(IvyContext *ctx, const char *sep);
+char **IvyContextGetApplicationMessages(IvyContext *ctx, IvyClientPtr app);
 IvyContextState IvyContextGetState(const IvyContext *ctx);
 IvyStatus IvyGetLastError(void);
 

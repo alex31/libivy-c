@@ -23,11 +23,16 @@ extern "C" {
 	
 /* Module de gestion des timers autour d'un select */
 
+typedef struct _timer_state IvyTimerState;
 typedef struct _timer *TimerId;
 typedef void (*TimerCb)( TimerId id , void *user_data, unsigned long delta );
 
 /* API  le temps est en millisecondes */
 #define TIMER_LOOP -1			/* timer en boucle infinie */
+IvyTimerState *TimerStateCreate(void);
+void TimerStateDestroy(IvyTimerState *state);
+IvyTimerState *TimerGetDefaultState(void);
+TimerId TimerRepeatAfterFor(IvyTimerState *state, int count, long timeout, TimerCb cb, void *user_data );
 TimerId TimerRepeatAfter( int count, long timeout, TimerCb cb, void *user_data );
 
 void TimerModify( TimerId id, long timeout );
@@ -48,11 +53,12 @@ int gettimeofday(struct timeval *tv, struct timezone *tz);
 
 /* Interface avec select */
 
+struct timeval *TimerGetSmallestTimeoutFor(IvyTimerState *state);
 struct timeval *TimerGetSmallestTimeout();
 
+void TimerScanFor(IvyTimerState *state);
 void TimerScan();
 #ifdef __cplusplus
 }
 #endif
 #endif
-

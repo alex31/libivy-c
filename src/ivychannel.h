@@ -30,6 +30,8 @@ extern "C" {
 #define IVY_HANDLE int
 #endif
 
+typedef struct _ivy_channel_state IvyChannelState;
+typedef struct _timer_state IvyTimerState;
 typedef struct _channel *Channel;
 /* callback declenche par la gestion de boucle  sur evenement exception sur le canal */
 typedef void (*ChannelHandleDelete)( void *data );
@@ -39,15 +41,34 @@ typedef void (*ChannelHandleWrite)( Channel channel, IVY_HANDLE fd, void *data);
 typedef void (*IvyControlCallback)(void *data);
 
 /* fonction appele par le bus pour initialisation */
+extern IvyChannelState *IvyChannelStateCreate(void);
+extern void IvyChannelStateDestroy(IvyChannelState *state);
+extern IvyChannelState *IvyChannelGetDefaultState(void);
+extern IvyTimerState *IvyChannelGetTimerState(IvyChannelState *state);
+
+extern void IvyChannelInitFor(IvyChannelState *state);
 extern void IvyChannelInit(void);
 
+extern void IvyChannelStopFor(IvyChannelState *state);
 extern void IvyChannelStop (void);
+extern void IvyChannelWakeFor(IvyChannelState *state);
 extern void IvyChannelWake (void);
+extern int IvyChannelPostControlFor(IvyChannelState *state, IvyControlCallback callback, void *data);
 extern int IvyChannelPostControl(IvyControlCallback callback, void *data);
+extern int IvyChannelLoopIsActiveFor(IvyChannelState *state);
 extern int IvyChannelLoopIsActive(void);
+extern int IvyChannelIsLoopThreadFor(IvyChannelState *state);
 extern int IvyChannelIsLoopThread(void);
 
 /* fonction appele par le bus pour mise en place des callback sur le canal */
+extern Channel IvyChannelAddFor(
+	IvyChannelState *state,
+	IVY_HANDLE fd,
+	void *data,
+	ChannelHandleDelete handle_delete,
+	ChannelHandleRead handle_read,
+	ChannelHandleWrite handle_write
+);
 extern Channel IvyChannelAdd(
 	IVY_HANDLE fd,
 	void *data,

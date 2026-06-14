@@ -10,7 +10,7 @@ global existant.
 
 ## État d'avancement
 
-État de la branche `FEATURE/multi_bus-MT_safe_phase5` :
+État de la branche `FEATURE/multi_bus-MT_safe_phase6` :
 
 - phase 1 terminée : l'état mutable principal de `src/ivy.c` est porté par
   `IvyContext`, avec un contexte legacy construit paresseusement ;
@@ -27,19 +27,37 @@ global existant.
   `ctx->mutex`, `bindings_rwlock` ou `client->send_lock`, les pointeurs de
   callback sont snapshotés avant appel, et un compteur de callbacks actifs
   protège la durée de vie du contexte ;
+- phase 6 terminée pour la boucle select principale : `ivyloop.c`,
+  `ivysocket.c` et `timer.c` disposent maintenant d'états contextuels
+  indépendants, le contexte legacy reste explicitement raccordé aux wrappers
+  historiques, et `IvyContextMainLoop()` / `IvyContextIdle()` exécutent la
+  boucle propriétaire d'un contexte donné ;
+- API contextuelle publique étendue : bind/change/unbind, send/error/direct,
+  die, ping, callbacks bind/pong et queries applicatives existent maintenant
+  en variantes `IvyContext*`; les wrappers legacy s'appuient sur le contexte
+  courant, initialisé par le `IvyStart()` historique ;
+- `ivyprobe` est multi-bus pour la boucle select : `IVYBUS` est démarré s'il
+  existe, chaque option `-b` ajoute un bus, les envois sont diffusés sur tous
+  les contextes, et les regexps sont posées sur tous les bus configurés ;
+- phase 6.5 testée : `tests/run_phase6.sh` vérifie maintenant aussi l'API
+  publique multibus sans hook `IVY_TESTING`, avec deux bus, deux pairs par bus,
+  queries, send, direct, ping, change/unbind et arrêt indépendant d'un bus ;
 - correctif outil associé : `ivythroughput -b` réalloue maintenant la chaîne
   du bus au lieu d'écraser le buffer alloué pour la valeur par défaut.
 
 Limites encore présentes :
 
-- l'état de `ivyloop.c`, `ivysocket.c`, `timer.c` et le filtrage global de
-  `ivybind.c` ne sont pas encore contextualisés ;
+- le filtrage global de `ivybind.c` n'est pas encore contextualisé ;
+- les backends de boucle alternatifs GLib, Xt, Tcl et GLUT conservent leur
+  modèle global historique ;
 - les callbacks issus du dispatch réseau restent exécutés dans le thread de
   loop, mais les événements congestion/FIFO produits par un appel `IvySendMsg()`
   depuis un worker sont seulement sortis des verrous internes à ce stade ; leur
   repost systématique vers la loop propriétaire reste une optimisation/garantie
   à formaliser avec la contextualisation complète ;
 - les API legacy de query gardent encore leurs buffers et handles historiques.
+- le test timer `ivyprobe -t` n'est pas encore recâblé sur des timers
+  contextuels multi-bus.
 
 ## Situation actuelle
 
@@ -139,6 +157,8 @@ int IvyContextStart(IvyContext *ctx, const char *bus);
 int IvyContextStop(IvyContext *ctx);
 int IvyContextJoin(IvyContext *ctx);
 int IvyContextDestroy(IvyContext *ctx);
+void IvyContextMainLoop(IvyContext *ctx);
+void IvyContextIdle(IvyContext *ctx);
 
 int IvyContextSetBindCallback(IvyContext *ctx,
     IvyBindCallback bind_callback, void *bind_data);
@@ -158,6 +178,10 @@ int IvyContextSendDirectMsg(IvyContext *ctx, IvyClientPtr app, int id, char *msg
 int IvyContextSendDieMsg(IvyContext *ctx, IvyClientPtr app);
 int IvyContextSendPing(IvyContext *ctx, IvyClientPtr app);
 
+IvyClientPtr IvyContextGetApplication(IvyContext *ctx, char *name);
+char *IvyContextGetApplicationList(IvyContext *ctx, const char *sep);
+char **IvyContextGetApplicationMessages(IvyContext *ctx, IvyClientPtr app);
+
 IvyContextState IvyContextGetState(IvyContext *ctx);
 IvyStatus IvyGetLastError(void);
 ```
@@ -175,9 +199,9 @@ static IvyContext *IvyGetDefaultContext(void)
 }
 
 int IvyInit(...)              { return IvyDefaultContextInit(...); }
-int IvyStart(const char *bus) { return IvyContextStart(IvyGetDefaultContext(), bus); }
-int IvyStop(void)             { return IvyContextStop(IvyGetDefaultContext()); }
-MsgRcvPtr IvyBindMsg(...)     { return IvyContextBindMsg(IvyGetDefaultContext(), ...); }
+int IvyStart(const char *bus) { IvySetCurrentContext(IvyGetDefaultContext()); return IvyContextStart(IvyGetDefaultContext(), bus); }
+int IvyStop(void)             { return IvyContextStop(IvyGetCurrentContext()); }
+MsgRcvPtr IvyBindMsg(...)     { return IvyContextBindMsg(IvyGetCurrentContext(), ...); }
 ```
 
 Le contexte par défaut de compatibilité doit être construit paresseusement :
@@ -644,6 +668,11 @@ est appelé hors callback ; depuis une callback, il retourne `IVY_ESTATE`.
 - Sortir l'état timer des globals de `timer.c`.
 - Vérifier que deux contextes ne partagent plus leurs channels ni leurs timers.
 
+Statut : implémentée dans `FEATURE/multi_bus-MT_safe_phase6` pour la boucle
+select principale, avec wrappers legacy conservés sur un état par défaut,
+test d'infrastructure `tests/phase6_context_loop_test.c` et test API publique
+multibus `tests/phase65_public_multibus_api_test.c`.
+
 ### Phase 7 : nettoyage de l'API publique
 
 - Ajouter des fonctions contextuelles de query sans buffers statiques.
@@ -651,6 +680,19 @@ est appelé hors callback ; depuis une callback, il retourne `IVY_ESTATE`.
 - Documenter les anciennes API comme wrappers sur le contexte par défaut.
 - Documenter précisément quelles fonctions sont thread-safe et quelles limites
   restent liées aux signatures legacy.
+
+### Phase 8 : outils et timers multi-bus
+
+- Recâbler `ivyprobe -t` sur les timers contextuels.
+- Décider la sémantique exacte du mode timer multi-bus :
+  - soit un timer par contexte qui émet seulement sur son bus ;
+  - soit un timer applicatif unique qui diffuse explicitement sur tous les bus
+    configurés.
+- Ajouter un test automatisé qui démarre `ivyprobe` sur au moins deux bus avec
+  `-t` et vérifie que les messages `TEST TIMER 1` / `TEST TIMER 5` sont émis
+  selon la sémantique retenue.
+- Repasser les outils d'exemple et de diagnostic sur l'API contextuelle quand
+  ils ont une raison métier d'être multi-bus.
 
 ## Protocole de test continu (TDD)
 
@@ -692,6 +734,14 @@ depuis son callback applicatif de connexion.
 
 ### Phase 7 : Nettoyage de l'API publique
 - **Tests Mémoire (ASAN/Valgrind) :** Créer, démarrer, stopper et détruire de multiples contextes en boucle. Valider par Valgrind (ou équivalent) l'absence absolue de fuite mémoire ou de descripteurs de fichiers non fermés (0 bytes leaked).
+
+### Phase 8 : Outils et timers multi-bus
+- **Timer ivyprobe multi-bus :** Lancer `ivyprobe -t` sur deux bus. Selon la
+  sémantique retenue, vérifier soit que chaque bus reçoit son propre flux timer,
+  soit que le flux timer applicatif est diffusé une seule fois vers tous les bus.
+- **Arrêt propre des timers :** Quitter `ivyprobe` pendant qu'un timer est armé
+  et vérifier que tous les contextes s'arrêtent sans callback tardif, fuite de
+  timer ou accès à un contexte détruit.
 
 ## Compatibilité
 

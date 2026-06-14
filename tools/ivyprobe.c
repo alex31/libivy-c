@@ -80,6 +80,26 @@ int filter_count = 0;
 const char *filter[4096];
 char *classes;
 
+typedef struct ProbeBus {
+	IvyContext *ctx;
+	char *bus;
+	int app_count;
+#ifndef WIN32
+	pthread_t loop_thread;
+	int loop_started;
+#endif
+} ProbeBus;
+
+static ProbeBus *probe_buses = NULL;
+static size_t probe_bus_count = 0;
+static size_t probe_bus_capacity = 0;
+static int probe_running = 1;
+
+#ifndef WIN32
+static pthread_mutex_t probe_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t probe_state_cond = PTHREAD_COND_INITIALIZER;
+#endif
+
 #define PROBE_MAX_THREADS 10
 
 #ifndef WIN32
@@ -104,6 +124,11 @@ static ProbeWorker probe_workers[PROBE_MAX_THREADS];
 
 static int current_probe_thread = 0;
 
+void DirectCallback(IvyClientPtr app, void *user_data, int id, char *msg);
+void PongCallback(IvyClientPtr app, int roundTripOrTimout);
+void Callback(IvyClientPtr app, void *user_data, int argc, char *argv[]);
+void ApplicationCallback(IvyClientPtr app, void *user_data, IvyApplicationEvent event);
+void IvyPrintBindCallback(IvyClientPtr app, void *user_data, int id, const char* regexp, IvyBindEvent event);
 static void ExecuteProbeCommand(char *line);
 static void DispatchProbeCommand(char *line);
 
@@ -117,10 +142,208 @@ static char *ProbeStrtok(char *str, const char *delim, char **saveptr)
 #endif
 }
 
+static const char *ProbeBusLabel(const ProbeBus *bus)
+{
+	if (!bus || !bus->bus || !bus->bus[0])
+		return "default";
+	return bus->bus;
+}
+
+static int ProbeAddBus(const char *bus)
+{
+	ProbeBus *new_buses;
+
+	if (probe_bus_count == probe_bus_capacity) {
+		size_t new_capacity = probe_bus_capacity ? probe_bus_capacity * 2 : 4;
+		new_buses = (ProbeBus *)realloc(probe_buses, new_capacity * sizeof(*probe_buses));
+		if (!new_buses)
+			return 0;
+		memset(new_buses + probe_bus_capacity, 0,
+		       (new_capacity - probe_bus_capacity) * sizeof(*probe_buses));
+		probe_buses = new_buses;
+		probe_bus_capacity = new_capacity;
+	}
+
+	if (bus && bus[0]) {
+		probe_buses[probe_bus_count].bus = strdup(bus);
+		if (!probe_buses[probe_bus_count].bus)
+			return 0;
+	}
+	probe_bus_count++;
+	return 1;
+}
+
+static void ProbeAddConfiguredBuses(void)
+{
+	const char *env_bus = getenv("IVYBUS");
+
+	if (env_bus && env_bus[0]) {
+		if (!ProbeAddBus(env_bus)) {
+			fprintf(stderr, "unable to add IVYBUS\n");
+			exit(1);
+		}
+	}
+
+	if (probe_bus_count == 0) {
+		if (!ProbeAddBus(NULL)) {
+			fprintf(stderr, "unable to add default bus\n");
+			exit(1);
+		}
+	}
+}
+
+static int ProbeSendMsgAll(const char *message)
+{
+	size_t i;
+	int total = 0;
+
+	for (i = 0; i < probe_bus_count; i++) {
+		int sent = IvyContextSendMsg(probe_buses[i].ctx, "%s", message);
+		if (sent > 0)
+			total += sent;
+		else if (sent < 0)
+			printf("send on %s failed with %d\n", ProbeBusLabel(&probe_buses[i]), sent);
+	}
+	return total;
+}
+
+static void ProbeBindAll(const char *regexp)
+{
+	size_t i;
+
+	for (i = 0; i < probe_bus_count; i++)
+		IvyContextBindMsg(probe_buses[i].ctx, Callback, &probe_buses[i], "%s", regexp);
+}
+
+static void ProbeSetBindCallbackAll(IvyBindCallback callback)
+{
+	size_t i;
+
+	for (i = 0; i < probe_bus_count; i++)
+		IvyContextSetBindCallback(probe_buses[i].ctx, callback, NULL);
+}
+
+#ifndef WIN32
+static void *ProbeBusLoopMain(void *data)
+{
+	ProbeBus *bus = (ProbeBus *)data;
+	IvyContextMainLoop(bus->ctx);
+	return NULL;
+}
+#endif
+
+static int ProbeCreateBuses(const char *agentname, const char *agentready)
+{
+	size_t i;
+
+	for (i = 0; i < probe_bus_count; i++) {
+		ProbeBus *bus = &probe_buses[i];
+
+		bus->ctx = IvyContextCreate(agentname, agentready,
+					    ApplicationCallback, bus, NULL, NULL);
+		if (!bus->ctx) {
+			fprintf(stderr, "IvyContextCreate failed for %s with %d\n",
+				ProbeBusLabel(bus), IvyGetLastError());
+			return 0;
+		}
+		IvyContextSetBindCallback(bus->ctx, IvyPrintBindCallback, bus);
+		IvyContextSetPongCallback(bus->ctx, PongCallback);
+		IvyContextBindDirectMsg(bus->ctx, DirectCallback, bus);
+	}
+	return 1;
+}
+
+static int ProbeStartBuses(void)
+{
+	size_t i;
+
+	for (i = 0; i < probe_bus_count; i++) {
+		ProbeBus *bus = &probe_buses[i];
+
+		if (IvyContextStart(bus->ctx, bus->bus) != IVY_OK) {
+			fprintf(stderr, "IvyContextStart failed for %s with %d\n",
+				ProbeBusLabel(bus), IvyGetLastError());
+			return 0;
+		}
+#ifndef WIN32
+		if (pthread_create(&bus->loop_thread, NULL, ProbeBusLoopMain, bus) != 0) {
+			fprintf(stderr, "unable to start loop thread for %s\n", ProbeBusLabel(bus));
+			return 0;
+		}
+		bus->loop_started = 1;
+#endif
+	}
+	return 1;
+}
+
+static void ProbeStopBuses(void)
+{
+	size_t i;
+
+	probe_running = 0;
+#ifndef WIN32
+	pthread_mutex_lock(&probe_state_mutex);
+	pthread_cond_broadcast(&probe_state_cond);
+	pthread_mutex_unlock(&probe_state_mutex);
+#endif
+	for (i = 0; i < probe_bus_count; i++) {
+		if (probe_buses[i].ctx)
+			IvyContextStop(probe_buses[i].ctx);
+	}
+}
+
+static void ProbeJoinBuses(void)
+{
+#ifndef WIN32
+	size_t i;
+
+	for (i = 0; i < probe_bus_count; i++) {
+		if (probe_buses[i].loop_started) {
+			pthread_join(probe_buses[i].loop_thread, NULL);
+			probe_buses[i].loop_started = 0;
+		}
+	}
+#endif
+}
+
+static void ProbeDestroyBuses(void)
+{
+	size_t i;
+
+	for (i = 0; i < probe_bus_count; i++) {
+		if (probe_buses[i].ctx) {
+			IvyContextDestroy(probe_buses[i].ctx);
+			probe_buses[i].ctx = NULL;
+		}
+		free(probe_buses[i].bus);
+		probe_buses[i].bus = NULL;
+	}
+	free(probe_buses);
+	probe_buses = NULL;
+	probe_bus_count = 0;
+	probe_bus_capacity = 0;
+}
+
+static void ProbeWaitForApplications(void)
+{
+#ifndef WIN32
+	pthread_mutex_lock(&probe_state_mutex);
+	while (probe_running && wait_count > 0 && app_count < wait_count)
+		pthread_cond_wait(&probe_state_cond, &probe_state_mutex);
+	pthread_mutex_unlock(&probe_state_mutex);
+#endif
+}
+
 void DirectCallback(IvyClientPtr app, void *user_data, int id, char *msg ) 
 {
-	printf("%s sent a direct message, id=%d, message=%s\n",
-	    IvyGetApplicationName(app),id,msg);
+	ProbeBus *bus = (ProbeBus *)user_data;
+
+	if (probe_bus_count > 1)
+		printf("[%s] %s sent a direct message, id=%d, message=%s\n",
+		       ProbeBusLabel(bus), IvyGetApplicationName(app), id, msg);
+	else
+		printf("%s sent a direct message, id=%d, message=%s\n",
+		       IvyGetApplicationName(app), id, msg);
 }
 
 
@@ -137,8 +360,12 @@ void PongCallback (IvyClientPtr app, int roundTripOrTimout)
 
 void Callback (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
+	ProbeBus *bus = (ProbeBus *)user_data;
 	int i;
-	printf ("%s sent ",IvyGetApplicationName(app));
+	if (probe_bus_count > 1)
+		printf ("[%s] %s sent ", ProbeBusLabel(bus), IvyGetApplicationName(app));
+	else
+		printf ("%s sent ",IvyGetApplicationName(app));
 	for  (i = 0; i < argc; i++)
 			printf(" '%s'",argv[i]);
 	printf("\n");
@@ -340,6 +567,11 @@ static void DispatchProbeCommand(char *line)
 		return;
 	}
 
+	if (ProbeLineCommandIs(line, "quit")) {
+		ExecuteProbeCommand(line);
+		return;
+	}
+
 	if (current_probe_thread == 0) {
 		ExecuteProbeCommand(line);
 		return;
@@ -371,27 +603,38 @@ static void ExecuteProbeCommand(char *line)
 		if  (strcmp (cmd, "die") == 0) {
 			arg = ProbeStrtok(NULL, " \t\n", &saveptr);
 			if  (arg) {
-				app = IvyGetApplication (arg);
-				if  (app)
-					IvySendDieMsg (app);
-					else printf ("No Application %s!!!\n",arg);
+				size_t i;
+				int found = 0;
+				for (i = 0; i < probe_bus_count; i++) {
+					app = IvyContextGetApplication(probe_buses[i].ctx, arg);
+					if (app) {
+						IvyContextSendDieMsg(probe_buses[i].ctx, app);
+						found++;
+					}
+				}
+				if (!found)
+					printf ("No Application %s!!!\n",arg);
 			}
 
 		} else if (strcmp(cmd, "dieall-yes-i-am-sure") == 0) {
-			arg = IvyGetApplicationList(separator);
-			arg = ProbeStrtok(arg, separator, &list_saveptr);
-			while  (arg) {
-				app = IvyGetApplication (arg);
-				if  (app)
-				{
-					printf ("Killing '%s'...\n",arg);
-					IvySendDieMsg (app);
+			size_t i;
+			for (i = 0; i < probe_bus_count; i++) {
+				list_saveptr = NULL;
+				arg = IvyContextGetApplicationList(probe_buses[i].ctx, separator);
+				arg = ProbeStrtok(arg, separator, &list_saveptr);
+				while  (arg) {
+					app = IvyContextGetApplication(probe_buses[i].ctx, arg);
+					if  (app)
+					{
+						printf ("Killing '%s'...\n",arg);
+						IvyContextSendDieMsg(probe_buses[i].ctx, app);
+					}
+					else
+						printf ("No Application %s!!!\n",arg);
+					arg = ProbeStrtok(NULL, separator, &list_saveptr);
 				}
-				else
-					printf ("No Application %s!!!\n",arg);
-				arg = ProbeStrtok(NULL, separator, &list_saveptr);
 			}
-			
+
 		} else if (strcmp(cmd,  "bind") == 0) {
 		  arg = ProbeStrtok(NULL, "'", &saveptr);
 		  Chop(arg);
@@ -404,42 +647,75 @@ static void ExecuteProbeCommand(char *line)
 			  printf("Error compiling '%s', %s, not bound\n", arg, errbuf);
 		    } else {
 			  IvyBindingFree( binding );
-			  IvyBindMsg (Callback, NULL, "%s", arg);
+			  ProbeBindAll(arg);
 		    }
 		  }
 
 		} else if  (strcmp(cmd,  "where") == 0) {
 			arg = ProbeStrtok(NULL, " \t\n", &saveptr);
 			if  (arg) {
-				app = IvyGetApplication (arg);
-				if  (app)
-					printf ("Application %s on %s\n",arg, IvyGetApplicationHost (app));
-					else printf ("No Application %s!!!\n",arg);
+				size_t i;
+				int found = 0;
+				for (i = 0; i < probe_bus_count; i++) {
+					app = IvyContextGetApplication(probe_buses[i].ctx, arg);
+					if (app) {
+						if (probe_bus_count > 1)
+							printf ("Application %s on %s via %s\n",
+								arg, IvyGetApplicationHost(app),
+								ProbeBusLabel(&probe_buses[i]));
+						else
+							printf ("Application %s on %s\n",
+								arg, IvyGetApplicationHost(app));
+						found++;
+					}
+				}
+				if (!found)
+					printf ("No Application %s!!!\n",arg);
 			}
 		} else if  (strcmp(cmd, "direct") == 0) {
 			arg = ProbeStrtok(NULL, " \t\n", &saveptr);
 			if  (arg) {
-				app = IvyGetApplication (arg);
-				if  (app) {
-					arg = ProbeStrtok(NULL, " ", &saveptr);
-					id = atoi (arg) ;
-					arg = ProbeStrtok(NULL, "'", &saveptr);
-					IvySendDirectMsg (app, id, Chop(arg));
-				} else
-					printf ("No Application %s!!!\n",arg);
+				char *target = arg;
+				size_t i;
+				int found = 0;
+				arg = ProbeStrtok(NULL, " ", &saveptr);
+				id = arg ? atoi (arg) : 0;
+				arg = ProbeStrtok(NULL, "'", &saveptr);
+				for (i = 0; i < probe_bus_count; i++) {
+					app = IvyContextGetApplication(probe_buses[i].ctx, target);
+					if (app) {
+						IvyContextSendDirectMsg(probe_buses[i].ctx, app, id, Chop(arg));
+						found++;
+					}
+				}
+				if (!found)
+					printf ("No Application %s!!!\n",target);
 			}
-			
+
 		} else if  (strcmp(cmd, "who") == 0) {
-			printf("Apps: %s\n", IvyGetApplicationList(","));
+			size_t i;
+			for (i = 0; i < probe_bus_count; i++) {
+				if (probe_bus_count > 1)
+					printf("Apps[%s]: %s\n", ProbeBusLabel(&probe_buses[i]),
+					       IvyContextGetApplicationList(probe_buses[i].ctx, ","));
+				else
+					printf("Apps: %s\n",
+					       IvyContextGetApplicationList(probe_buses[i].ctx, ","));
+			}
 
 		} else if  (strcmp(cmd, "ping") == 0) {
 		  arg = ProbeStrtok(NULL, " \t\n", &saveptr);
 		  if  (arg) {
-		    app = IvyGetApplication (arg);
-		    if  (app) {
-		      IvySendPing (app);
+		    size_t i;
+		    int found = 0;
+		    for (i = 0; i < probe_bus_count; i++) {
+		      app = IvyContextGetApplication(probe_buses[i].ctx, arg);
+		      if (app) {
+		        IvyContextSendPing(probe_buses[i].ctx, app);
+		        found++;
+		      }
 		    }
-		    else 
+		    if (!found)
 		      printf ("No Application %s!!!\n",arg);
 		  }
 		} else if  (strcmp(cmd, "help") == 0) {
@@ -459,18 +735,18 @@ static void ExecuteProbeCommand(char *line)
 			printf("	.who				- who is on the bus\n");
 		} else if  (strcmp(cmd, "showbind") == 0) {
 		  if (!fbindcallback) {
-		    IvySetBindCallback(IvyDefaultBindCallback, NULL);
+		    ProbeSetBindCallbackAll(IvyDefaultBindCallback);
 		    fbindcallback=1;
 		  } else {
-		    IvySetBindCallback(NULL, NULL);
+		    ProbeSetBindCallbackAll(NULL);
 		    fbindcallback=0;
 		  }
 		} else if  (strcmp(cmd, "quit") == 0) {
-			exit(0);
+			ProbeStopBuses();
 		}
 	} else {
 		cmd = ProbeStrtok(line, "\n", &saveptr);
-		err = IvySendMsg ("%s", cmd);
+		err = ProbeSendMsgAll(cmd);
 		printf("-> Sent to %d peer%s\n", err, err == 1 ? "" : "s");
 	}
 }
@@ -486,7 +762,7 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 	line = fgets(buf, 4096, stdin);
 	if  (!line)	{
 		IvyChannelRemove (channel);
-		IvyStop();
+		ProbeStopBuses();
 		return;
 	}
 	DispatchProbeCommand(line);
@@ -494,6 +770,7 @@ void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 
 void ApplicationCallback (IvyClientPtr app, void *user_data, IvyApplicationEvent event)
 {
+	ProbeBus *bus = (ProbeBus *)user_data;
 	const char *appname;
 	const char *host;
 /*	char **msgList;*/
@@ -502,8 +779,20 @@ void ApplicationCallback (IvyClientPtr app, void *user_data, IvyApplicationEvent
 	switch  (event)  {
 
 	case IvyApplicationConnected:
+#ifndef WIN32
+		pthread_mutex_lock(&probe_state_mutex);
+#endif
 		app_count++;
-		printf("%s connected from %s\n", appname,  host);
+		if (bus)
+			bus->app_count++;
+#ifndef WIN32
+		pthread_cond_broadcast(&probe_state_cond);
+		pthread_mutex_unlock(&probe_state_mutex);
+#endif
+		if (probe_bus_count > 1)
+			printf("[%s] %s connected from %s\n", ProbeBusLabel(bus), appname,  host);
+		else
+			printf("%s connected from %s\n", appname,  host);
 /*		printf("Application(%s): Begin Messages\n", appname);*/
 /* double usage with -s flag remove it 
 		msgList = IvyGetApplicationMessages (app);
@@ -511,16 +800,23 @@ void ApplicationCallback (IvyClientPtr app, void *user_data, IvyApplicationEvent
 			printf("%s subscribes to '%s'\n",appname,*msgList++);
 */
 /*		printf("Application(%s): End Messages\n",appname);*/
-#ifndef WIN32
-/* Stdin not compatible with select , select only accept socket */
-		if  (app_count == wait_count)
-		  IvyChannelAdd (0, NULL, NULL, HandleStdin, NULL);
-#endif
 		break;
 
 	case IvyApplicationDisconnected:
+#ifndef WIN32
+		pthread_mutex_lock(&probe_state_mutex);
+#endif
 		app_count--;
-		printf("%s disconnected from %s\n", appname,  host);
+		if (bus)
+			bus->app_count--;
+#ifndef WIN32
+		pthread_cond_broadcast(&probe_state_cond);
+		pthread_mutex_unlock(&probe_state_mutex);
+#endif
+		if (probe_bus_count > 1)
+			printf("[%s] %s disconnected from %s\n", ProbeBusLabel(bus), appname,  host);
+		else
+			printf("%s disconnected from %s\n", appname,  host);
 		break;
 
 	default:
@@ -530,28 +826,37 @@ void ApplicationCallback (IvyClientPtr app, void *user_data, IvyApplicationEvent
 }
 void IvyPrintBindCallback( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event)
 {
+	ProbeBus *bus = (ProbeBus *)user_data;
+	const char *prefix = "";
+	char prefix_buffer[256];
+
+	if (probe_bus_count > 1) {
+		snprintf(prefix_buffer, sizeof(prefix_buffer), "[%s] ", ProbeBusLabel(bus));
+		prefix = prefix_buffer;
+	}
+
         switch ( event )  {
         case IvyAddBind:
                 if ( fbindcallback )
-					printf("Application: %s on %s add regexp %d : %s\n", 
-						IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
+					printf("%sApplication: %s on %s add regexp %d : %s\n",
+						prefix, IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
                 break;
         case IvyRemoveBind:
                 if ( fbindcallback )
-					printf("Application: %s on %s remove regexp %d :%s\n",
-						IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
+					printf("%sApplication: %s on %s remove regexp %d :%s\n",
+						prefix, IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
                 break;
         case IvyFilterBind:
-                printf("Application: %s on %s as been filtred regexp %d :%s\n",
-					IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
+                printf("%sApplication: %s on %s as been filtred regexp %d :%s\n",
+					prefix, IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
                 break;
         case IvyChangeBind:
                 if ( fbindcallback )
-					printf("Application: %s on %s change regexp %d : %s\n", 
-						IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
+					printf("%sApplication: %s on %s change regexp %d : %s\n",
+						prefix, IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
                 break;
         default:
-                printf("Application: %s unkown event %d\n",IvyGetApplicationName( app ), event);
+                printf("%sApplication: %s unkown event %d\n", prefix, IvyGetApplicationName( app ), event);
                 break;
         }
 }
@@ -560,8 +865,10 @@ void IvyPrintBindCallback( IvyClientPtr app, void *user_data, int id, const char
 #ifdef IVYMAINLOOP
 void TimerCall(TimerId id, void *user_data, unsigned long delta)
 {
+	char message[64];
 	printf("Timer callback: %ld delta %lu ms\n", (long)user_data, delta);
-	IvySendMsg ("TEST TIMER %ld", (long) user_data);
+	snprintf(message, sizeof(message), "TEST TIMER %ld", (long) user_data);
+	ProbeSendMsgAll(message);
 	/*if  ((int)user_data == 5) TimerModify (id, 2000);*/
 }
 #endif
@@ -592,10 +899,11 @@ void BindMsgOfFile( const char * regex_file )
 		if ( size > 1 )
 			{
 			line[size-1] = '\0'; /* supress \n */
-			IvyBindMsg (Callback, NULL, "%s", line);
+			ProbeBindAll(line);
 			}
 		}
 	}
+	fclose(file);
 }
 void BuildFilterRegexp()
 {
@@ -606,20 +914,18 @@ void BuildFilterRegexp()
 	word = strtok( NULL, ",");
 	}
 	if ( filter_count )
-	IvySetFilter( filter_count, filter );
+	IvyBindingSetFilter( filter_count, filter );
 }
 int main(int argc, char *argv[])
 {
 	int c;
 	int timer_test = 0;
-	char busbuf [1024] = "";
-	const char* bus = 0;
 	const char* regex_file = 0;
 	char agentnamebuf [1024] = "";
 	const char* agentname = DEFAULT_IVYPROBE_NAME;
 	char agentready [1024] = "";
 	const char* helpmsg =
-	  "[options] [regexps]\n\t-b bus\tdefines the Ivy bus to which to connect to, defaults to 127:2010\n"
+	  "[options] [regexps]\n\t-b bus\tdefines an Ivy bus to connect to, can be repeated; IVYBUS is also used when set\n"
 	  "\t-t\ttriggers the timer test\n"
 	  "\t-n name\tchanges the name of the agent, defaults to IVYPROBE\n"
 	  "\t-v\tprints the ivy relase number\n\n"
@@ -632,8 +938,10 @@ int main(int argc, char *argv[])
 	while ((c = getopt(argc, argv, "vn:d:b:w:t:sf:c:")) != EOF)
 			switch (c) {
 			case 'b':
-				strcpy (busbuf, optarg);
-				bus = busbuf;
+				if (!ProbeAddBus(optarg)) {
+					fprintf(stderr, "unable to add bus %s\n", optarg);
+					exit(1);
+				}
 				break;
 			case 'w':
 				wait_count = atoi(optarg) ;
@@ -642,8 +950,9 @@ int main(int argc, char *argv[])
 				regex_file = optarg ;
 				break;
 			case 'n':
-				strcpy(agentnamebuf, optarg);
+				snprintf(agentnamebuf, sizeof(agentnamebuf), "%s", optarg);
 				agentname=agentnamebuf;
+				break;
 			case 'v':
 				printf("ivy c library version %d.%d\n",IVYMAJOR_VERSION,IVYMINOR_VERSION);
 				break;
@@ -678,37 +987,46 @@ int main(int argc, char *argv[])
 	glClearColor(0.49, 0.62, 0.75, 0.0);
 	glutDisplayFunc(display);
 #endif
-	IvyInit (agentname, agentready, ApplicationCallback,NULL,NULL,NULL);
-	IvySetBindCallback(IvyPrintBindCallback, NULL);
-	IvySetPongCallback(PongCallback);		        
-	IvyBindDirectMsg( DirectCallback,NULL);
+	ProbeAddConfiguredBuses();
 	if ( classes )
 		BuildFilterRegexp();
+	if (!ProbeCreateBuses(agentname, agentready)) {
+		ProbeDestroyBuses();
+		exit(1);
+	}
 	if ( regex_file )
 		BindMsgOfFile( regex_file );
 	for  (; optind < argc; optind++)
 	{
 		printf("Binding to '%s'\n", argv[optind] );
-		IvyBindMsg (Callback, NULL, "%s", argv[optind]);
+		ProbeBindAll(argv[optind]);
 	}
 
-	
-#ifdef WIN32
-	printf("Stdin not compatible with select , select only accept socket on Windows\n");	
-#else
-/* Stdin not compatible with select , select only accept socket */
-	if  (wait_count == 0)
-	  IvyChannelAdd (0, NULL, NULL, HandleStdin, NULL);
-#endif
-	
-	IvyStart (bus);
+	if (!ProbeStartBuses()) {
+		ProbeStopBuses();
+		ProbeJoinBuses();
+		ProbeDestroyBuses();
+		exit(1);
+	}
+	ProbeWaitForApplications();
 
 	if  (timer_test) {
 #ifdef IVYMAINLOOP
-		TimerRepeatAfter (TIMER_LOOP, 1000, TimerCall, (void*)1);
-		TimerRepeatAfter (5, 5000, TimerCall, (void*)5);
+		fprintf(stderr, "ivyprobe: -t timer test is not available with multibus mode yet\n");
 #endif
 	}
+
+#ifdef WIN32
+	printf("Stdin not compatible with select , select only accept socket on Windows\n");
+	if (probe_bus_count > 0)
+		IvyContextMainLoop(probe_buses[0].ctx);
+#else
+	{
+		char buf[4096];
+		while (probe_running && fgets(buf, sizeof(buf), stdin))
+			DispatchProbeCommand(buf);
+	}
+#endif
 
 #ifdef XTMAINLOOP
 	XtAppMainLoop (cntx);
@@ -723,8 +1041,8 @@ int main(int argc, char *argv[])
 	glutMainLoop();
 #endif
 
-#ifdef IVYMAINLOOP
-	IvyMainLoop ();
-#endif
+	ProbeStopBuses();
+	ProbeJoinBuses();
+	ProbeDestroyBuses();
 	return 0;
 }

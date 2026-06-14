@@ -52,14 +52,20 @@ de la maniere suivante:
 	!!!! Attention donc l'appel des callbacks ivy se fait avec l'acces verrouille !
 */
 
+extern void IvyMainLoopFor(IvyChannelState *state);
 extern void IvyMainLoop(void);
+extern void IvyIdleFor(IvyChannelState *state);
 extern void IvyIdle(void);
 
 typedef void ( *IvyHookPtr) ( void *data );
 
+void IvyChannelAddWritableEventFor(IvyChannelState *state, Channel channel);
 void IvyChannelAddWritableEvent(Channel channel);
+void IvyChannelClearWritableEventFor(IvyChannelState *state, Channel channel);
 void IvyChannelClearWritableEvent(Channel channel);
+void IvySetBeforeSelectHookFor(IvyChannelState *state, IvyHookPtr before, void *data );
 void IvySetBeforeSelectHook(IvyHookPtr before, void *data );
+void IvySetAfterSelectHookFor(IvyChannelState *state, IvyHookPtr after, void *data );
 void IvySetAfterSelectHook(IvyHookPtr after, void *data );
 
 #ifdef __cplusplus
