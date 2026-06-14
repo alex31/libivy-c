@@ -8,6 +8,39 @@ Le point essentiel : ce chantier doit être traité comme une migration
 d'architecture, pas comme l'ajout ponctuel de quelques mutex autour de l'état
 global existant.
 
+## État d'avancement
+
+État de la branche `FEATURE/multi_bus-MT_safe_phase5` :
+
+- phase 1 terminée : l'état mutable principal de `src/ivy.c` est porté par
+  `IvyContext`, avec un contexte legacy construit paresseusement ;
+- durcissement préalable terminé pour les points critiques corrigés dans
+  `b2c372e`, notamment FIFO, parsing bus/broadcast, erreurs de formatage et
+  fuite du buffer socket ;
+- phase 2 terminée : `IvyStatus`, `IvyContextState`, `IvyGetLastError()` et la
+  sémantique post-stop sont disponibles ;
+- phase 3 terminée : verrous de base, `bindings_rwlock`, verrou d'envoi par
+  client, buffers locaux dans `IvySendMsg()` et tests multi-thread/multiprocess ;
+- phase 4 terminée : wakeup POSIX de la main loop, file de contrôle, stop
+  synchrone depuis un worker et routage des changements writable vers la loop ;
+- phase 5 terminée : les callbacks utilisateur ne sont plus appelés sous
+  `ctx->mutex`, `bindings_rwlock` ou `client->send_lock`, les pointeurs de
+  callback sont snapshotés avant appel, et un compteur de callbacks actifs
+  protège la durée de vie du contexte ;
+- correctif outil associé : `ivythroughput -b` réalloue maintenant la chaîne
+  du bus au lieu d'écraser le buffer alloué pour la valeur par défaut.
+
+Limites encore présentes :
+
+- l'état de `ivyloop.c`, `ivysocket.c`, `timer.c` et le filtrage global de
+  `ivybind.c` ne sont pas encore contextualisés ;
+- les callbacks issus du dispatch réseau restent exécutés dans le thread de
+  loop, mais les événements congestion/FIFO produits par un appel `IvySendMsg()`
+  depuis un worker sont seulement sortis des verrous internes à ce stade ; leur
+  repost systématique vers la loop propriétaire reste une optimisation/garantie
+  à formaliser avec la contextualisation complète ;
+- les API legacy de query gardent encore leurs buffers et handles historiques.
+
 ## Situation actuelle
 
 L'implémentation historique suppose implicitement :
@@ -27,6 +60,10 @@ Les principaux états globaux mutables sont aujourd'hui dans :
 - `src/timer.c` : liste globale des timers et timeout courant de `select()` ;
 - `src/ivybind.c` : table globale de filtrage des regexps et regexp
   d'extraction de token.
+
+À partir de la phase 1, la plupart des états de `src/ivy.c` sont déjà
+regroupés dans `IvyContext`. Les autres modules cités restent des frontières
+globales importantes et constituent le coeur de la phase 6.
 
 Plusieurs fonctions utilisent aussi des buffers `static` pour éviter des
 allocations répétées. C'est pratique dans une boucle mono-thread historique,
@@ -534,6 +571,8 @@ idéalement par la boucle propriétaire.
 Cette phase doit être essentiellement mécanique. Elle prépare les verrous en
 leur donnant déjà un propriétaire clair : le contexte du bus.
 
+Statut : implémentée dans `bf6a56d` avec `tests/run_phase1.sh`.
+
 ### Phase 2 : statut public et cycle de vie
 
 - Ajouter `IvyStatus` et `IvyGetLastError()`.
@@ -546,6 +585,8 @@ leur donnant déjà un propriétaire clair : le contexte du bus.
 
 Cette phase donne déjà aux threads un moyen simple et peu coûteux de découvrir
 qu'un autre thread a stoppé Ivy.
+
+Statut : implémentée dans `67f1857` avec `tests/run_phase2.sh`.
 
 ### Phase 3 : verrous de base et owner thread
 
@@ -560,6 +601,11 @@ qu'un autre thread a stoppé Ivy.
 - Garantir que les callbacks utilisateur restent appelés par le thread de loop.
 - Vérifier que les callbacks peuvent rappeler l'API Ivy sans deadlock.
 
+Statut : implémentée dans `7496636` avec `tests/run_phase3.sh` et
+`tests/run_phase3_multiprocess.sh`. La garantie complète "callback toujours
+loop thread" reste à préciser pour les événements congestion/FIFO générés par
+un worker thread.
+
 ### Phase 4 : wakeup et file de contrôle
 
 - Ajouter le canal de réveil à la boucle.
@@ -570,6 +616,11 @@ qu'un autre thread a stoppé Ivy.
 - Rendre `IvyStop()` synchrone : il réveille la loop, attend `STOPPED`, puis
   retourne.
 
+Statut : implémentée dans `3180a8f` avec `tests/run_phase4.sh`. Deux commits
+liés complètent cette phase côté outils de test : `6a19d7e` pour la tolérance
+aux doublons d'acknowledgements de vérification, et `ebfcf41` pour la commande
+`.thread` de `ivyprobe`.
+
 ### Phase 5 : sécurité des callbacks
 
 - Retirer les callbacks utilisateur des sections de mutation/verrouillage
@@ -579,6 +630,11 @@ qu'un autre thread a stoppé Ivy.
   de durée de vie.
 - Définir explicitement le comportement de `stop` et `unbind` appelés depuis
   une callback.
+
+Statut : implémentée dans `aac2a4e` avec `tests/run_phase5.sh`. Les callbacks
+peuvent appeler `IvyUnbindMsg()` et `IvyStop()` sans deadlock dans les cas
+couverts. `IvyContextDestroy()` attend la fin des callbacks en cours quand il
+est appelé hors callback ; depuis une callback, il retourne `IVY_ESTATE`.
 
 ### Phase 6 : contextualiser loop, sockets et timers
 
@@ -624,6 +680,11 @@ Afin de garantir l'absence de régressions lors de cette refonte architecturale 
 ### Phase 5 : Sécurité des callbacks
 - **Invalidation d'itérateur :** Dans le callback d'une expression régulière, appeler `IvyUnbindMsg()` sur une autre regexp de la liste. Valider que la boucle interne d'itération (dans `ClientCall`) ne segfault pas, validant ainsi la stratégie des snapshots.
 - **Auto-destruction :** Appeler `IvyStop()` ou `IvyContextStop()` directement depuis une callback de réception de message. Vérifier que la boucle procède à un arrêt différé propre, sans deadlock avec le mutex courant.
+
+Statut : couvert par `tests/run_phase5.sh`, qui lance deux processus Ivy sur un
+bus réel. Le callback de réception du receiver désabonne une autre regexp puis
+appelle `IvyStop()`, tandis que le sender appelle `IvySendMsg()` et `IvyStop()`
+depuis son callback applicatif de connexion.
 
 ### Phase 6 : Contextualiser loop, sockets et timers
 - **Étanchéité Multi-Bus :** Instancier deux contextes (A et B) sur deux bus/ports distincts dans le même processus. Émettre un message sur le bus B et garantir par une assertion stricte que les clients abonnés du bus A ne reçoivent aucun callback croisé.
