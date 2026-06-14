@@ -23,6 +23,7 @@ cc -O2 -Wall -Wshadow -I"$repo_dir/src" \
 	"$repo_dir/src/intervalRegexp.o" \
 	"$repo_dir/src/param.o" \
 	$(pcre2-config --libs8) \
+	-pthread \
 	-o "$tmp_dir/phase1_context_test"
 
 "$tmp_dir/phase1_context_test"

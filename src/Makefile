@@ -93,6 +93,8 @@ ifeq ($(shell uname -s),SunOS)
 else
 	EXTRALIB=
 endif
+THREADLIB ?= -pthread
+EXTRALIB += $(THREADLIB)
 
 
 TOOLS_DIR = ../tools
@@ -215,7 +217,7 @@ libtclivy.a: $(TCLOBJ)
 # TODO this PCREOBJ is a dirty hack
 
 libivy.so.$(MAJOR).$(MINOR): $(OBJ)
-	$(CC) $(LDFLAGS) -shared -Wl,-soname,libivy.so.$(MAJOR) -o $@ $(OBJ) $(PCRELIB)
+	$(CC) $(LDFLAGS) -shared -Wl,-soname,libivy.so.$(MAJOR) -o $@ $(OBJ) $(PCRELIB) $(EXTRALIB)
 #	$(CC) -G -Wl,-h,libivy.so.$(MAJOR) -o $@ $(OBJ)		#solaris
 #	libtool -dynamic -o $@ $(OBJ) $(PCRELIB) -lc
 

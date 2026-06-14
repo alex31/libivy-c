@@ -16,10 +16,6 @@
 
 
 
-#ifdef OPENMP
-#include <omp.h>
-#endif
-
 #ifdef WIN32
 #include <Ws2tcpip.h>
 #include <windows.h>
@@ -58,6 +54,7 @@ typedef long ssize_t;
 #include "ivybuffer.h"
 #include "ivyfifo.h"
 #include "ivydebug.h"
+#include "ivythread.h"
 
 
 union sockaddr_46 {
@@ -98,11 +95,10 @@ struct _client {
 	char *ptr;
 	/* Buffer d'emission */
         IvyFifoBuffer *ifb;             /* le buffer circulaire en cas de congestion */
+	IvyMutex send_lock;
+	int send_lock_initialized;
   	/* user data */
 	const void *data;
-#ifdef OPENMP
-	omp_lock_t fdLock;
-#endif
 };
  
 
@@ -118,6 +114,14 @@ WSADATA	WsaData;
 
 static SendState BufferizedSocketSendRaw (const Client client, const char *buffer, const int len );
 
+static int InitClientSendLock(Client client)
+{
+	if (IvyMutexInit(&client->send_lock) != 0)
+		return 0;
+	client->send_lock_initialized = 1;
+	return 1;
+}
+
 
 void SocketInit()
 {
@@ -132,9 +136,10 @@ static void DeleteSocket(void *data)
 		(*client->handle_delete) (client, client->data );
 	shutdown (client->fd, 2 );
 	close (client->fd );
-#ifdef OPENMP
-	omp_destroy_lock (&(client->fdLock));
-#endif
+	if (client->send_lock_initialized) {
+	  IvyMutexDestroy (&client->send_lock);
+	  client->send_lock_initialized = 0;
+	}
 	if (client->ifb != NULL) {
 	  IvyFifoDelete (client->ifb);
 	  client->ifb = NULL;
@@ -273,6 +278,13 @@ static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 	client->from_len = addrlen;
 	client->fd = ns;
 	client->ifb = NULL;
+	if (!InitClientSendLock(client)) {
+	  fprintf(stderr, "HandleSocket Send Lock Init Error\n");
+	  free(client->buffer);
+	  close(ns);
+	  free(client);
+	  return;
+	}
 	strcpy (client->app_uuid, "init by HandleServer");
 
 #ifdef WIN32
@@ -307,11 +319,6 @@ static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 	client->handle_delete = server->handle_delete;
 	client->handle_decongestion = server->handle_decongestion;
 	client->data = (*server->create) (client );
-#ifdef OPENMP
-	omp_init_lock (&(client->fdLock));
-#endif
-
-
 	IVY_LIST_ADD_END (clients_list, client );
 	
 }
@@ -560,15 +567,11 @@ SendState SocketSendRaw (const Client client, const char *buffer, const int len 
   if (!client || !buffer || len < 0)
     return SendParamError;
   
-#ifdef OPENMP
-  omp_set_lock (&(client->fdLock));
-#endif
+  IvyMutexLock (&client->send_lock);
   
   state = BufferizedSocketSendRaw (client, buffer, len);
 
-#ifdef OPENMP
-  omp_unset_lock (&(client->fdLock));
-#endif
+  IvyMutexUnlock (&client->send_lock);
   
   return state;
 }
@@ -675,17 +678,13 @@ SendState SocketSendRawWithId( const Client client, const char *id, const char *
   if (!client || !id || !buffer || len < 0)
     return SendParamError;
   
-#ifdef OPENMP
-  omp_set_lock (&(client->fdLock));
-#endif
+  IvyMutexLock (&client->send_lock);
   
   s1 = BufferizedSocketSendRaw (client, id, strlen (id));
 
   s2 = BufferizedSocketSendRaw (client, buffer, len);
   
-#ifdef OPENMP
-  omp_unset_lock (&(client->fdLock));
-#endif
+  IvyMutexUnlock (&client->send_lock);
   
   if (s1 == SendStateChangeToCongestion) {
     // si le passage en congestion s'est fait sur l'envoi de l'id
@@ -706,10 +705,7 @@ void SocketSetData (Client client, const void *data )
 SendState SocketSend (Client client, const char *fmt, ... )
 {
   SendState state;
-  static IvyBuffer buffer = {NULL, 0, 0 }; /* Use static mem to eliminate multiple call to malloc /free */
-#ifdef OPENMP
-#pragma omp threadprivate (buffer)
-#endif
+  IvyBuffer buffer = {NULL, 0, 0 };
 
   va_list ap;
   int len;
@@ -717,9 +713,12 @@ SendState SocketSend (Client client, const char *fmt, ... )
   buffer.offset = 0;
   len = make_message (&buffer, fmt, ap );
   va_end (ap );
-  if (len < 0)
+  if (len < 0) {
+    free(buffer.data);
     return SendError;
+  }
   state = SocketSendRaw (client, buffer.data, len );
+  free(buffer.data);
   return state;
 }
 
@@ -731,11 +730,7 @@ const void *SocketGetData (Client client )
 void SocketBroadcast ( char *fmt, ... )
 {
 	Client client;
-	static IvyBuffer buffer = {NULL, 0, 0 }; /* Use static mem to eliminate 
-						    multiple call to malloc /free */
-#ifdef OPENMP
-#pragma omp threadprivate (buffer)
-#endif
+	IvyBuffer buffer = {NULL, 0, 0 };
 	va_list ap;
 	int len;
 	
@@ -743,12 +738,15 @@ void SocketBroadcast ( char *fmt, ... )
 	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
 	va_end (ap );
-	if (len < 0)
+	if (len < 0) {
+		free(buffer.data);
 		return;
+	}
 	IVY_LIST_EACH (clients_list, client )
 		{
 		SocketSendRaw (client, buffer.data, len );
 		}
+	free(buffer.data);
 }
 
 /*
@@ -860,12 +858,14 @@ Client SocketConnectAddr (int ipv6, struct sockaddr_storage * addr, unsigned sho
 	client->handle_delete = handle_delete;
 	client->handle_decongestion = handle_decongestion;
 	client->ifb = NULL;
+	if (!InitClientSendLock(client)) {
+		fprintf(stderr, "SocketConnectAddr Send Lock Init Error\n");
+		free(client->buffer);
+		close(handle);
+		free(client);
+		return NULL;
+	}
 	strcpy (client->app_uuid, "init by SocketConnectAddr");
-
-
-#ifdef OPENMP
-	omp_init_lock (&(client->fdLock));
-#endif
 	IVY_LIST_ADD_END(clients_list, client );
 	
 
@@ -1006,11 +1006,14 @@ Client SocketBroadcastCreate (int ipv6, unsigned short port,
 	client->ptr = client->buffer;
 	client->data = data;
 	client->ifb = NULL;
+	if (!InitClientSendLock(client)) {
+		fprintf(stderr, "SocketBroadcastCreate Send Lock Init Error\n");
+		free(client->buffer);
+		close(handle);
+		free(client);
+		return NULL;
+	}
 	strcpy (client->app_uuid, "init by SocketBroadcastCreate");
-
-#ifdef OPENMP
-	omp_init_lock (&(client->fdLock));
-#endif
 	IVY_LIST_ADD_END(clients_list, client );
 	
 	return client;
@@ -1019,10 +1022,7 @@ Client SocketBroadcastCreate (int ipv6, unsigned short port,
 void SocketSendBroadcast (Client client, unsigned long host, unsigned short port, const char *fmt, ... )
 {
 	struct sockaddr_in remote;
-	static IvyBuffer buffer = { NULL, 0, 0 }; /* Use satic mem to eliminate multiple call to malloc /free */
-#ifdef OPENMP
-#pragma omp threadprivate (buffer)
-#endif
+	IvyBuffer buffer = { NULL, 0, 0 };
 	va_list ap;
 	int err,len;
 
@@ -1033,8 +1033,10 @@ void SocketSendBroadcast (Client client, unsigned long host, unsigned short port
 	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
 	va_end (ap );
-	if (len < 0)
+	if (len < 0) {
+		free(buffer.data);
 		return;
+	}
 	/* Send UDP packet to the dest */
 	memset( &remote,0,sizeof(remote) );
 	remote.sin_family = AF_INET;
@@ -1046,16 +1048,14 @@ void SocketSendBroadcast (Client client, unsigned long host, unsigned short port
 	if (err != len) {
 		perror ("*** send ***");
 	}	
+	free(buffer.data);
 	
 }
 
 void SocketSendBroadcast6 (Client client, struct in6_addr* host, unsigned short port, const char *fmt, ... )
 {
 	struct sockaddr_in6 remote;
-	static IvyBuffer buffer = { NULL, 0, 0 }; /* Use satic mem to eliminate multiple call to malloc /free */
-#ifdef OPENMP
-#pragma omp threadprivate (buffer)
-#endif
+	IvyBuffer buffer = { NULL, 0, 0 };
 	va_list ap;
 	int err,len;
 
@@ -1066,8 +1066,10 @@ void SocketSendBroadcast6 (Client client, struct in6_addr* host, unsigned short 
 	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
 	va_end (ap );
-	if (len < 0)
+	if (len < 0) {
+		free(buffer.data);
 		return;
+	}
 	/* Send UDP packet to the dest */
 	memset( &remote,0,sizeof(remote) );
 	remote.sin6_family = AF_INET6;
@@ -1079,6 +1081,7 @@ void SocketSendBroadcast6 (Client client, struct in6_addr* host, unsigned short 
 	if (err != len) {
 		perror ("*** send ***");
 	}	
+	free(buffer.data);
 	
 }
 

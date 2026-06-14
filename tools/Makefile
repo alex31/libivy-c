@@ -3,6 +3,7 @@ OMP_TARGET= ivyprobe_omp ivythroughput_omp
 
 PCRELIB = `pcre2-config --libs8`
 OMPLIB = -lgomp -lpthread
+THREADLIB ?= -pthread
 EXTRALIB= -L../src
 EXTRAINC=-I../src
 
@@ -18,13 +19,13 @@ all: $(TARGETS)
 omp: $(OMP_TARGET)
 
 ivyprobe: ivyprobe.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB)  
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
 
 ivythroughput: ivythroughput.o ../src/libivy.a
-	$(CXX)  $(CFLAGS) $(EXTRAINC) -o $@ ivythroughput.o $(EXTRALIB) -livy $(PCRELIB)
+	$(CXX)  $(CFLAGS) $(EXTRAINC) -o $@ ivythroughput.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
 
 ivytestready: ivytestready.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivytestready.o $(EXTRALIB) -livy $(PCRELIB)
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivytestready.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
 
 ivyprobe_efence: ivyprobe.o ../src/libivy.a
 	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) -lefence
@@ -41,7 +42,7 @@ ivyprobe.o : ivyprobe.c
 	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) -c ivyprobe.c -o $@
 
 ivyperf: ivyperf.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o -L. -livy $(PCRELIB) $(EXTRALIB)
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o -L. -livy $(PCRELIB) $(EXTRALIB) $(THREADLIB)
 
 ivyxtprobe.o : ivyprobe.c
 	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) -DXTMAINLOOP -c ivyprobe.c -o $@ $(XTINC)

@@ -35,6 +35,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include "version.h"
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,10 +53,14 @@
 #include <string>
 #include <list>
 #include <map>
+#include <utility>
 
 typedef std::list<std::string>  ListOfString;
 typedef std::list<pid_t> ListOfPid;
 typedef std::map<unsigned int, bool> MapUintToBool;
+typedef std::map<unsigned int, std::string> MapUintToString;
+typedef std::pair<unsigned int, unsigned int> VerifyAckKey;
+typedef std::map<VerifyAckKey, bool> MapVerifyAck;
 typedef std::list<MsgRcvPtr> ListOfMsgRcvPtr;
 
 typedef struct {
@@ -83,20 +89,25 @@ void recepteur_tp (const char* bus, KindOfTest kod, unsigned int inst,
 		   const ListOfString& regexps, unsigned int exitAfter);
 void recepteur_ml (const char* bus, KindOfTest kod, unsigned int inst,
 		   const ListOfString& regexps);
-void emetteur (const char* bus, KindOfTest kod, int testDuration,
-	       const ListOfString& messages, int regexpSize);
+int emetteur (const char* bus, KindOfTest kod, int testDuration,
+	      const ListOfString& messages, int regexpSize);
 
 bool getMessages (const char*fileName, ListOfString &messages, unsigned int numMess);
 bool getRegexps (const char*fileName, ListOfString &regexps, unsigned int numReg);
 static void trimLineEnd(std::string& line);
+static bool parseUnsigned(const char *value, unsigned int *parsedValue);
+static void reportMissingVerifyAcks();
 
 double currentTime();
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event ) ;
 void congestCB ( IvyClientPtr app, void *user_data, IvyApplicationEvent event ) ;
 void stopCB (TimerId id, void *user_data, unsigned long delta);
 void sendAllMessageCB (TimerId id, void *user_data, unsigned long delta);
+void sendVerifiedMessagesCB (TimerId id, void *user_data, unsigned long delta);
 void recepteurReadyCB (IvyClientPtr app, void *user_data, int argc, char *argv[]);
 void recepteurCB (IvyClientPtr app, void *user_data, int argc, char *argv[]);
+void verifyReceiverCB (IvyClientPtr app, void *user_data, int argc, char *argv[]);
+void verifyAckCB (IvyClientPtr app, void *user_data, int argc, char *argv[]);
 void startOfSeqCB (IvyClientPtr app, void *user_data, int argc, char *argv[]);
 void endOfSeqCB (IvyClientPtr app, void *user_data, int argc, char *argv[]);
 void desabonneEtReabonneCB (TimerId id, void *user_data, unsigned long delta);
@@ -108,6 +119,14 @@ unsigned int nbMess=0, nbReg=0, numClients =1, globalInst, numRegexps=1e6, numMe
 MapUintToBool   recReady;
 KindOfTest   kindOfTest = throughput;
 bool	     regexpAreUniq = false;
+bool         verifyDelivery = false;
+bool         verifyFailed = false;
+bool         verifySent = false;
+char         verifyRunId[64] = "";
+unsigned int verifyAckCount = 0;
+unsigned int verifyExpectedAcks = 0;
+MapUintToString verifyPayloadById;
+MapVerifyAck verifyAcks;
 
 int main(int argc, char *argv[])
 {
@@ -119,6 +138,7 @@ int main(int argc, char *argv[])
   ListOfString messages, regexps;
   pid_t        pid;
   ListOfPid    recPid;
+  int          exitStatus = 0;
 
   const char* helpmsg =
     "[options] \n"
@@ -129,10 +149,11 @@ int main(int argc, char *argv[])
     "\t -R \t restrict to R firsts regexps instead of all the regexp in the regexp file \n"
     "\t -p \t each client will postpend regexp with uniq string to "
              "simulate N clients with differents regexps\n"
-    "\t -m \t messageFile\tread list of messages from file (default to testivy/messages.ivy)\n"
-    "\t -M \t restrict to M firsts messages instead of all the message in the message file \n"
-    "\t -n \t number of clients\n"
-    "\t -d \t duration of the test in seconds\n" ;
+	    "\t -m \t messageFile\tread list of messages from file (default to testivy/messages.ivy)\n"
+	    "\t -M \t restrict to M firsts messages instead of all the message in the message file \n"
+	    "\t -n \t number of clients\n"
+	    "\t -d \t duration of the test in seconds\n"
+	    "\t -V \t verify delivery with receiver acknowledgements and payload checks\n" ;
 
 
   if (getenv("IVYBUS") != NULL) {
@@ -141,8 +162,11 @@ int main(int argc, char *argv[])
     bus = strdup ("127.0.0.1:2000") ;
   }
 
-  while ((c = getopt(argc, argv, "vpb:r:m:R:M:n:t:d:")) != EOF)
+  while ((c = getopt(argc, argv, "Vvpb:r:m:R:M:n:t:d:")) != EOF)
     switch (c) {
+    case 'V':
+      verifyDelivery = true;
+      break;
     case 'b':
       strcpy (bus, optarg);
       break;
@@ -199,6 +223,15 @@ int main(int argc, char *argv[])
       {return (1);};
   }
 
+  if (verifyDelivery && kindOfTest != throughput) {
+    fprintf(stderr, "verification mode (-V) is only supported with throughput test (-t tp)\n");
+    return 1;
+  }
+
+  if (verifyDelivery) {
+    snprintf(verifyRunId, sizeof(verifyRunId), "%ld", (long)getpid());
+  }
+
 
 
   for (unsigned int i=0; i< numClients; i++) {
@@ -228,7 +261,7 @@ int main(int argc, char *argv[])
     }
   }
 
-  emetteur  (bus, kindOfTest, testDuration, messages, regexps.size());
+  exitStatus = emetteur  (bus, kindOfTest, testDuration, messages, regexps.size());
 
   ListOfPid::iterator  iter;
   for (iter=recPid.begin(); iter != recPid.end(); iter++) {
@@ -236,10 +269,22 @@ int main(int argc, char *argv[])
   }
 
   for (iter=recPid.begin(); iter != recPid.end(); iter++) {
-    waitpid (*iter, NULL, 0);
+    int status;
+    if (waitpid (*iter, &status, 0) < 0) {
+      perror("waitpid");
+      exitStatus = 1;
+    } else if (verifyDelivery && WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+      fprintf(stderr, "recepteur pid %d exited with status %d\n",
+	      (int)*iter, WEXITSTATUS(status));
+      exitStatus = 1;
+    } else if (verifyDelivery && WIFSIGNALED(status) && WTERMSIG(status) != SIGTERM) {
+      fprintf(stderr, "recepteur pid %d killed by signal %d\n",
+	      (int)*iter, WTERMSIG(status));
+      exitStatus = 1;
+    }
   }
 
-  return (0);
+  return exitStatus;
 }
 
 
@@ -253,22 +298,36 @@ int main(int argc, char *argv[])
 #                |  __/ | | | | | | |  __/ \ |_   \ |_   |  __/ | |_| | | |
 #                 \___| |_| |_| |_|  \___|  \__|   \__|   \___|  \__,_| |_|
 */
-void emetteur (const char* bus, KindOfTest kod, int testDuration,
-	       const ListOfString& messages, int regexpSize)
+int emetteur (const char* bus, KindOfTest kod, int testDuration,
+	      const ListOfString& messages, int regexpSize)
 {
+  long bindCount = regexpSize + 2l + (verifyDelivery ? 1l : 0l);
+
   printf ("DBG> emetteur start, pid=%d\n", getpid());
   IvyInit ("IvyThroughputEmit", "IvyThroughputEmit Ready", congestCB, NULL,NULL,NULL);
   //  double origin = currentTime();
 
 
-  IvySetBindCallback (binCB, (void *) (regexpSize+2l));
-  IvyBindMsg (recepteurReadyCB, (void *) &messages,
-	      "^IvyThroughputReceive_(\\d+)\\s+Ready");
+  IvySetBindCallback (binCB, (void *) bindCount);
+  if (verifyDelivery) {
+    std::string readyRegexp = "^IvyThroughputVerify_";
+    readyRegexp += verifyRunId;
+    readyRegexp += "_(\\d+)\\s+Ready";
+
+    IvyBindMsg (recepteurReadyCB, (void *) &messages, "%s", readyRegexp.c_str());
+    IvyBindMsg (verifyAckCB, NULL,
+		"^__ivyverify_ack ([0-9]+) ([0-9]+) ([0-9]+) (.*)$");
+  } else {
+    IvyBindMsg (recepteurReadyCB, (void *) &messages,
+		"^IvyThroughputReceive_(\\d+)\\s+Ready");
+  }
 
   TimerRepeatAfter (1, testDuration *1000, stopCB, NULL);
 
   IvyStart (bus);
   IvyMainLoop ();
+
+  return verifyFailed ? 1 : 0;
 }
 
 
@@ -284,9 +343,13 @@ void emetteur (const char* bus, KindOfTest kod, int testDuration,
 void recepteur_tp (const char* bus, KindOfTest kod, unsigned int inst,
 		const ListOfString& regexps,  unsigned int exitAfter)
 {
-  std::string agentName = "IvyThroughputReceive_";
+  std::string agentName = verifyDelivery ? "IvyThroughputVerify_" : "IvyThroughputReceive_";
   std::stringstream stream ;
   stream << inst;
+  if (verifyDelivery) {
+    agentName += verifyRunId;
+    agentName += "_";
+  }
   agentName +=  stream.str();
   std::string agentNameReady (agentName + " Ready");
   //double origin = currentTime();
@@ -300,6 +363,10 @@ void recepteur_tp (const char* bus, KindOfTest kod, unsigned int inst,
     std::string reg = *iter;
     if (regexpAreUniq) { ((reg += "(") += stream.str()) += ")?";}
     IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str());
+  }
+  if (verifyDelivery) {
+    IvyBindMsg (verifyReceiverCB, (void *) long(inst),
+		"^__ivyverify_msg ([0-9]+) ([0-9]+) (.*)$");
   }
   IvyBindMsg (startOfSeqCB, NULL, "^start(OfSequence)");
   IvyBindMsg (endOfSeqCB, NULL, "^end(OfSequence)");
@@ -471,6 +538,42 @@ static void trimLineEnd(std::string& line)
   }
 }
 
+static bool parseUnsigned(const char *value, unsigned int *parsedValue)
+{
+  char *end = NULL;
+  unsigned long parsed;
+
+  if (value == NULL || *value == '\0') {
+    return false;
+  }
+
+  errno = 0;
+  parsed = strtoul(value, &end, 10);
+  if (errno != 0 || end == value || *end != '\0' || parsed > UINT_MAX) {
+    return false;
+  }
+
+  *parsedValue = (unsigned int)parsed;
+  return true;
+}
+
+static void reportMissingVerifyAcks()
+{
+  MapUintToString::iterator payloadIter;
+
+  for (payloadIter = verifyPayloadById.begin();
+       payloadIter != verifyPayloadById.end();
+       ++payloadIter) {
+    for (unsigned int receiver = 0; receiver < numClients; receiver++) {
+      VerifyAckKey key(receiver, payloadIter->first);
+      if (verifyAcks.find(key) == verifyAcks.end()) {
+	fprintf(stderr, "verification missing ack: receiver=%u msg=%u payload='%s'\n",
+		receiver, payloadIter->first, payloadIter->second.c_str());
+      }
+    }
+  }
+}
+
 
 /*
 #                 _       _             _____   ____
@@ -550,6 +653,17 @@ void congestCB ( IvyClientPtr app, void *user_data, IvyApplicationEvent event )
 
 void stopCB (TimerId id, void *user_data, unsigned long delta)
 {
+ if (verifyDelivery) {
+  if (!verifySent) {
+    fprintf(stderr, "verification timeout: receivers did not become ready\n");
+    verifyFailed = true;
+  } else if (verifyAckCount != verifyExpectedAcks) {
+    fprintf(stderr, "verification timeout: received %u/%u acknowledgements\n",
+	    verifyAckCount, verifyExpectedAcks);
+    reportMissingVerifyAcks();
+    verifyFailed = true;
+  }
+ }
  IvyStop ();
 }
 
@@ -575,12 +689,142 @@ void sendAllMessageCB (TimerId id, void *user_data, unsigned long delta)
   TimerRepeatAfter (1, 1000, sendAllMessageCB ,user_data);
 }
 
+void sendVerifiedMessagesCB (TimerId id, void *user_data, unsigned long delta)
+{
+  ListOfString  *messages = (ListOfString *) user_data;
+  unsigned int msgId = 0;
+  unsigned int sentMessages = 0;
+  ListOfString::iterator iter;
+
+  if (verifySent) {
+    return;
+  }
+  verifySent = true;
+  verifyFailed = false;
+  verifyAckCount = 0;
+  verifyAcks.clear();
+  verifyPayloadById.clear();
+  verifyExpectedAcks = messages->size() * numClients;
+
+  if (verifyExpectedAcks == 0) {
+    fprintf(stderr, "verification requires at least one message and one receiver\n");
+    verifyFailed = true;
+    IvyStop();
+    return;
+  }
+
+  for (iter=messages->begin(); iter != messages->end(); iter++, msgId++) {
+    int count;
+
+    verifyPayloadById[msgId] = *iter;
+    count = IvySendMsg ("__ivyverify_msg %s %u %s",
+			verifyRunId, msgId, (*iter).c_str());
+    sentMessages++;
+    if (count < (int)numClients) {
+      fprintf(stderr,
+	      "verification send mismatch: msg=%u expected_at_least=%u actual_matches=%d payload='%s'\n",
+	      msgId, numClients, count, (*iter).c_str());
+      verifyFailed = true;
+    } else if (count > (int)numClients) {
+      printf ("verification extra matches: msg=%u expected=%u actual=%d\n",
+	      msgId, numClients, count);
+    }
+  }
+
+  printf ("verification sent %u messages, waiting for %u acknowledgements\n",
+	  sentMessages, verifyExpectedAcks);
+
+  if (verifyFailed) {
+    IvyStop();
+  }
+}
+
 void recepteurCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
   //  unsigned long recN = (long) user_data;
   //  printf (".");
   //  if (!((argc == 1) && (strcmp (argv[0], "OfSequence")) == 0))
   nbMess++;
+}
+
+void verifyReceiverCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
+{
+  unsigned int msgId;
+  int count;
+
+  if (argc != 3 || strcmp(argv[0], verifyRunId) != 0 ||
+      !parseUnsigned(argv[1], &msgId)) {
+    fprintf(stderr, "receiver %u got invalid verification message\n", globalInst);
+    exit(2);
+  }
+
+  count = IvySendMsg ("__ivyverify_ack %s %u %u %s",
+		      verifyRunId, globalInst, msgId, argv[2]);
+  if (count != 1) {
+    fprintf(stderr, "receiver %u could not acknowledge msg %u, matches=%d\n",
+	    globalInst, msgId, count);
+    exit(2);
+  }
+}
+
+void verifyAckCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
+{
+  unsigned int receiver;
+  unsigned int msgId;
+  MapUintToString::iterator payloadIter;
+  VerifyAckKey key;
+
+  if (argc != 4 ||
+      strcmp(argv[0], verifyRunId) != 0 ||
+      !parseUnsigned(argv[1], &receiver) ||
+      !parseUnsigned(argv[2], &msgId)) {
+    fprintf(stderr, "verification got invalid acknowledgement\n");
+    verifyFailed = true;
+    IvyStop();
+    return;
+  }
+
+  if (receiver >= numClients) {
+    fprintf(stderr, "verification got ack from unexpected receiver %u for msg %u\n",
+	    receiver, msgId);
+    verifyFailed = true;
+    IvyStop();
+    return;
+  }
+
+  payloadIter = verifyPayloadById.find(msgId);
+  if (payloadIter == verifyPayloadById.end()) {
+    fprintf(stderr, "verification got ack for unexpected msg %u from receiver %u\n",
+	    msgId, receiver);
+    verifyFailed = true;
+    IvyStop();
+    return;
+  }
+
+  if (payloadIter->second != argv[3]) {
+    fprintf(stderr,
+	    "verification payload mismatch: receiver=%u msg=%u expected='%s' actual='%s'\n",
+	    receiver, msgId, payloadIter->second.c_str(), argv[3]);
+    verifyFailed = true;
+    IvyStop();
+    return;
+  }
+
+  key = VerifyAckKey(receiver, msgId);
+  if (verifyAcks.find(key) != verifyAcks.end()) {
+    printf ("verification duplicate ack ignored: receiver=%u msg=%u\n",
+	    receiver, msgId);
+    return;
+  }
+
+  verifyAcks[key] = true;
+  verifyAckCount++;
+
+  if (verifyAckCount == verifyExpectedAcks) {
+    printf ("verification OK: received %u/%u acknowledgements\n",
+	    verifyAckCount, verifyExpectedAcks);
+    IvyStop();
+  }
 }
 
 
@@ -601,8 +845,13 @@ void recepteurReadyCB (IvyClientPtr app, void *user_data, int argc, char *argv[]
 
   if (readyToStart == true) {
     if (kindOfTest != memoryLeak1) {
-      TimerRepeatAfter (1, 100, sendAllMessageCB , messages);
-      printf ("Emetteur : tous recepteurs prets : on envoie la puree !!\n");
+      if (verifyDelivery) {
+	TimerRepeatAfter (1, 100, sendVerifiedMessagesCB , messages);
+	printf ("Emetteur : tous recepteurs prets : verification des donnees !!\n");
+      } else {
+	TimerRepeatAfter (1, 100, sendAllMessageCB , messages);
+	printf ("Emetteur : tous recepteurs prets : on envoie la puree !!\n");
+      }
     }
   } else {
     printf ("\n");
