@@ -7,6 +7,7 @@
 typedef CRITICAL_SECTION IvyMutex;
 typedef SRWLOCK IvyRwLock;
 typedef DWORD IvyThreadId;
+typedef CONDITION_VARIABLE IvyCond;
 
 static inline int IvyMutexInit(IvyMutex *mutex)
 {
@@ -70,12 +71,34 @@ static inline int IvyThreadEqual(IvyThreadId a, IvyThreadId b)
 	return a == b;
 }
 
+static inline int IvyCondInit(IvyCond *cond)
+{
+	InitializeConditionVariable(cond);
+	return 0;
+}
+
+static inline void IvyCondDestroy(IvyCond *cond)
+{
+	(void)cond;
+}
+
+static inline void IvyCondWait(IvyCond *cond, IvyMutex *mutex)
+{
+	SleepConditionVariableCS(cond, mutex, INFINITE);
+}
+
+static inline void IvyCondBroadcast(IvyCond *cond)
+{
+	WakeAllConditionVariable(cond);
+}
+
 #else
 #include <pthread.h>
 
 typedef pthread_mutex_t IvyMutex;
 typedef pthread_rwlock_t IvyRwLock;
 typedef pthread_t IvyThreadId;
+typedef pthread_cond_t IvyCond;
 
 static inline int IvyMutexInit(IvyMutex *mutex)
 {
@@ -135,6 +158,26 @@ static inline IvyThreadId IvyThreadCurrent(void)
 static inline int IvyThreadEqual(IvyThreadId a, IvyThreadId b)
 {
 	return pthread_equal(a, b);
+}
+
+static inline int IvyCondInit(IvyCond *cond)
+{
+	return pthread_cond_init(cond, NULL);
+}
+
+static inline void IvyCondDestroy(IvyCond *cond)
+{
+	pthread_cond_destroy(cond);
+}
+
+static inline void IvyCondWait(IvyCond *cond, IvyMutex *mutex)
+{
+	pthread_cond_wait(cond, mutex);
+}
+
+static inline void IvyCondBroadcast(IvyCond *cond)
+{
+	pthread_cond_broadcast(cond);
 }
 #endif
 

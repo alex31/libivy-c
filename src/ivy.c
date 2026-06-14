@@ -180,6 +180,7 @@ struct _clnt_lst_dict {
 
 struct IvyContext {
   IvyMutex ivy_mutex;
+  IvyCond ivy_stop_done;
   IvyRwLock ivy_bindings_rwlock;
   IvyThreadId ivy_owner_thread;
   int ivy_owner_thread_set;
@@ -262,6 +263,7 @@ static int IvyReturnStatus(IvyStatus status);
 static int IvyContextRejectIfStopped(const IvyContext *ctx);
 static void IvyContextSetState(IvyContext *ctx, IvyContextState state);
 static int IvyContextStateIs(const IvyContext *ctx, IvyContextState state);
+static void IvyContextStopInLoop(void *data);
 static void IvyBindingsReadLock(IvyContext *ctx);
 static void IvyBindingsReadUnlock(IvyContext *ctx);
 static void IvyBindingsWriteLock(IvyContext *ctx);
@@ -375,6 +377,8 @@ static void IvyContextSetState(IvyContext *ctx, IvyContextState state)
 {
 	IvyMutexLock(&ctx->ivy_mutex);
 	ctx->ivy_state = state;
+	if (state == IVY_CTX_STOPPED || state == IVY_CTX_DESTROYED)
+		IvyCondBroadcast(&ctx->ivy_stop_done);
 	IvyMutexUnlock(&ctx->ivy_mutex);
 }
 
@@ -428,7 +432,14 @@ IvyContext *IvyContextCreate(
 		IvySetLastError(IVY_ENOMEM);
 		return NULL;
 	}
+	if (IvyCondInit(&ctx->ivy_stop_done) != 0) {
+		IvyMutexDestroy(&ctx->ivy_mutex);
+		free(ctx);
+		IvySetLastError(IVY_ENOMEM);
+		return NULL;
+	}
 	if (IvyRwLockInit(&ctx->ivy_bindings_rwlock) != 0) {
+		IvyCondDestroy(&ctx->ivy_stop_done);
 		IvyMutexDestroy(&ctx->ivy_mutex);
 		free(ctx);
 		IvySetLastError(IVY_ENOMEM);
@@ -440,6 +451,7 @@ IvyContext *IvyContextCreate(
 		ctx->ivy_application_name = strdup(appname);
 		if (!ctx->ivy_application_name) {
 			IvyRwLockDestroy(&ctx->ivy_bindings_rwlock);
+			IvyCondDestroy(&ctx->ivy_stop_done);
 			IvyMutexDestroy(&ctx->ivy_mutex);
 			free(ctx);
 			IvySetLastError(IVY_ENOMEM);
@@ -455,6 +467,7 @@ IvyContext *IvyContextCreate(
 		if (!ctx->ivy_ready_message) {
 			free(ctx->ivy_application_name);
 			IvyRwLockDestroy(&ctx->ivy_bindings_rwlock);
+			IvyCondDestroy(&ctx->ivy_stop_done);
 			IvyMutexDestroy(&ctx->ivy_mutex);
 			free(ctx);
 			IvySetLastError(IVY_ENOMEM);
@@ -504,6 +517,7 @@ int IvyContextDestroy(IvyContext *ctx)
 
 	IvyContextSetState(ctx, IVY_CTX_DESTROYED);
 	IvyRwLockDestroy(&ctx->ivy_bindings_rwlock);
+	IvyCondDestroy(&ctx->ivy_stop_done);
 	IvyMutexDestroy(&ctx->ivy_mutex);
 	free(ctx);
 	return IvyReturnStatus(IVY_OK);
@@ -525,6 +539,17 @@ static IvyContext *IvyGetDefaultContext(void)
 int IvyLegacyDefaultContextIsInitialized(void)
 {
 	return default_ctx != NULL;
+}
+
+int IvyTestingSetDefaultContextState(IvyContextState state)
+{
+	IvyContextSetState(IvyGetDefaultContext(), state);
+	return IVY_OK;
+}
+
+IvyContextState IvyTestingGetDefaultContextState(void)
+{
+	return IvyContextGetState(IvyGetDefaultContext());
 }
 #endif
 
@@ -1033,24 +1058,24 @@ static void Receive( Client client, const void *data, char *line )
 			IvyBindingsReadUnlock(ctx);
 			printf("Callback Message id=%d not found!!!'\n", id);
 			break;
-		case DirectMsg:
-			
-			TRACE("Direct Message id=%d msg='%s'\n", id, arg);
+			case DirectMsg:
 
-			if ( direct_callback)
-				(*direct_callback)( clnt, direct_user_data, id, arg );
-			break;
+				TRACE("Direct Message id=%d msg='%s'\n", id, arg);
 
-		case Die:
-			
-			TRACE("Die Message\n");
+				if ( direct_callback)
+					(*direct_callback)( clnt, direct_user_data, id, arg );
+				break;
 
-			if ( application_die_callback)
-				(*application_die_callback)( clnt, application_die_user_data, id );
-			IvyCleanup();
-			//exit(0);
-			IvyChannelStop (); // quit properly the mainloop instead of wildly exit the process
-			break;
+			case Die:
+
+				TRACE("Die Message\n");
+
+				if ( application_die_callback)
+					(*application_die_callback)( clnt, application_die_user_data, id );
+				IvyCleanup();
+				//exit(0);
+				IvyContextStop(ctx); // quit properly the mainloop instead of wildly exit the process
+				break;
 
 		case Ping:
 			
@@ -1373,17 +1398,80 @@ int IvyRemoveFilter( const char *arg)
 	return IvyReturnStatus(IVY_OK);
 }
 
+static void IvyContextStopInLoop(void *data)
+{
+	IvyContext *ctx = (IvyContext *)data;
+
+	if (!ctx)
+		return;
+
+	IvyMutexLock(&ctx->ivy_mutex);
+	if (ctx->ivy_state != IVY_CTX_STOPPED) {
+		ctx->ivy_state = IVY_CTX_STOPPING;
+		IvyChannelStop();
+		ctx->ivy_state = IVY_CTX_STOPPED;
+		IvyCondBroadcast(&ctx->ivy_stop_done);
+	}
+	IvyMutexUnlock(&ctx->ivy_mutex);
+}
+
 int IvyContextStop(IvyContext *ctx)
 {
+	IvyContextState state;
+	int should_post = 0;
+	int should_wait = 0;
+	int run_direct = 0;
+
 	if (!ctx)
 		return IvyReturnStatus(IVY_EINVAL);
 
-	if (IvyContextStateIs(ctx, IVY_CTX_STOPPED))
+	IvyMutexLock(&ctx->ivy_mutex);
+	state = ctx->ivy_state;
+	if (state == IVY_CTX_STOPPED) {
+		IvyMutexUnlock(&ctx->ivy_mutex);
 		return IvyReturnStatus(IVY_OK);
+	}
 
-	IvyContextSetState(ctx, IVY_CTX_STOPPING);
-	IvyChannelStop();
-	IvyContextSetState(ctx, IVY_CTX_STOPPED);
+	if (state != IVY_CTX_RUNNING && state != IVY_CTX_STARTING && state != IVY_CTX_STOPPING) {
+		ctx->ivy_state = IVY_CTX_STOPPED;
+		IvyCondBroadcast(&ctx->ivy_stop_done);
+		IvyMutexUnlock(&ctx->ivy_mutex);
+		return IvyReturnStatus(IVY_OK);
+	}
+
+	if (state != IVY_CTX_STOPPING) {
+		ctx->ivy_state = IVY_CTX_STOPPING;
+		should_post = 1;
+	}
+
+#ifdef WIN32
+	run_direct = 1;
+#else
+	if (IvyChannelIsLoopThread() || !IvyChannelLoopIsActive())
+		run_direct = 1;
+	else
+		should_wait = 1;
+#endif
+
+	IvyMutexUnlock(&ctx->ivy_mutex);
+
+	if (run_direct) {
+		IvyContextStopInLoop(ctx);
+		return IvyReturnStatus(IVY_OK);
+	}
+
+	if (should_post && IvyChannelPostControl(IvyContextStopInLoop, ctx) != 0) {
+		IvyContextStopInLoop(ctx);
+		return IvyReturnStatus(IVY_OK);
+	}
+
+	if (should_wait) {
+		IvyMutexLock(&ctx->ivy_mutex);
+		while (ctx->ivy_state != IVY_CTX_STOPPED)
+			IvyCondWait(&ctx->ivy_stop_done, &ctx->ivy_mutex);
+		IvyMutexUnlock(&ctx->ivy_mutex);
+	}
+
 	return IvyReturnStatus(IVY_OK);
 }
 

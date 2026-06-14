@@ -53,6 +53,7 @@ de la maniere suivante:
 */
 
 extern void IvyMainLoop(void);
+extern void IvyIdle(void);
 
 typedef void ( *IvyHookPtr) ( void *data );
 
@@ -66,4 +67,3 @@ void IvySetAfterSelectHook(IvyHookPtr after, void *data );
 #endif
 
 #endif
-

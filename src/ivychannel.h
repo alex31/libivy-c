@@ -36,11 +36,16 @@ typedef void (*ChannelHandleDelete)( void *data );
 /* callback declenche par la gestion de boucle sur donnees pretes sur le canal */
 typedef void (*ChannelHandleRead)( Channel channel, IVY_HANDLE fd, void *data);
 typedef void (*ChannelHandleWrite)( Channel channel, IVY_HANDLE fd, void *data);
+typedef void (*IvyControlCallback)(void *data);
 
 /* fonction appele par le bus pour initialisation */
 extern void IvyChannelInit(void);
 
 extern void IvyChannelStop (void);
+extern void IvyChannelWake (void);
+extern int IvyChannelPostControl(IvyControlCallback callback, void *data);
+extern int IvyChannelLoopIsActive(void);
+extern int IvyChannelIsLoopThread(void);
 
 /* fonction appele par le bus pour mise en place des callback sur le canal */
 extern Channel IvyChannelAdd(
@@ -60,4 +65,3 @@ extern void IvyChannelRemove( Channel channel );
 #endif
 
 #endif
-
