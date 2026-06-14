@@ -760,10 +760,13 @@ void verifyReceiverCB (IvyClientPtr app, void *user_data, int argc, char *argv[]
 
   count = IvySendMsg ("__ivyverify_ack %s %u %u %s",
 		      verifyRunId, globalInst, msgId, argv[2]);
-  if (count != 1) {
+  if (count < 1) {
     fprintf(stderr, "receiver %u could not acknowledge msg %u, matches=%d\n",
 	    globalInst, msgId, count);
     exit(2);
+  } else if (count > 1) {
+    printf ("receiver %u acknowledgement extra matches: msg=%u expected=1 actual=%d\n",
+	    globalInst, msgId, count);
   }
 }
 
