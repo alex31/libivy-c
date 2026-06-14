@@ -24,6 +24,7 @@
 #endif
 
 #include <stdlib.h>
+#include <stdint.h>
 #ifdef __MINGW32__
 #include <sys/time.h>
 #include <Ws2tcpip.h>
@@ -222,6 +223,7 @@ static MsgSndDictPtr messSndByRegexp = NULL;
 
 static const char *ready_message = NULL;
 static void substituteInterval (IvyBuffer *src);
+static int ParseIvyIPv4Broadcast(const char *start, const char *end, uint32_t *out);
 
 static int RegexpCall (const MsgSndDictPtr msg, const char * const message);
 static int RegexpCallUnique (const MsgSndDictPtr msg, const char * const message, 
@@ -1009,15 +1011,51 @@ void IvyStop (void)
 	IvyChannelStop();
 }
 
+static int ParseIvyIPv4Broadcast(const char *start, const char *end, uint32_t *out)
+{
+	uint32_t mask = UINT32_MAX;
+	uint32_t elem = 0;
+	int numdigit = 0;
+	int numelem = 0;
+	const char *p;
+
+	if (!start || !end || !out || start == end)
+		return 0;
+
+	for (p = start; ; p++) {
+		const int c = (p < end) ? (unsigned char)*p : '\0';
+
+		if (isdigit(c)) {
+			if (numdigit >= 3 || numelem >= 4)
+				return 0;
+			elem = 10u * elem + (uint32_t)(c - '0');
+			numdigit++;
+			if (elem > 255u)
+				return 0;
+		} else if (c == '.' || c == '\0') {
+			if (numdigit == 0 || numelem >= 4)
+				return 0;
+
+			const uint32_t shift = 8u * (uint32_t)(3 - numelem);
+			mask = (mask ^ (0xffu << shift)) | (elem << shift);
+			if (c == '\0') {
+				*out = mask;
+				return 1;
+			}
+
+			numelem++;
+			numdigit = 0;
+			elem = 0;
+		} else if (c != ' ') {
+			return 0;
+		}
+	}
+}
 
 void IvyStart (const char* bus)
 {
 	struct in6_addr ipv6addr;
 	struct in_addr baddr;
-	unsigned int mask = 0xffffffff; 
-	unsigned char elem = 0;
-	int numdigit = 0;
-	int numelem = 0;
 	int error = 0;
 	const char* p = bus;	/* used for decoding address list */
 	const char* q;			/* used for decoding port number */
@@ -1102,25 +1140,13 @@ void IvyStart (const char* bus)
 	   This is painful but inet_aton is sloppy.
 	   If someone knows other builtin routines that do that... */
 	for (;;) {
-		/* address elements are up to 3 digits... */
-		if (!error && isdigit (*p)) {
-			if (numdigit < 3 && numelem < 4) {
-				elem = 10 * elem +  *p -'0';
-			} else {
-				error = 1;
-			}
+		const char *addr_start = p;
+		uint32_t mask;
 
-		/* ... terminated by a point, a comma or a colon, or the end of string */
-		} else if (!error && (*p == '.' || *p == ',' || *p == ':' || *p == '\0')) {
-			mask = (mask ^ (0xff << (8*(3-numelem)))) | (elem << (8*(3-numelem)));
+		while (*p && *p != ',' && *p != ':')
+			p++;
 
-			/* after a point, expect next address element */
-			if (*p == '.') {
-				numelem++;
-
-			/* addresses are terminated by a comma or end of string */
-			} else {
-
+		if (ParseIvyIPv4Broadcast(addr_start, p, &mask)) {
 				baddr.s_addr = htonl(mask);
 				printf ("Broadcasting on network %s, port %d\n", 
 					inet_ntoa(baddr), SupervisionPort);
@@ -1131,27 +1157,8 @@ void IvyStart (const char* bus)
 				SocketSendBroadcast (broadcast, mask, SupervisionPort, 
 						     "%d %hu %s %s\n", IVYMAJOR_VERSION, ApplicationPort, 
 						     ApplicationID, ApplicationName); 
-				numelem = 0;
-				mask = 0xffffffff;
-			}
-			numdigit = 0;
-			elem = 0;
-
-		/* recover from bad addresses at next comma or colon or at end of string */
-		} else if (*p == ',' || *p == ':' || *p == '\0') {
-			fprintf (stderr, "bad broadcast address\n");
-			elem = 0;
-			numelem = 0;
-			numdigit = 0;
-			mask = 0xffffffff;
-			error = 0;
-
-		/* ignore spaces */
-		} else if (*p == ' ') {
-
-		  /* everything else is illegal */
 		} else {
-			error = 1;
+			fprintf (stderr, "bad broadcast address\n");
 		}
 
 		/* end of string or colon */
