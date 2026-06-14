@@ -61,39 +61,47 @@ Limites encore présentes :
 
 ## Situation actuelle
 
-L'implémentation historique suppose implicitement :
+L'implémentation historique supposait implicitement :
 
 - un seul bus Ivy par processus ;
 - une seule boucle d'événements propriétaire ;
 - des callbacks utilisateur appelés directement depuis le dispatch réseau ;
 - des pointeurs internes exposés comme handles publics.
 
-Les principaux états globaux mutables sont aujourd'hui dans :
+La branche `FEATURE/multi_bus-MT_safe_phase6` a levé les trois premières
+frontières globales pour la boucle select principale. L'état Ivy principal est
+porté par `IvyContext`; la boucle, les sockets et les timers disposent d'états
+contextuels séparés. Les wrappers legacy restent une façade sur un contexte par
+défaut et conservent donc une partie du modèle historique pour la compatibilité.
+
+État des principales zones historiquement globales :
 
 - `src/ivy.c` : identité applicative, callbacks, sockets TCP/UDP, binds locaux,
-  clients connectés, dictionnaires de regexps, ready message, mode IPv4/IPv6 ;
-- `src/ivyloop.c` : liste de channels, `fd_set`, `highestFd`, `MainLoop`,
-  hooks avant/après `select()` ;
-- `src/ivysocket.c` : listes globales de sockets serveur et client ;
-- `src/timer.c` : liste globale des timers et timeout courant de `select()` ;
-- `src/ivybind.c` : table globale de filtrage des regexps et regexp
-  d'extraction de token.
-
-À partir de la phase 1, la plupart des états de `src/ivy.c` sont déjà
-regroupés dans `IvyContext`. Les autres modules cités restent des frontières
-globales importantes et constituent le coeur de la phase 6.
+  clients connectés, dictionnaires de regexps, ready message et mode IPv4/IPv6
+  sont dans `IvyContext`; les globals restants concernent le contexte legacy,
+  l'erreur thread-local et le contexte courant thread-local ;
+- `src/ivyloop.c` : les channels, `fd_set`, `highestFd`, `MainLoop`, hooks et
+  wakeup POSIX sont portés par `IvyChannelState`; un état par défaut subsiste
+  pour l'API legacy ;
+- `src/ivysocket.c` : les listes de sockets serveur/client sont portées par
+  `SocketState`, associé à sa boucle propriétaire ;
+- `src/timer.c` : la liste de timers et le timeout de `select()` sont portés
+  par `IvyTimerState`, lui-même attaché à la boucle ;
+- `src/ivybind.c` : la table de filtrage des regexps reste globale.
 
 Plusieurs fonctions utilisent aussi des buffers `static` pour éviter des
 allocations répétées. C'est pratique dans une boucle mono-thread historique,
-mais incompatible avec des appels réentrants. Certaines zones ont un traitement
-OpenMP `threadprivate`, mais cela ne couvre qu'un chemin étroit
-regexp/envoi et ne rend pas l'API du bus réentrante.
+mais incompatible avec une API strictement réentrante. Plusieurs chemins ont
+été corrigés, notamment `IvySendMsg()` et les buffers scratch principaux, mais
+les queries legacy et leurs variantes contextuelles actuelles retournent encore
+des buffers possédés par le contexte. Certaines zones ont un traitement OpenMP
+`threadprivate`, mais cela ne couvre qu'un chemin étroit regexp/envoi.
 
-`IvyStop()` appelle actuellement `IvyChannelStop()`, qui pose seulement un
-flag global de boucle à faux. Cela ne réveille pas forcément un thread bloqué
-dans `select()`, ne cible pas un bus précis, ne définit pas le protocole
-d'arrêt pour les autres threads et ne clarifie pas la durée de vie des
-ressources.
+`IvyStop()` est maintenant une façade sur `IvyContextStop()` du contexte
+courant. Sur POSIX, la boucle select est réveillée par le canal de wakeup de
+son `IvyChannelState`. Le chemin Windows reste à finaliser : sans équivalent
+socket/event compatible avec `select()`, l'interruption asynchrone de la boucle
+ne peut pas être considérée aussi robuste que le chemin POSIX.
 
 ## Objectifs
 
@@ -116,15 +124,17 @@ Hors périmètre pour la première étape :
 - rendre chaque objet interne indépendamment concurrent ;
 - imposer immédiatement un nouveau framework d'event loop aux applications.
 
-## Modèle public proposé
+## Modèle public actuel et direction
 
-Introduire un contexte opaque :
+Le contexte opaque est exposé :
 
 ```c
 typedef struct IvyContext IvyContext;
 ```
 
-Ajouter une API contextuelle :
+L'API contextuelle publique actuellement exposée couvre le cycle de vie, la
+boucle select, les callbacks, bind/change/unbind, send/direct/die/ping et les
+queries applicatives :
 
 ```c
 typedef enum {
@@ -155,7 +165,6 @@ IvyContext *IvyContextCreate(
 
 int IvyContextStart(IvyContext *ctx, const char *bus);
 int IvyContextStop(IvyContext *ctx);
-int IvyContextJoin(IvyContext *ctx);
 int IvyContextDestroy(IvyContext *ctx);
 void IvyContextMainLoop(IvyContext *ctx);
 void IvyContextIdle(IvyContext *ctx);
@@ -230,7 +239,11 @@ valeur de retour ne doit pas devenir un mécanisme de contrôle Ivy.
 
 ## Contenu d'un contexte
 
-La majorité des globals mutables doivent migrer dans `struct IvyContext`.
+La majorité des globals mutables du coeur Ivy ont migré dans `struct
+IvyContext` ou dans des états possédés par lui (`IvyChannelState`,
+`SocketState`, `IvyTimerState`). Les points encore ouverts concernent surtout
+le filtrage global, les backends de boucle alternatifs et les conventions de
+handles/buffers héritées.
 
 Au niveau bus :
 
@@ -244,14 +257,14 @@ Au niveau bus :
 - bindings locaux de réception ;
 - dictionnaire des regexps distantes ;
 - callbacks application, bind, die, direct et pong ;
-- flags de debug actuellement globaux ;
+- flags de debug portés par le contexte ;
 - état de shutdown ;
 - mutex et variables de condition ;
 - file de contrôle ;
 - canal de réveil de l'event loop.
 
-L'état de boucle devrait aussi être contextuel, probablement dans une structure
-embarquée :
+L'état de boucle est désormais contextuel. Conceptuellement, il correspond à
+une structure de ce type, aujourd'hui matérialisée par `IvyChannelState` :
 
 ```c
 struct IvyLoop {
@@ -264,12 +277,13 @@ struct IvyLoop {
 };
 ```
 
-Les sockets doivent être associées à la boucle ou au contexte qui les possède.
-Les timers doivent également être contextuels, ou au minimum attachés à la
-boucle, car une liste globale de timers empêche deux bus indépendants d'avoir
-des échéances et des attentes indépendantes.
+Les sockets sont associées à la boucle et au contexte qui les possèdent via
+`SocketState`. Les timers sont attachés à la boucle via `IvyTimerState`, ce qui
+permet à deux bus indépendants d'avoir des échéances et des attentes
+indépendantes.
 
-La table de filtrage des regexps dans `ivybind.c` demande une décision :
+La table de filtrage des regexps dans `ivybind.c` reste la principale décision
+ouverte :
 
 - la garder globale seulement pour la compatibilité legacy ;
 - préférer une table par contexte pour la nouvelle API ;
@@ -283,7 +297,7 @@ plusieurs threads, sans imposer que tous les messages transitent par une file.
 
 Le modèle validé est hybride :
 
-- chaque bus ou futur `IvyContext` a une boucle propriétaire ;
+- chaque `IvyContext` a une boucle propriétaire ;
 - toute API Ivy peut être appelée depuis n'importe quel thread applicatif ;
 - l'état de cycle de vie du contexte est protégé par `ctx->mutex` ;
 - le graphe des abonnements distants (`messSndByRegexp`, les bindings compilés
@@ -300,8 +314,8 @@ Le modèle validé est hybride :
   verrou d'envoi du client cible ;
 - `stop` prend `ctx->mutex`, bascule l'état de cycle de vie, puis coordonne la
   fermeture avec la boucle propriétaire ;
-- les callbacks utilisateur sont toujours appelés dans le thread propriétaire
-  de la boucle ;
+- les callbacks issus du dispatch réseau sont appelés dans le thread
+  propriétaire de la boucle ;
 - les opérations qui manipulent la toolkit ou l'event loop sont exécutées dans
   le thread propriétaire de la boucle ;
 - l'envoi normal reste direct : il n'est pas posté dans une file de messages.
@@ -360,12 +374,12 @@ idéalement être compatible socket.
 Sans ce mécanisme, un `IvyContextStop()` peut rester bloqué jusqu'à l'arrivée
 d'un trafic réseau ou d'un timeout de timer.
 
-Les backends GLib, Xt, Tcl et GLUT doivent suivre la même règle : un thread
-applicatif peut demander une opération, mais l'ajout/retrait effectif d'une
-watch toolkit se fait dans le thread propriétaire de la boucle. Cela concerne
-en particulier `IvyChannelAddWritableEvent()` et
-`IvyChannelClearWritableEvent()` quand un envoi depuis un worker thread fait
-entrer ou sortir une socket de congestion.
+Les backends GLib, Xt, Tcl et GLUT doivent suivre la même règle mais ne sont
+pas encore contextualisés. Un thread applicatif peut demander une opération,
+mais l'ajout/retrait effectif d'une watch toolkit doit se faire dans le thread
+propriétaire de la boucle. Cela concerne en particulier
+`IvyChannelAddWritableEvent()` et `IvyChannelClearWritableEvent()` quand un
+envoi depuis un worker thread fait entrer ou sortir une socket de congestion.
 
 ## Sémantique d'arrêt
 
@@ -382,8 +396,8 @@ IVY_CTX_DESTROYED
 
 Règles proposées :
 
-- `IvyContextStart()` est valide depuis `CREATED`, et éventuellement depuis
-  `STOPPED` si le redémarrage est supporté ;
+- `IvyContextStart()` est valide depuis `CREATED`; le redémarrage après
+  `STOPPED` n'est pas supporté à ce stade ;
 - `IvyContextStop()` est idempotent depuis `RUNNING`, `STOPPING` et `STOPPED` ;
 - `IvyContextStop()` est synchrone côté API : quand il retourne `IVY_OK`,
   l'arrêt du contexte est terminé ou le contexte était déjà arrêté ;
@@ -395,8 +409,9 @@ Règles proposées :
   passe à `STOPPED` ;
 - la boucle propriétaire exécute la partie qui touche les channels et la
   toolkit ;
-- `IvyContextDestroy()` est valide seulement après `STOPPED`, ou appelle
-  lui-même stop puis join.
+- `IvyContextDestroy()` appelle `stop` si nécessaire, attend les callbacks en
+  cours quand l'appel ne vient pas lui-même d'une callback, puis libère le
+  contexte.
 
 Pseudo-code hors cas callback :
 
@@ -475,6 +490,12 @@ C'est la règle centrale anti-deadlock. Un mutex global récursif masquerait une
 partie des deadlocks, mais ne résoudrait ni l'invalidation d'itérateurs ni les
 courses de durée de vie.
 
+État actuel : les callbacks utilisateur ordinaires et les callbacks de bind
+sont sortis des verrous internes. Les callbacks de congestion/FIFO détectées
+sur un envoi depuis un worker thread restent le principal point à durcir : ils
+doivent être systématiquement republiés dans la file de contrôle de la boucle
+propriétaire avant d'être exposés à l'application.
+
 ## Durée de vie des objets
 
 `IvyClientPtr` et `MsgRcvPtr` sont aujourd'hui des pointeurs bruts vers des
@@ -487,6 +508,11 @@ Compatibilité court terme :
   unbind explicite selon le contrat existant ;
 - garantir que stop attend la fin des callbacks en cours avant de libérer les
   structures qu'elles référencent.
+
+Limite actuelle : ces handles restent utilisables comme pointeurs internes. Un
+thread qui conserve un `IvyClientPtr` au-delà de la callback ou sans
+coordination avec l'arrêt du contexte reste hors contrat sûr. La migration doit
+donc éviter d'étendre cette convention aux nouvelles API.
 
 Direction long terme :
 
@@ -523,6 +549,12 @@ L'API legacy peut conserver ses conventions de propriété mémoire historiques,
 mais elle doit alors être documentée comme couche de compatibilité avec
 limitations.
 
+État actuel : `IvyContextGetApplicationList()` et
+`IvyContextGetApplicationMessages()` verrouillent le parcours, mais retournent
+encore des buffers possédés par le contexte. C'est suffisant pour `ivyprobe` et
+les tests phase 6.5, mais ce n'est pas le contrat final d'une API MT-safe
+réentrante.
+
 ## Verrouillage
 
 Garder peu de verrous, avec des responsabilités explicites :
@@ -547,7 +579,7 @@ Garder peu de verrous, avec des responsabilités explicites :
   I/O socket si le travail peut être préparé hors verrou ;
 - appeler une API GLib/Xt/Tcl/GLUT depuis un worker thread ;
 - poster tous les messages Ivy ordinaires dans une file intermédiaire ;
-- appeler `IvyContextJoin()` depuis le thread de boucle.
+- attendre la fin d'une boucle depuis son propre thread propriétaire.
 
 ## Optimisations ultérieures
 
@@ -675,11 +707,39 @@ multibus `tests/phase65_public_multibus_api_test.c`.
 
 ### Phase 7 : nettoyage de l'API publique
 
-- Ajouter des fonctions contextuelles de query sans buffers statiques.
-- Ajouter des codes d'erreur explicites.
+- Ajouter des fonctions contextuelles de query sans buffers possédés par le
+  contexte, avec buffer fourni par l'appelant. Ne pas introduire d'objet
+  résultat ni de modèle d'allocation supplémentaire tant qu'un besoin réel ne
+  l'impose.
+- Conserver `IvyClientPtr` et `MsgRcvPtr` comme handles publics existants.
+  Clarifier simplement leur durée de vie et éviter d'ajouter des handles
+  référencés/générationnels sans bug concret à résoudre.
+- Ajuster seulement les signatures qui posent un vrai problème d'usage ou de
+  sûreté, en gardant les wrappers legacy et les fonctions contextuelles déjà
+  exposées.
 - Documenter les anciennes API comme wrappers sur le contexte par défaut.
 - Documenter précisément quelles fonctions sont thread-safe et quelles limites
   restent liées aux signatures legacy.
+- Documenter l'API publique directement dans `ivy.h` avec Doxygen, en montrant
+  les exemples d'utilisation de l'API contextuelle pour les nouveaux projets et
+  en marquant les wrappers legacy comme compatibilité.
+- Ajouter des tests ciblés sur les queries à buffer appelant et sur les appels
+  concurrents réalistes, sans batterie abstraite disproportionnée.
+
+Statut : implémentée dans `FEATURE/multi_bus-MT_safe_phase7` pour le besoin
+concret identifié : queries publiques à buffer fourni par l'appelant
+(`IvyContextGetApplicationListBuffer()`,
+`IvyContextGetApplicationMessagesBuffer()` et wrappers legacy), getters
+contextuels de nom/hôte d'application, et `ivyprobe` recâblé pour ne plus
+utiliser les wrappers legacy dans son code. L'API publique de `ivy.h` est
+documentée en Doxygen avec exemples par fonction et un `Doxyfile` minimal
+génère la documentation depuis ce header. Le tout est couvert par
+`tests/run_phase7.sh` sur deux bus réels, complété par le test existant
+`tests/run_phase6_ivyprobe.sh` pour le probe multibus. Les fonctions à buffer
+retournent directement la taille du buffer à fournir, terminateur `NUL` inclus,
+pour éviter un `+1` répété côté appelant. Les handles publics historiques
+restent `IvyClientPtr` et `MsgRcvPtr`; aucun modèle de handles référencés n'a
+été ajouté.
 
 ### Phase 8 : outils et timers multi-bus
 
@@ -693,6 +753,17 @@ multibus `tests/phase65_public_multibus_api_test.c`.
   selon la sémantique retenue.
 - Repasser les outils d'exemple et de diagnostic sur l'API contextuelle quand
   ils ont une raison métier d'être multi-bus.
+
+### Phase 9 : portabilité et backends de boucle alternatifs
+
+- Implémenter ou valider un wakeup Windows compatible avec le `select()`
+  existant, par exemple via socketpair émulé ou Winsock event.
+- Contextualiser les backends GLib, Xt, Tcl et GLUT, ou documenter explicitement
+  qu'ils restent limités au modèle legacy mono-boucle.
+- Ajouter des tests de compilation et, si possible, des smoke tests pour les
+  backends activables dans l'arbre.
+- Vérifier que les changements de watch writable déclenchés par un worker
+  thread sont toujours exécutés dans le thread propriétaire du backend concerné.
 
 ## Protocole de test continu (TDD)
 
@@ -733,7 +804,15 @@ depuis son callback applicatif de connexion.
 - **Indépendance des cycles :** Créer un timer sur le bus A. Stopper et détruire complètement le bus B. Le timer du bus A doit continuer à s'exécuter normalement, sans interférence.
 
 ### Phase 7 : Nettoyage de l'API publique
-- **Tests Mémoire (ASAN/Valgrind) :** Créer, démarrer, stopper et détruire de multiples contextes en boucle. Valider par Valgrind (ou équivalent) l'absence absolue de fuite mémoire ou de descripteurs de fichiers non fermés (0 bytes leaked).
+- **Queries sans buffers partagés :** Appeler les nouvelles APIs de query depuis
+  plusieurs threads et vérifier que les résultats restent stables sans
+  écrasement croisé.
+- **Contrat des handles existants :** Vérifier que la documentation et les tests
+  couvrent les usages réels : handle reçu dans une callback, query pendant que
+  le contexte est vivant, et échec propre après arrêt.
+- **Tests Mémoire ciblés :** Créer, démarrer, stopper et détruire plusieurs
+  contextes dans les tests existants. Réserver ASAN/Valgrind à une passe de
+  validation dédiée, pas à une expansion systématique de l'API.
 
 ### Phase 8 : Outils et timers multi-bus
 - **Timer ivyprobe multi-bus :** Lancer `ivyprobe -t` sur deux bus. Selon la
@@ -742,6 +821,14 @@ depuis son callback applicatif de connexion.
 - **Arrêt propre des timers :** Quitter `ivyprobe` pendant qu'un timer est armé
   et vérifier que tous les contextes s'arrêtent sans callback tardif, fuite de
   timer ou accès à un contexte détruit.
+
+### Phase 9 : Portabilité et backends alternatifs
+- **Wakeup Windows :** Déclencher `IvyContextStop()` depuis un worker thread
+  pendant que la boucle Windows est bloquée dans `select()`. L'arrêt doit
+  réveiller la boucle sans attendre de trafic réseau.
+- **Backends toolkit :** Pour chaque backend compilable, poster un changement
+  writable depuis un worker thread et vérifier que l'opération effective est
+  exécutée par le thread propriétaire du backend.
 
 ## Compatibilité
 
@@ -782,7 +869,6 @@ buffers fournis par l'appelant ou des objets résultat à libération explicite.
   file/un thread de dispatch séparé ?
 - Un contexte arrêté doit-il pouvoir redémarrer, ou est-il single-use ?
 - Les filtres de regexps doivent-ils être uniquement contextuels ?
-- Quel primitif de réveil Windows utiliser avec le `select()` actuel ?
 - Faut-il conserver le parallélisme OpenMP regexp pendant la migration, ou le
   désactiver jusqu'à stabilisation du modèle contextuel ?
 

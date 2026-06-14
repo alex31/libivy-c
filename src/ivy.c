@@ -47,6 +47,7 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #include <stdarg.h>
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 
 #include <fcntl.h>
 
@@ -271,6 +272,7 @@ static IvyContext *IvyPushCurrentContext(IvyContext *ctx);
 static void IvyPopCurrentContext(IvyContext *previous);
 static IvyStatus IvySetLastError(IvyStatus status);
 static int IvyReturnStatus(IvyStatus status);
+static int IvyReturnQueryBufferSize(size_t content_size, size_t buffer_size);
 static int IvyContextRejectIfStopped(const IvyContext *ctx);
 static void IvyContextSetState(IvyContext *ctx, IvyContextState state);
 static int IvyContextStateIs(const IvyContext *ctx, IvyContextState state);
@@ -371,6 +373,20 @@ static int IvyReturnStatus(IvyStatus status)
 {
 	IvySetLastError(status);
 	return (int)status;
+}
+
+static int IvyReturnQueryBufferSize(size_t content_size, size_t buffer_size)
+{
+	size_t required_size;
+
+	if (content_size > (size_t)INT_MAX - 1)
+		return IvyReturnStatus(IVY_ENOMEM);
+	required_size = content_size + 1;
+	if (buffer_size > 0 && required_size > buffer_size)
+		IvySetLastError(IVY_ENOMEM);
+	else
+		IvySetLastError(IVY_OK);
+	return (int)required_size;
 }
 
 IvyStatus IvyGetLastError(void)
@@ -2529,18 +2545,69 @@ int IvySendDieMsg(IvyClientPtr app )
   return IvyContextSendDieMsg(IvyGetCurrentContext(), app);
 }
 
-const char *IvyGetApplicationName(IvyClientPtr app )
+static int IvyContextOwnsApplication(IvyContext *ctx, IvyClientPtr app)
 {
-	if ( app && app->app_name )
-		return app->app_name;
-	else return "Unknown";
+	IvyClientPtr found;
+
+	if (!ctx || !app)
+		return 0;
+	IVY_LIST_ITER(ctx->ivy_all_clients, found, found != app);
+	return found != NULL;
 }
 
-const char *IvyGetApplicationHost(IvyClientPtr app )
+const char *IvyContextGetApplicationName(IvyContext *ctx, IvyClientPtr app)
 {
-	if ( app && app->client )
-		return SocketGetPeerHost (app->client );
-	else return 0;
+	const char *name = NULL;
+
+	if (!ctx || !app) {
+		IvySetLastError(IVY_EINVAL);
+		return NULL;
+	}
+
+	IvyBindingsReadLock(ctx);
+	if (IvyContextOwnsApplication(ctx, app) && app->app_name)
+		name = app->app_name;
+	IvyBindingsReadUnlock(ctx);
+
+	if (!name) {
+		IvySetLastError(IVY_EINVAL);
+		return NULL;
+	}
+	IvySetLastError(IVY_OK);
+	return name;
+}
+
+const char *IvyContextGetApplicationHost(IvyContext *ctx, IvyClientPtr app)
+{
+	const char *host = NULL;
+
+	if (!ctx || !app) {
+		IvySetLastError(IVY_EINVAL);
+		return NULL;
+	}
+
+	IvyBindingsReadLock(ctx);
+	if (IvyContextOwnsApplication(ctx, app) && app->client)
+		host = SocketGetPeerHost(app->client);
+	IvyBindingsReadUnlock(ctx);
+
+	if (!host) {
+		IvySetLastError(IVY_EINVAL);
+		return NULL;
+	}
+	IvySetLastError(IVY_OK);
+	return host;
+}
+
+const char *IvyGetApplicationName(IvyClientPtr app)
+{
+	const char *name = IvyContextGetApplicationName(IvyGetCurrentContext(), app);
+	return name ? name : "Unknown";
+}
+
+const char *IvyGetApplicationHost(IvyClientPtr app)
+{
+	return IvyContextGetApplicationHost(IvyGetCurrentContext(), app);
 }
 
 void IvyDefaultApplicationCallback(IvyClientPtr app, void *user_data, IvyApplicationEvent event)
@@ -2593,6 +2660,9 @@ void IvyDefaultBindCallback(IvyClientPtr app, void *user_data, int id, const cha
 IvyClientPtr IvyContextGetApplication(IvyContext *ctx, char *name)
 {
 	IvyClientPtr app = 0;
+	int status = IvyContextRejectIfStopped(ctx);
+	if (status != IVY_OK)
+		return NULL;
 	if (!ctx || !name) {
 		IvySetLastError(IVY_EINVAL);
 		return NULL;
@@ -2609,10 +2679,31 @@ IvyClientPtr IvyGetApplication( char *name )
 	return IvyContextGetApplication(IvyGetCurrentContext(), name);
 }
 
+static void IvyAppendQueryBuffer(char *buffer, size_t buffer_size,
+	size_t *written, size_t *required, const char *value)
+{
+	size_t len;
+
+	if (!value)
+		value = "";
+	len = strlen(value);
+	if (buffer && buffer_size > 0 && *written < buffer_size - 1) {
+		size_t available = buffer_size - 1 - *written;
+		size_t copy_len = len < available ? len : available;
+		memcpy(buffer + *written, value, copy_len);
+		*written += copy_len;
+		buffer[*written] = '\0';
+	}
+	*required += len;
+}
+
 char *IvyContextGetApplicationList(IvyContext *ctx, const char *sep)
 {
 	char *applist;
 	IvyClientPtr app;
+	int status = IvyContextRejectIfStopped(ctx);
+	if (status != IVY_OK)
+		return NULL;
 	if (!ctx || !sep) {
 		IvySetLastError(IVY_EINVAL);
 		return NULL;
@@ -2630,9 +2721,40 @@ char *IvyContextGetApplicationList(IvyContext *ctx, const char *sep)
 	return applist;
 }
 
+int IvyContextGetApplicationListBuffer(IvyContext *ctx,
+	char *buffer, size_t buffer_size, const char *sep)
+{
+	IvyClientPtr app;
+	size_t written = 0;
+	size_t required = 0;
+	int status = IvyContextRejectIfStopped(ctx);
+
+	if (status != IVY_OK)
+		return status;
+	if (!ctx || !sep || (!buffer && buffer_size > 0))
+		return IvyReturnStatus(IVY_EINVAL);
+	if (buffer_size > 0)
+		buffer[0] = '\0';
+
+	IvyBindingsReadLock(ctx);
+	IVY_LIST_EACH( ctx->ivy_all_clients, app )
+		{
+		IvyAppendQueryBuffer(buffer, buffer_size, &written, &required, app->app_name);
+		IvyAppendQueryBuffer(buffer, buffer_size, &written, &required, sep);
+		}
+	IvyBindingsReadUnlock(ctx);
+	return IvyReturnQueryBufferSize(required, buffer_size);
+}
+
 char *IvyGetApplicationList(const char *sep)
 {
 	return IvyContextGetApplicationList(IvyGetCurrentContext(), sep);
+}
+
+int IvyGetApplicationListBuffer(char *buffer, size_t buffer_size, const char *sep)
+{
+	return IvyContextGetApplicationListBuffer(IvyGetCurrentContext(),
+		buffer, buffer_size, sep);
 }
 
 char **IvyContextGetApplicationMessages(IvyContext *ctx, IvyClientPtr app)
@@ -2640,6 +2762,9 @@ char **IvyContextGetApplicationMessages(IvyContext *ctx, IvyClientPtr app)
 	char **messagelist;
 	GlobRegPtr  msg;
 	int msgCount= 0;
+	int status = IvyContextRejectIfStopped(ctx);
+	if (status != IVY_OK)
+		return NULL;
 	if (!ctx || !app) {
 		IvySetLastError(IVY_EINVAL);
 		return NULL;
@@ -2662,9 +2787,41 @@ char **IvyContextGetApplicationMessages(IvyContext *ctx, IvyClientPtr app)
 	return messagelist;
 }
 
+int IvyContextGetApplicationMessagesBuffer(IvyContext *ctx,
+	IvyClientPtr app, char *buffer, size_t buffer_size, const char *sep)
+{
+	GlobRegPtr msg;
+	size_t written = 0;
+	size_t required = 0;
+	int status = IvyContextRejectIfStopped(ctx);
+
+	if (status != IVY_OK)
+		return status;
+	if (!ctx || !app || !sep || (!buffer && buffer_size > 0))
+		return IvyReturnStatus(IVY_EINVAL);
+	if (buffer_size > 0)
+		buffer[0] = '\0';
+
+	IvyBindingsReadLock(ctx);
+	IVY_LIST_EACH( app->srcRegList, msg )
+		{
+		IvyAppendQueryBuffer(buffer, buffer_size, &written, &required, msg->str_regexp);
+		IvyAppendQueryBuffer(buffer, buffer_size, &written, &required, sep);
+		}
+	IvyBindingsReadUnlock(ctx);
+	return IvyReturnQueryBufferSize(required, buffer_size);
+}
+
 char **IvyGetApplicationMessages( IvyClientPtr app )
 {
 	return IvyContextGetApplicationMessages(IvyGetCurrentContext(), app);
+}
+
+int IvyGetApplicationMessagesBuffer(IvyClientPtr app,
+	char *buffer, size_t buffer_size, const char *sep)
+{
+	return IvyContextGetApplicationMessagesBuffer(IvyGetCurrentContext(),
+		app, buffer, buffer_size, sep);
 }
 
 static void substituteInterval (IvyBuffer *src)

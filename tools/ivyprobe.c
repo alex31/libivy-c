@@ -149,6 +149,58 @@ static const char *ProbeBusLabel(const ProbeBus *bus)
 	return bus->bus;
 }
 
+static const char *ProbeApplicationName(const ProbeBus *bus, IvyClientPtr app)
+{
+	const char *name = NULL;
+
+	if (bus && bus->ctx)
+		name = IvyContextGetApplicationName(bus->ctx, app);
+	return name ? name : "Unknown";
+}
+
+static const char *ProbeApplicationHost(const ProbeBus *bus, IvyClientPtr app)
+{
+	const char *host = NULL;
+
+	if (bus && bus->ctx)
+		host = IvyContextGetApplicationHost(bus->ctx, app);
+	return host ? host : "unknown";
+}
+
+static ProbeBus *ProbeFindApplicationBus(IvyClientPtr app)
+{
+	size_t i;
+
+	for (i = 0; i < probe_bus_count; i++) {
+		if (IvyContextGetApplicationName(probe_buses[i].ctx, app))
+			return &probe_buses[i];
+	}
+	return NULL;
+}
+
+static char *ProbeGetApplicationList(const ProbeBus *bus, const char *separator)
+{
+	char *buffer;
+	int needed;
+	int status;
+
+	if (!bus || !bus->ctx)
+		return NULL;
+	needed = IvyContextGetApplicationListBuffer(bus->ctx, NULL, 0, separator);
+	if (needed < 0)
+		return NULL;
+	buffer = (char *)malloc((size_t)needed);
+	if (!buffer)
+		return NULL;
+	status = IvyContextGetApplicationListBuffer(bus->ctx,
+		buffer, (size_t)needed, separator);
+	if (status < 0 || status > needed) {
+		free(buffer);
+		return NULL;
+	}
+	return buffer;
+}
+
 static int ProbeAddBus(const char *bus)
 {
 	ProbeBus *new_buses;
@@ -220,7 +272,8 @@ static void ProbeSetBindCallbackAll(IvyBindCallback callback)
 	size_t i;
 
 	for (i = 0; i < probe_bus_count; i++)
-		IvyContextSetBindCallback(probe_buses[i].ctx, callback, NULL);
+		IvyContextSetBindCallback(probe_buses[i].ctx, callback,
+			callback ? &probe_buses[i] : NULL);
 }
 
 #ifndef WIN32
@@ -340,20 +393,31 @@ void DirectCallback(IvyClientPtr app, void *user_data, int id, char *msg )
 
 	if (probe_bus_count > 1)
 		printf("[%s] %s sent a direct message, id=%d, message=%s\n",
-		       ProbeBusLabel(bus), IvyGetApplicationName(app), id, msg);
+		       ProbeBusLabel(bus), ProbeApplicationName(bus, app), id, msg);
 	else
 		printf("%s sent a direct message, id=%d, message=%s\n",
-		       IvyGetApplicationName(app), id, msg);
+		       ProbeApplicationName(bus, app), id, msg);
 }
 
 
 void PongCallback (IvyClientPtr app, int roundTripOrTimout)
 {
+	ProbeBus *bus = ProbeFindApplicationBus(app);
+	const char *name = ProbeApplicationName(bus, app);
+	const char *prefix = "";
+	char prefix_buffer[256];
+
+	if (probe_bus_count > 1 && bus) {
+		snprintf(prefix_buffer, sizeof(prefix_buffer), "[%s] ",
+			 ProbeBusLabel(bus));
+		prefix = prefix_buffer;
+	}
+
 	if (roundTripOrTimout >= 0) {
-	  printf ("%s respond to ping in %.3f ms\n", IvyGetApplicationName(app),
+	  printf ("%s%s respond to ping in %.3f ms\n", prefix, name,
 		  roundTripOrTimout/1000.0);
 	} else {
-	  printf ("%s ping timout after %.3f ms\n", IvyGetApplicationName(app),
+	  printf ("%s%s ping timout after %.3f ms\n", prefix, name,
 		  -roundTripOrTimout/1000.0);
 	}
 }
@@ -363,9 +427,9 @@ void Callback (IvyClientPtr app, void *user_data, int argc, char *argv[])
 	ProbeBus *bus = (ProbeBus *)user_data;
 	int i;
 	if (probe_bus_count > 1)
-		printf ("[%s] %s sent ", ProbeBusLabel(bus), IvyGetApplicationName(app));
+		printf ("[%s] %s sent ", ProbeBusLabel(bus), ProbeApplicationName(bus, app));
 	else
-		printf ("%s sent ",IvyGetApplicationName(app));
+		printf ("%s sent ", ProbeApplicationName(bus, app));
 	for  (i = 0; i < argc; i++)
 			printf(" '%s'",argv[i]);
 	printf("\n");
@@ -619,9 +683,14 @@ static void ExecuteProbeCommand(char *line)
 		} else if (strcmp(cmd, "dieall-yes-i-am-sure") == 0) {
 			size_t i;
 			for (i = 0; i < probe_bus_count; i++) {
+				char *list = ProbeGetApplicationList(&probe_buses[i], separator);
 				list_saveptr = NULL;
-				arg = IvyContextGetApplicationList(probe_buses[i].ctx, separator);
-				arg = ProbeStrtok(arg, separator, &list_saveptr);
+				if (!list) {
+					printf("Unable to list applications on %s\n",
+					       ProbeBusLabel(&probe_buses[i]));
+					continue;
+				}
+				arg = ProbeStrtok(list, separator, &list_saveptr);
 				while  (arg) {
 					app = IvyContextGetApplication(probe_buses[i].ctx, arg);
 					if  (app)
@@ -633,6 +702,7 @@ static void ExecuteProbeCommand(char *line)
 						printf ("No Application %s!!!\n",arg);
 					arg = ProbeStrtok(NULL, separator, &list_saveptr);
 				}
+				free(list);
 			}
 
 		} else if (strcmp(cmd,  "bind") == 0) {
@@ -661,11 +731,11 @@ static void ExecuteProbeCommand(char *line)
 					if (app) {
 						if (probe_bus_count > 1)
 							printf ("Application %s on %s via %s\n",
-								arg, IvyGetApplicationHost(app),
+								arg, ProbeApplicationHost(&probe_buses[i], app),
 								ProbeBusLabel(&probe_buses[i]));
 						else
 							printf ("Application %s on %s\n",
-								arg, IvyGetApplicationHost(app));
+								arg, ProbeApplicationHost(&probe_buses[i], app));
 						found++;
 					}
 				}
@@ -695,12 +765,18 @@ static void ExecuteProbeCommand(char *line)
 		} else if  (strcmp(cmd, "who") == 0) {
 			size_t i;
 			for (i = 0; i < probe_bus_count; i++) {
+				char *list = ProbeGetApplicationList(&probe_buses[i], ",");
+				if (!list) {
+					printf("Unable to list applications on %s\n",
+					       ProbeBusLabel(&probe_buses[i]));
+					continue;
+				}
 				if (probe_bus_count > 1)
 					printf("Apps[%s]: %s\n", ProbeBusLabel(&probe_buses[i]),
-					       IvyContextGetApplicationList(probe_buses[i].ctx, ","));
+					       list);
 				else
-					printf("Apps: %s\n",
-					       IvyContextGetApplicationList(probe_buses[i].ctx, ","));
+					printf("Apps: %s\n", list);
+				free(list);
 			}
 
 		} else if  (strcmp(cmd, "ping") == 0) {
@@ -735,7 +811,7 @@ static void ExecuteProbeCommand(char *line)
 			printf("	.who				- who is on the bus\n");
 		} else if  (strcmp(cmd, "showbind") == 0) {
 		  if (!fbindcallback) {
-		    ProbeSetBindCallbackAll(IvyDefaultBindCallback);
+		    ProbeSetBindCallbackAll(IvyPrintBindCallback);
 		    fbindcallback=1;
 		  } else {
 		    ProbeSetBindCallbackAll(NULL);
@@ -773,9 +849,9 @@ void ApplicationCallback (IvyClientPtr app, void *user_data, IvyApplicationEvent
 	ProbeBus *bus = (ProbeBus *)user_data;
 	const char *appname;
 	const char *host;
-/*	char **msgList;*/
-	appname = IvyGetApplicationName (app);
-	host = IvyGetApplicationHost (app);
+
+	appname = ProbeApplicationName(bus, app);
+	host = ProbeApplicationHost(bus, app);
 	switch  (event)  {
 
 	case IvyApplicationConnected:
@@ -793,13 +869,6 @@ void ApplicationCallback (IvyClientPtr app, void *user_data, IvyApplicationEvent
 			printf("[%s] %s connected from %s\n", ProbeBusLabel(bus), appname,  host);
 		else
 			printf("%s connected from %s\n", appname,  host);
-/*		printf("Application(%s): Begin Messages\n", appname);*/
-/* double usage with -s flag remove it 
-		msgList = IvyGetApplicationMessages (app);
-		while (*msgList )
-			printf("%s subscribes to '%s'\n",appname,*msgList++);
-*/
-/*		printf("Application(%s): End Messages\n",appname);*/
 		break;
 
 	case IvyApplicationDisconnected:
@@ -839,24 +908,29 @@ void IvyPrintBindCallback( IvyClientPtr app, void *user_data, int id, const char
         case IvyAddBind:
                 if ( fbindcallback )
 					printf("%sApplication: %s on %s add regexp %d : %s\n",
-						prefix, IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
+						prefix, ProbeApplicationName(bus, app),
+						ProbeApplicationHost(bus, app), id, regexp);
                 break;
         case IvyRemoveBind:
                 if ( fbindcallback )
 					printf("%sApplication: %s on %s remove regexp %d :%s\n",
-						prefix, IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
+						prefix, ProbeApplicationName(bus, app),
+						ProbeApplicationHost(bus, app), id, regexp);
                 break;
         case IvyFilterBind:
                 printf("%sApplication: %s on %s as been filtred regexp %d :%s\n",
-					prefix, IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
+					prefix, ProbeApplicationName(bus, app),
+					ProbeApplicationHost(bus, app), id, regexp);
                 break;
         case IvyChangeBind:
                 if ( fbindcallback )
 					printf("%sApplication: %s on %s change regexp %d : %s\n",
-						prefix, IvyGetApplicationName( app ), IvyGetApplicationHost(app), id, regexp);
+						prefix, ProbeApplicationName(bus, app),
+						ProbeApplicationHost(bus, app), id, regexp);
                 break;
         default:
-                printf("%sApplication: %s unkown event %d\n", prefix, IvyGetApplicationName( app ), event);
+                printf("%sApplication: %s unkown event %d\n",
+		       prefix, ProbeApplicationName(bus, app), event);
                 break;
         }
 }
