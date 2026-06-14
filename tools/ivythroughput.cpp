@@ -168,7 +168,12 @@ int main(int argc, char *argv[])
       verifyDelivery = true;
       break;
     case 'b':
-      strcpy (bus, optarg);
+      free(bus);
+      bus = strdup(optarg);
+      if (!bus) {
+	fprintf(stderr, "unable to allocate bus string\n");
+	exit(1);
+      }
       break;
     case 'v':
       printf("ivy c library version %d.%d\n",IVYMAJOR_VERSION, IVYMINOR_VERSION);
