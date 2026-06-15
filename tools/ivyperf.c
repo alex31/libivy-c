@@ -45,6 +45,7 @@ static double origin = 0;
 int nbMsgReceive=0;
 int nbMsgEmit=0;
 long nbMsg = 10;
+static IvyContext *perf_ctx = NULL;
 
 
 double minRoundTrip=1e12;
@@ -68,7 +69,8 @@ TimerId send_timer;
 
 void Reply (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
-	IvySendMsg ("pong ts=%s tr=%f", *argv, currentTime()- origin);
+	IvyContext *ctx = (IvyContext *)user_data;
+	IvyContextSendMsg (ctx, "pong ts=%s tr=%f", *argv, currentTime()- origin);
 }
 void Pong (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
@@ -87,25 +89,26 @@ void Pong (IvyClientPtr app, void *user_data, int argc, char *argv[])
 	if ( nbMsg == nbMsgReceive )
 	{
 		printf("roundtrip[%d] min %f av %f max %f ms\n", nbMsgReceive, minRoundTrip, averageRoundTrip, maxRoundTrip );
-		//IvyStop();
+		//IvyContextStop(perf_ctx);
 	}
 
 }
 
 void TimerCall(TimerId id, void *user_data, unsigned long delta)
 {
-	int count = IvySendMsg ("ping ts=%f", currentTime() - origin );
+	IvyContext *ctx = (IvyContext *)user_data;
+	int count = IvyContextSendMsg (ctx, "ping ts=%f", currentTime() - origin );
 	if ( count ) nbMsgEmit++;
 	if ( nbMsg == nbMsgEmit )
 		{
 		TimerRemove(send_timer);
-		//IvyStop();
+		//IvyContextStop(perf_ctx);
 		}
 }
 
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event ) 
 {
-	const char *app_name = IvyGetApplicationName( app );
+	const char *app_name = IvyContextGetApplicationName( perf_ctx, app );
 	switch ( event )
 	{
 	case IvyAddBind:
@@ -138,19 +141,28 @@ int main(int argc, char *argv[])
 	if ( optind < argc ) time = atol( argv[optind++] );
 	if ( optind < argc ) nbMsg = atol( argv[optind] );
 
-	IvyInit ("IvyPerf", "IvyPerf ready", NULL,NULL,NULL,NULL);
+	perf_ctx = IvyContextCreate ("IvyPerf", "IvyPerf ready", NULL,NULL,NULL,NULL);
+	if (perf_ctx == NULL) {
+		fprintf(stderr, "IvyContextCreate failed: %d\n", IvyGetLastError());
+		return 1;
+	}
 	IvySetFilter( sizeof( mymessages )/ sizeof( char *),mymessages );
-	IvySetBindCallback( binCB, 0 ),
-	IvyBindMsg (Reply, NULL, "^ping ts=(.*)");
-	IvyBindMsg (Pong, NULL, "^pong ts=(.*) tr=(.*)");
+	IvyContextSetBindCallback( perf_ctx, binCB, 0 );
+	IvyContextBindMsg (perf_ctx, Reply, perf_ctx, "^ping ts=(.*)");
+	IvyContextBindMsg (perf_ctx, Pong, NULL, "^pong ts=(.*) tr=(.*)");
 	  
 	origin = currentTime();
-	IvyStart (bus);
+	if (IvyContextStart (perf_ctx, bus) != IVY_OK) {
+		fprintf(stderr, "IvyContextStart failed: %d\n", IvyGetLastError());
+		IvyContextDestroy(perf_ctx);
+		return 1;
+	}
 
 	if ( nbMsg )
-		send_timer = TimerRepeatAfter (TIMER_LOOP, time, TimerCall, (void*)nbMsg);
+		send_timer = IvyContextTimerRepeatAfter (perf_ctx, TIMER_LOOP, time, TimerCall, perf_ctx);
 	
 
-	IvyMainLoop ();
+	IvyContextMainLoop (perf_ctx);
+	IvyContextDestroy(perf_ctx);
 	return 0;
 }

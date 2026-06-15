@@ -10,7 +10,7 @@ global existant.
 
 ## État d'avancement
 
-État au terme de la branche `FEATURE/multi_bus-MT_safe_phase9` :
+État au terme de la branche `FEATURE/multi_bus-MT_safe_phase10` :
 
 - phase 1 terminée : l'état mutable principal de `src/ivy.c` est porté par
   `IvyContext`, avec un contexte legacy construit paresseusement ;
@@ -52,6 +52,11 @@ global existant.
   émulant un `socketpair`, et le test `tests/run_phase9_select_wakeup.sh`
   couvre le cas `IvyContextStop()` appelé depuis un autre thread pendant que la
   loop est bloquée.
+- phase 10 terminée pour les outils `select` fournis : `ivythroughput`,
+  `ivyperf`, `ivytestready`, `ivytranslater` et `examples/testUnbind.c`
+  utilisent l'API contextuelle publique ; le Makefile des outils les compile
+  par défaut, et `tests/run_phase10_tools.sh` couvre la compilation, le grep
+  anti-wrapper legacy et un smoke `ivythroughput -V`.
 
 Limites encore présentes :
 
@@ -64,8 +69,8 @@ Limites encore présentes :
   repost systématique vers la loop propriétaire reste une optimisation/garantie
   à formaliser avec la contextualisation complète ;
 - les API legacy de query gardent encore leurs buffers et handles historiques.
-- les outils historiques autres que `ivyprobe` restent à inventorier et à
-  porter, quand cela apporte un exemple utile d'API contextuelle.
+- les exemples GTK/Motif restent liés aux backends toolkit legacy et ne sont
+  pas présentés comme exemples MT-safe multibus.
 
 ## Situation actuelle
 
@@ -77,7 +82,7 @@ L'implémentation historique supposait implicitement :
 - des pointeurs internes exposés comme handles publics.
 
 Les branches `FEATURE/multi_bus-MT_safe_phase6` à
-`FEATURE/multi_bus-MT_safe_phase9` ont levé les trois premières
+`FEATURE/multi_bus-MT_safe_phase10` ont levé les trois premières
 frontières globales pour la boucle select principale. L'état Ivy principal est
 porté par `IvyContext`; la boucle, les sockets et les timers disposent d'états
 contextuels séparés. Les wrappers legacy restent une façade sur un contexte par
@@ -810,6 +815,19 @@ d'intégration toolkit au-delà du besoin multibus actuel. Le test
 - Mettre à jour les manpages et exemples associés pour montrer l'API
   contextuelle dans les nouveaux usages.
 
+Statut : implémentée dans `FEATURE/multi_bus-MT_safe_phase10` pour les outils
+`select` maintenus dans l'arbre. `ivythroughput`, `ivyperf`, `ivytestready`,
+`ivytranslater` et `examples/testUnbind.c` créent maintenant explicitement un
+`IvyContext`, utilisent `IvyContextBindMsg()`, `IvyContextSendMsg()`,
+`IvyContextStart()`, `IvyContextMainLoop()` et `IvyContextDestroy()`, et
+remplacent les timers legacy par `IvyContextTimerRepeatAfter()` quand ils ont
+un timer. `tools/Makefile` compile ces outils par défaut. Les exemples
+GTK/Motif ne sont pas portés dans cette phase parce qu'ils reposent sur les
+backends toolkit documentés en phase 9 comme legacy mono-boucle. Le test
+`tests/run_phase10_tools.sh` compile les outils, vérifie que les wrappers
+legacy de bus ne réapparaissent pas dans les fichiers portés, puis exécute un
+smoke `ivythroughput -V` avec un émetteur et un récepteur sur un bus local.
+
 ## Protocole de test continu (TDD)
 
 Afin de garantir l'absence de régressions lors de cette refonte architecturale complexe, il est fortement recommandé de développer les protocoles de tests en parallèle de la mise à jour du code. Chaque phase de la migration doit être validée par des tests automatisés, idéalement exécutés sous ThreadSanitizer (TSAN) et AddressSanitizer (ASAN).
@@ -885,6 +903,11 @@ comme exemples multibus.
   local, vérifier son comportement nominal minimal puis l'arrêter proprement.
 - **Exemples MT-safe :** Vérifier par grep ou test de compilation que les outils
   choisis comme exemples modernes n'utilisent plus les wrappers legacy de bus.
+
+Statut : couvert par `tests/run_phase10_tools.sh`. Le test automatisé ne lance
+pas chaque outil interactif jusqu'à son arrêt métier, mais il compile tous les
+outils portés et exécute `ivythroughput` en mode vérification de livraison, ce
+qui couvre le chemin fork, bind, timer contextuel, send, ack et stop.
 
 ## Compatibilité
 

@@ -1,4 +1,4 @@
-TARGETS = ivyprobe #ivythroughput ivytestready ivyperf ivyglibprobe ivyxtprobe #ivyprobe_efence 
+TARGETS = ivyprobe ivythroughput ivytestready ivyperf ivytranslater #ivyglibprobe ivyxtprobe #ivyprobe_efence
 OMP_TARGET= ivyprobe_omp ivythroughput_omp 
 
 PCRELIB = `pcre2-config --libs8`
@@ -42,7 +42,10 @@ ivyprobe.o : ivyprobe.c
 	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) -c ivyprobe.c -o $@
 
 ivyperf: ivyperf.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o -L. -livy $(PCRELIB) $(EXTRALIB) $(THREADLIB)
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
+
+ivytranslater: ivytranslater.o ../src/libivy.a
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivytranslater.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
 
 ivyxtprobe.o : ivyprobe.c
 	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) -DXTMAINLOOP -c ivyprobe.c -o $@ $(XTINC)
@@ -64,7 +67,7 @@ ivyglutprobe: ivyglutprobe.o ../src/libglutivy.a
 
 installbins: $(TARGETS)
 	test -d $(DESTDIR)$(PREFIX)/bin || mkdir -p $(DESTDIR)$(PREFIX)/bin
-	install -m755 ivyprobe $(DESTDIR)$(PREFIX)/bin
+	install -m755 $(TARGETS) $(DESTDIR)$(PREFIX)/bin
 
 installbins_omp:  $(OMP_TARGET)
 	test -d $(DESTDIR)$(PREFIX)/bin || mkdir -p $(DESTDIR)$(PREFIX)/bin

@@ -127,6 +127,36 @@ unsigned int verifyAckCount = 0;
 unsigned int verifyExpectedAcks = 0;
 MapUintToString verifyPayloadById;
 MapVerifyAck verifyAcks;
+static IvyContext *throughput_ctx = NULL;
+
+static bool createIvyContext(const char *app_name, const char *ready_message)
+{
+  throughput_ctx = IvyContextCreate(app_name, ready_message, congestCB, NULL, NULL, NULL);
+  if (throughput_ctx == NULL) {
+    fprintf(stderr, "IvyContextCreate failed: %d\n", IvyGetLastError());
+    return false;
+  }
+  return true;
+}
+
+static bool startIvyContext(const char *bus)
+{
+  int status = IvyContextStart(throughput_ctx, bus);
+  if (status != IVY_OK) {
+    fprintf(stderr, "IvyContextStart failed: %d\n", IvyGetLastError());
+    IvyContextDestroy(throughput_ctx);
+    throughput_ctx = NULL;
+    return false;
+  }
+  return true;
+}
+
+static void runAndDestroyIvyContext()
+{
+  IvyContextMainLoop(throughput_ctx);
+  IvyContextDestroy(throughput_ctx);
+  throughput_ctx = NULL;
+}
 
 int main(int argc, char *argv[])
 {
@@ -309,28 +339,32 @@ int emetteur (const char* bus, KindOfTest kod, int testDuration,
   long bindCount = regexpSize + 2l + (verifyDelivery ? 1l : 0l);
 
   printf ("DBG> emetteur start, pid=%d\n", getpid());
-  IvyInit ("IvyThroughputEmit", "IvyThroughputEmit Ready", congestCB, NULL,NULL,NULL);
+  if (!createIvyContext("IvyThroughputEmit", "IvyThroughputEmit Ready")) {
+    return 1;
+  }
   //  double origin = currentTime();
 
 
-  IvySetBindCallback (binCB, (void *) bindCount);
+  IvyContextSetBindCallback (throughput_ctx, binCB, (void *) bindCount);
   if (verifyDelivery) {
     std::string readyRegexp = "^IvyThroughputVerify_";
     readyRegexp += verifyRunId;
     readyRegexp += "_(\\d+)\\s+Ready";
 
-    IvyBindMsg (recepteurReadyCB, (void *) &messages, "%s", readyRegexp.c_str());
-    IvyBindMsg (verifyAckCB, NULL,
+    IvyContextBindMsg (throughput_ctx, recepteurReadyCB, (void *) &messages, "%s", readyRegexp.c_str());
+    IvyContextBindMsg (throughput_ctx, verifyAckCB, NULL,
 		"^__ivyverify_ack ([0-9]+) ([0-9]+) ([0-9]+) (.*)$");
   } else {
-    IvyBindMsg (recepteurReadyCB, (void *) &messages,
+    IvyContextBindMsg (throughput_ctx, recepteurReadyCB, (void *) &messages,
 		"^IvyThroughputReceive_(\\d+)\\s+Ready");
   }
 
-  TimerRepeatAfter (1, testDuration *1000, stopCB, NULL);
+  IvyContextTimerRepeatAfter (throughput_ctx, 1, testDuration *1000, stopCB, NULL);
 
-  IvyStart (bus);
-  IvyMainLoop ();
+  if (!startIvyContext(bus)) {
+    return 1;
+  }
+  runAndDestroyIvyContext ();
 
   return verifyFailed ? 1 : 0;
 }
@@ -361,30 +395,34 @@ void recepteur_tp (const char* bus, KindOfTest kod, unsigned int inst,
   globalInst = inst;
 
   printf ("DBG> recepteur_%d start, pid=%d\n", inst, getpid());
-  IvyInit (agentName.c_str(), agentNameReady.c_str(), congestCB, NULL,NULL,NULL);
+  if (!createIvyContext(agentName.c_str(), agentNameReady.c_str())) {
+    exit(1);
+  }
 
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
     std::string reg = *iter;
     if (regexpAreUniq) { ((reg += "(") += stream.str()) += ")?";}
-    IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str());
+    IvyContextBindMsg (throughput_ctx, recepteurCB, (void *) long(inst), "%s", reg.c_str());
   }
   if (verifyDelivery) {
-    IvyBindMsg (verifyReceiverCB, (void *) long(inst),
+    IvyContextBindMsg (throughput_ctx, verifyReceiverCB, (void *) long(inst),
 		"^__ivyverify_msg ([0-9]+) ([0-9]+) (.*)$");
   }
-  IvyBindMsg (startOfSeqCB, NULL, "^start(OfSequence)");
-  IvyBindMsg (endOfSeqCB, NULL, "^end(OfSequence)");
+  IvyContextBindMsg (throughput_ctx, startOfSeqCB, NULL, "^start(OfSequence)");
+  IvyContextBindMsg (throughput_ctx, endOfSeqCB, NULL, "^end(OfSequence)");
 
   if (kod == memoryLeak2) {
-    TimerRepeatAfter (1, exitAfter*1000, exitCB, NULL);
+    IvyContextTimerRepeatAfter (throughput_ctx, 1, exitAfter*1000, exitCB, NULL);
   } else if  (kod == disconnect) {
-    TimerRepeatAfter (1, exitAfter*1000/3, doNothingAndSuicideCB, (void *) long(exitAfter));
+    IvyContextTimerRepeatAfter (throughput_ctx, 1, exitAfter*1000/3, doNothingAndSuicideCB, (void *) long(exitAfter));
   }
 
   //usleep (inst * 50 * 1000);
-  IvyStart (bus);
-  IvyMainLoop ();
+  if (!startIvyContext(bus)) {
+    exit(1);
+  }
+  runAndDestroyIvyContext ();
 }
 
 void recepteur_ml (const char* bus, KindOfTest kod, unsigned int inst,
@@ -401,26 +439,30 @@ void recepteur_ml (const char* bus, KindOfTest kod, unsigned int inst,
   static MlDataStruct mds;
 
   printf ("DBG> recepteur_%d start, pid=%d\n", inst, getpid());
-  IvyInit (agentName.c_str(), agentNameReady.c_str(), congestCB, NULL,NULL,NULL);
+  if (!createIvyContext(agentName.c_str(), agentNameReady.c_str())) {
+    exit(1);
+  }
 
   ListOfString::const_iterator  iter;
   for (iter=regexps.begin(); iter != regexps.end(); iter++) {
     std::string reg = *iter;
     if (regexpAreUniq) { (reg += " ") += stream.str();}
-    bindIdList.push_back (IvyBindMsg (recepteurCB, (void *) long(inst), "%s", reg.c_str()));
+    bindIdList.push_back (IvyContextBindMsg (throughput_ctx, recepteurCB, (void *) long(inst), "%s", reg.c_str()));
   }
-  IvyBindMsg (startOfSeqCB, NULL, "^start(OfSequence)");
-  IvyBindMsg (endOfSeqCB, NULL, "^end(OfSequence)");
+  IvyContextBindMsg (throughput_ctx, startOfSeqCB, NULL, "^start(OfSequence)");
+  IvyContextBindMsg (throughput_ctx, endOfSeqCB, NULL, "^end(OfSequence)");
 
   mds.bindIdList = &bindIdList;
   mds.regexps = &regexps;
   mds.inst = inst;
 
-  TimerRepeatAfter (1, 1000, desabonneEtReabonneCB, &mds);
-  //TimerRepeatAfter (1, 1000, abonneEtDesabonneCB, &mds);
+  IvyContextTimerRepeatAfter (throughput_ctx, 1, 1000, desabonneEtReabonneCB, &mds);
+  //IvyContextTimerRepeatAfter (throughput_ctx, 1, 1000, abonneEtDesabonneCB, &mds);
 
-  IvyStart (bus);
-  IvyMainLoop ();
+  if (!startIvyContext(bus)) {
+    exit(1);
+  }
+  runAndDestroyIvyContext ();
 }
 
 // ===========================================================================
@@ -590,7 +632,7 @@ static void reportMissingVerifyAcks()
 */
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event )
 {
-  std::string appName = IvyGetApplicationName( app );
+  std::string appName = IvyContextGetApplicationName(throughput_ctx, app);
   static MapBindByClnt bindByClnt;
 
   if (bindByClnt.find (appName) == bindByClnt.end()) {
@@ -627,7 +669,7 @@ void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyB
 
 void congestCB ( IvyClientPtr app, void *user_data, IvyApplicationEvent event )
 {
-  std::string appName = IvyGetApplicationName( app );
+  std::string appName = IvyContextGetApplicationName(throughput_ctx, app);
 
   switch ( event ) {
 #if IVYMINOR_VERSION >= 11
@@ -669,7 +711,7 @@ void stopCB (TimerId id, void *user_data, unsigned long delta)
     verifyFailed = true;
   }
  }
- IvyStop ();
+ IvyContextStop (throughput_ctx);
 }
 
 
@@ -679,19 +721,19 @@ void sendAllMessageCB (TimerId id, void *user_data, unsigned long delta)
   double startTime = currentTime();
   unsigned int envoyes=0;
 
-  IvySendMsg ("startOfSequence");
+  IvyContextSendMsg (throughput_ctx, "startOfSequence");
   ListOfString::iterator  iter;
   for (iter=messages->begin(); iter != messages->end(); iter++) {
-    envoyes += IvySendMsg ("%s", (*iter).c_str());
+    envoyes += IvyContextSendMsg (throughput_ctx, "%s", (*iter).c_str());
   }
-  IvySendMsg ("endOfSequence");
+  IvyContextSendMsg (throughput_ctx, "endOfSequence");
 
   printf ("[ivy %d.%d] envoyer [%d/%d] messages filtres par %d regexps a %d clients "
 	  "prends %.1f secondes\n",
 	  IVYMAJOR_VERSION, IVYMINOR_VERSION,
 	  envoyes, nbMess, nbReg, numClients,
 	  (currentTime()-startTime) / 1000.0) ;
-  TimerRepeatAfter (1, 1000, sendAllMessageCB ,user_data);
+  IvyContextTimerRepeatAfter (throughput_ctx, 1, 1000, sendAllMessageCB ,user_data);
 }
 
 void sendVerifiedMessagesCB (TimerId id, void *user_data, unsigned long delta)
@@ -714,7 +756,7 @@ void sendVerifiedMessagesCB (TimerId id, void *user_data, unsigned long delta)
   if (verifyExpectedAcks == 0) {
     fprintf(stderr, "verification requires at least one message and one receiver\n");
     verifyFailed = true;
-    IvyStop();
+    IvyContextStop(throughput_ctx);
     return;
   }
 
@@ -722,7 +764,7 @@ void sendVerifiedMessagesCB (TimerId id, void *user_data, unsigned long delta)
     int count;
 
     verifyPayloadById[msgId] = *iter;
-    count = IvySendMsg ("__ivyverify_msg %s %u %s",
+    count = IvyContextSendMsg (throughput_ctx, "__ivyverify_msg %s %u %s",
 			verifyRunId, msgId, (*iter).c_str());
     sentMessages++;
     if (count < (int)numClients) {
@@ -740,7 +782,7 @@ void sendVerifiedMessagesCB (TimerId id, void *user_data, unsigned long delta)
 	  sentMessages, verifyExpectedAcks);
 
   if (verifyFailed) {
-    IvyStop();
+    IvyContextStop(throughput_ctx);
   }
 }
 
@@ -763,7 +805,7 @@ void verifyReceiverCB (IvyClientPtr app, void *user_data, int argc, char *argv[]
     exit(2);
   }
 
-  count = IvySendMsg ("__ivyverify_ack %s %u %u %s",
+  count = IvyContextSendMsg (throughput_ctx, "__ivyverify_ack %s %u %u %s",
 		      verifyRunId, globalInst, msgId, argv[2]);
   if (count < 1) {
     fprintf(stderr, "receiver %u could not acknowledge msg %u, matches=%d\n",
@@ -788,7 +830,7 @@ void verifyAckCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
       !parseUnsigned(argv[2], &msgId)) {
     fprintf(stderr, "verification got invalid acknowledgement\n");
     verifyFailed = true;
-    IvyStop();
+    IvyContextStop(throughput_ctx);
     return;
   }
 
@@ -796,7 +838,7 @@ void verifyAckCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
     fprintf(stderr, "verification got ack from unexpected receiver %u for msg %u\n",
 	    receiver, msgId);
     verifyFailed = true;
-    IvyStop();
+    IvyContextStop(throughput_ctx);
     return;
   }
 
@@ -805,7 +847,7 @@ void verifyAckCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
     fprintf(stderr, "verification got ack for unexpected msg %u from receiver %u\n",
 	    msgId, receiver);
     verifyFailed = true;
-    IvyStop();
+    IvyContextStop(throughput_ctx);
     return;
   }
 
@@ -814,7 +856,7 @@ void verifyAckCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
 	    "verification payload mismatch: receiver=%u msg=%u expected='%s' actual='%s'\n",
 	    receiver, msgId, payloadIter->second.c_str(), argv[3]);
     verifyFailed = true;
-    IvyStop();
+    IvyContextStop(throughput_ctx);
     return;
   }
 
@@ -831,7 +873,7 @@ void verifyAckCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
   if (verifyAckCount == verifyExpectedAcks) {
     printf ("verification OK: received %u/%u acknowledgements\n",
 	    verifyAckCount, verifyExpectedAcks);
-    IvyStop();
+    IvyContextStop(throughput_ctx);
   }
 }
 
@@ -854,10 +896,10 @@ void recepteurReadyCB (IvyClientPtr app, void *user_data, int argc, char *argv[]
   if (readyToStart == true) {
     if (kindOfTest != memoryLeak1) {
       if (verifyDelivery) {
-	TimerRepeatAfter (1, 100, sendVerifiedMessagesCB , messages);
+	IvyContextTimerRepeatAfter (throughput_ctx, 1, 100, sendVerifiedMessagesCB , messages);
 	printf ("Emetteur : tous recepteurs prets : verification des donnees !!\n");
       } else {
-	TimerRepeatAfter (1, 100, sendAllMessageCB , messages);
+	IvyContextTimerRepeatAfter (throughput_ctx, 1, 100, sendAllMessageCB , messages);
 	printf ("Emetteur : tous recepteurs prets : on envoie la puree !!\n");
       }
     }
@@ -891,7 +933,7 @@ void desabonneEtReabonneCB (TimerId id, void *user_data, unsigned long delta)
 
   // DESABONNE
   for (iter=mds->bindIdList->begin(); iter != mds->bindIdList->end(); iter++) {
-    IvyUnbindMsg (*iter);
+    IvyContextUnbindMsg (throughput_ctx, *iter);
   }
   mds->bindIdList->clear ();
 
@@ -899,23 +941,23 @@ void desabonneEtReabonneCB (TimerId id, void *user_data, unsigned long delta)
   ListOfString::const_iterator  iter2;
   for (iter2=mds->regexps->begin(); iter2 != mds->regexps->end(); iter2++) {
     std::string reg = *iter2;
-    mds->bindIdList->push_back (IvyBindMsg (recepteurCB, (void *) long(mds->inst),
+    mds->bindIdList->push_back (IvyContextBindMsg (throughput_ctx, recepteurCB, (void *) long(mds->inst),
 					    "%s", reg.c_str()));
   }
 
   // CHANGE REGEXP
     for (iter=mds->bindIdList->begin(); iter != mds->bindIdList->end(); iter++) {
-    IvyChangeMsg (*iter, "^Une regexp (BIDON)");
+    IvyContextChangeMsg (throughput_ctx, *iter, "^Une regexp (BIDON)");
   }
 
 
   // DESABONNE
   for (iter=mds->bindIdList->begin(); iter != mds->bindIdList->end(); iter++) {
-    IvyUnbindMsg (*iter);
+    IvyContextUnbindMsg (throughput_ctx, *iter);
   }
   mds->bindIdList->clear ();
 
-  //TimerRepeatAfter (1, 1000, changeRegexpCB, mds);
+  //IvyContextTimerRepeatAfter (throughput_ctx, 1, 1000, changeRegexpCB, mds);
 }
 
 
@@ -929,10 +971,10 @@ void changeRegexpCB (TimerId id, void *user_data, unsigned long delta)
 
 
   for (iter=mds->bindIdList->begin(); iter != mds->bindIdList->end(); iter++) {
-    IvyChangeMsg (*iter, "^Une regexp (BIDON)");
+    IvyContextChangeMsg (throughput_ctx, *iter, "^Une regexp (BIDON)");
   }
 
-  TimerRepeatAfter (1, 1000, changeRegexpCB, mds);
+  IvyContextTimerRepeatAfter (throughput_ctx, 1, 1000, changeRegexpCB, mds);
 }
 
 void exitCB (TimerId id, void *user_data, unsigned long delta)
