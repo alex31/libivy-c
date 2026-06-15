@@ -90,6 +90,8 @@
 
 #include <stddef.h>
 
+#include "timer.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -660,6 +662,41 @@ int IvyContextSendDieMsg(IvyContext *ctx, IvyClientPtr app);
  * @endcode
  */
 int IvyContextSendPing(IvyContext *ctx, IvyClientPtr app);
+
+/**
+ * @brief Create a timer attached to a context event loop.
+ *
+ * @param ctx Context whose loop owns the timer.
+ * @param count Number of expirations, or ::TIMER_LOOP for an infinite timer.
+ * @param timeout Timer period in milliseconds.
+ * @param cb Callback called from the context loop thread.
+ * @param user_data User pointer passed to @p cb.
+ * @return Timer handle, or NULL on failure.
+ *
+ * @details
+ * This is the MT-safe entry point for timers used by Ivy tools and
+ * applications. If the context loop is already active and the caller is not
+ * the loop thread, timer creation is posted to the owner loop before the
+ * function returns. ::TimerModify() and ::TimerRemove() can be used with the
+ * returned handle.
+ *
+ * @code{.c}
+ * static void on_timer(TimerId id, void *data, unsigned long delta)
+ * {
+ *     IvyContext *ctx = (IvyContext *)data;
+ *     (void)id;
+ *     (void)delta;
+ *     IvyContextSendMsg(ctx, "TICK");
+ * }
+ *
+ * TimerId timer = IvyContextTimerRepeatAfter(ctx, TIMER_LOOP, 1000,
+ *                                            on_timer, ctx);
+ * if (!timer)
+ *     fprintf(stderr, "timer failed: %d\n", IvyGetLastError());
+ * @endcode
+ */
+TimerId IvyContextTimerRepeatAfter(IvyContext *ctx, int count, long timeout,
+	TimerCb cb, void *user_data);
 
 /**
  * @brief Return the advertised name for a peer owned by a context.

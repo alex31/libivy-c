@@ -22,6 +22,7 @@ IvyContextSendMsg
 IvyContextSendDirectMsg
 IvyContextSendDieMsg
 IvyContextSendPing
+IvyContextTimerRepeatAfter
 IvyContextGetApplicationName
 IvyContextGetApplicationHost
 IvyContextGetApplication

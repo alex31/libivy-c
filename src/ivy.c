@@ -321,6 +321,19 @@ static int IvyContextSendMsgV(IvyContext *ctx, const char *fmt, va_list ap);
 static int IvyContextSendErrorV(IvyContext *ctx,
 	IvyClientPtr app, int id, const char *fmt, va_list ap);
 
+typedef struct _ivy_timer_create_request {
+	IvyContext *ctx;
+	int count;
+	long timeout;
+	TimerCb callback;
+	void *user_data;
+	TimerId timer;
+	IvyStatus status;
+	int done;
+	IvyMutex mutex;
+	IvyCond cond;
+} IvyTimerCreateRequest;
+
 static void freeClient ( RWIvyClientPtr client);
 static void delOneClient (const Client client);
 
@@ -2525,6 +2538,101 @@ int IvyContextSendPing(IvyContext *ctx, IvyClientPtr app)
 int IvySendPing( IvyClientPtr app)
 {
   return IvyContextSendPing(IvyGetCurrentContext(), app);
+}
+
+static TimerId IvyContextTimerRepeatAfterDirect(IvyContext *ctx, int count,
+	long timeout, TimerCb cb, void *user_data)
+{
+	TimerId timer;
+
+	timer = TimerRepeatAfterFor(IvyChannelGetTimerState(ctx->ivy_loop),
+		count, timeout, cb, user_data);
+	if (!timer) {
+		IvySetLastError(IVY_ENOMEM);
+		return NULL;
+	}
+	IvySetLastError(IVY_OK);
+	return timer;
+}
+
+static void IvyContextTimerRepeatAfterInLoop(void *data)
+{
+	IvyTimerCreateRequest *request = (IvyTimerCreateRequest *)data;
+	TimerId timer;
+	IvyStatus status = IVY_OK;
+
+	timer = IvyContextTimerRepeatAfterDirect(request->ctx, request->count,
+		request->timeout, request->callback, request->user_data);
+	if (!timer)
+		status = IvyGetLastError();
+
+	IvyMutexLock(&request->mutex);
+	request->timer = timer;
+	request->status = status;
+	request->done = 1;
+	IvyCondBroadcast(&request->cond);
+	IvyMutexUnlock(&request->mutex);
+}
+
+TimerId IvyContextTimerRepeatAfter(IvyContext *ctx, int count, long timeout,
+	TimerCb cb, void *user_data)
+{
+	IvyTimerCreateRequest request;
+	TimerId timer;
+	int status;
+
+	status = IvyContextRejectIfStopped(ctx);
+	if (status != IVY_OK)
+		return NULL;
+	if (!cb || timeout < 0) {
+		IvySetLastError(IVY_EINVAL);
+		return NULL;
+	}
+
+	if (!IvyChannelLoopIsActiveFor(ctx->ivy_loop) ||
+	    IvyChannelIsLoopThreadFor(ctx->ivy_loop)) {
+		timer = IvyContextTimerRepeatAfterDirect(ctx, count, timeout,
+			cb, user_data);
+		IvyChannelWakeFor(ctx->ivy_loop);
+		return timer;
+	}
+
+	memset(&request, 0, sizeof(request));
+	request.ctx = ctx;
+	request.count = count;
+	request.timeout = timeout;
+	request.callback = cb;
+	request.user_data = user_data;
+	request.status = IVY_OK;
+	if (IvyMutexInit(&request.mutex) != 0) {
+		IvySetLastError(IVY_ENOMEM);
+		return NULL;
+	}
+	if (IvyCondInit(&request.cond) != 0) {
+		IvyMutexDestroy(&request.mutex);
+		IvySetLastError(IVY_ENOMEM);
+		return NULL;
+	}
+
+	if (IvyChannelPostControlFor(ctx->ivy_loop,
+		IvyContextTimerRepeatAfterInLoop, &request) != 0) {
+		IvyCondDestroy(&request.cond);
+		IvyMutexDestroy(&request.mutex);
+		IvySetLastError(IVY_EIO);
+		return NULL;
+	}
+
+	IvyMutexLock(&request.mutex);
+	while (!request.done)
+		IvyCondWait(&request.cond, &request.mutex);
+	timer = request.timer;
+	status = request.status;
+	IvyMutexUnlock(&request.mutex);
+
+	IvyCondDestroy(&request.cond);
+	IvyMutexDestroy(&request.mutex);
+	IvySetLastError(status);
+	return timer;
 }
 
 int IvyContextSendDieMsg(IvyContext *ctx, IvyClientPtr app )

@@ -743,16 +743,27 @@ restent `IvyClientPtr` et `MsgRcvPtr`; aucun modèle de handles référencés n'
 
 ### Phase 8 : outils et timers multi-bus
 
-- Recâbler `ivyprobe -t` sur les timers contextuels.
-- Décider la sémantique exacte du mode timer multi-bus :
-  - soit un timer par contexte qui émet seulement sur son bus ;
-  - soit un timer applicatif unique qui diffuse explicitement sur tous les bus
-    configurés.
+- Ajouter une API minimale de timer contextuel :
+  `IvyContextTimerRepeatAfter()`, qui crée le timer dans l'état timer associé à
+  la boucle du contexte.
+- Recâbler `ivyprobe -t` sur cette API timer contextuelle.
+- Sémantique retenue pour le mode timer multi-bus : un timer applicatif unique,
+  attaché à un contexte propriétaire, diffuse explicitement les messages
+  `TEST TIMER n` sur tous les bus configurés. Il n'y a pas un timer indépendant
+  par bus.
 - Ajouter un test automatisé qui démarre `ivyprobe` sur au moins deux bus avec
   `-t` et vérifie que les messages `TEST TIMER 1` / `TEST TIMER 5` sont émis
   selon la sémantique retenue.
 - Repasser les outils d'exemple et de diagnostic sur l'API contextuelle quand
   ils ont une raison métier d'être multi-bus.
+
+Statut : implémentée dans `FEATURE/multi_bus-MT_safe_phase8` pour
+`ivyprobe -t`. Le timer est créé via `IvyContextTimerRepeatAfter()` sur le
+premier contexte de `ivyprobe`, puis le callback utilise `ProbeSendMsgAll()`
+pour diffuser `TEST TIMER 1` à `TEST TIMER 5` sur tous les bus. Le test
+`tests/run_phase8_ivyprobe_timer.sh` démarre deux peers, un par bus, et vérifie
+que les deux reçoivent le début et la fin du flux timer. Le portage des autres
+outils reste prévu pour la phase 10.
 
 ### Phase 9 : portabilité et backends de boucle alternatifs
 
@@ -764,6 +775,20 @@ restent `IvyClientPtr` et `MsgRcvPtr`; aucun modèle de handles référencés n'
   backends activables dans l'arbre.
 - Vérifier que les changements de watch writable déclenchés par un worker
   thread sont toujours exécutés dans le thread propriétaire du backend concerné.
+
+### Phase 10 : outils et exemples restants
+
+- Inventorier les outils fournis (`ivythroughput`, `ivyperf`, `ivytestready`,
+  probes alternatifs éventuels) et décider lesquels doivent devenir des
+  exemples modernes MT-safe.
+- Porter les outils retenus vers l'API contextuelle publique, sans utiliser les
+  wrappers legacy sauf dans des tests de compatibilité explicitement nommés.
+- Remplacer les timers legacy par `IvyContextTimerRepeatAfter()` quand l'outil
+  possède un contexte.
+- Ajouter des smoke tests simples pour les outils portés : lancement, connexion
+  sur un bus local, action principale minimale et arrêt propre.
+- Mettre à jour les manpages et exemples associés pour montrer l'API
+  contextuelle dans les nouveaux usages.
 
 ## Protocole de test continu (TDD)
 
@@ -815,9 +840,8 @@ depuis son callback applicatif de connexion.
   validation dédiée, pas à une expansion systématique de l'API.
 
 ### Phase 8 : Outils et timers multi-bus
-- **Timer ivyprobe multi-bus :** Lancer `ivyprobe -t` sur deux bus. Selon la
-  sémantique retenue, vérifier soit que chaque bus reçoit son propre flux timer,
-  soit que le flux timer applicatif est diffusé une seule fois vers tous les bus.
+- **Timer ivyprobe multi-bus :** Lancer `ivyprobe -t` sur deux bus et vérifier
+  que le flux timer applicatif unique est diffusé vers tous les bus.
 - **Arrêt propre des timers :** Quitter `ivyprobe` pendant qu'un timer est armé
   et vérifier que tous les contextes s'arrêtent sans callback tardif, fuite de
   timer ou accès à un contexte détruit.
@@ -829,6 +853,12 @@ depuis son callback applicatif de connexion.
 - **Backends toolkit :** Pour chaque backend compilable, poster un changement
   writable depuis un worker thread et vérifier que l'opération effective est
   exécutée par le thread propriétaire du backend.
+
+### Phase 10 : Outils et exemples restants
+- **Smoke tests outils :** Pour chaque outil porté, lancer l'outil sur un bus
+  local, vérifier son comportement nominal minimal puis l'arrêter proprement.
+- **Exemples MT-safe :** Vérifier par grep ou test de compilation que les outils
+  choisis comme exemples modernes n'utilisent plus les wrappers legacy de bus.
 
 ## Compatibilité
 

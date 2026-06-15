@@ -101,6 +101,8 @@ static pthread_cond_t probe_state_cond = PTHREAD_COND_INITIALIZER;
 #endif
 
 #define PROBE_MAX_THREADS 10
+#define PROBE_TIMER_COUNT 5
+#define PROBE_TIMER_PERIOD_MS 1000
 
 #ifndef WIN32
 typedef struct ProbeCommand {
@@ -123,6 +125,12 @@ static ProbeWorker probe_workers[PROBE_MAX_THREADS];
 #endif
 
 static int current_probe_thread = 0;
+
+typedef struct {
+	long tick;
+} ProbeTimerState;
+
+static ProbeTimerState probe_timer_state;
 
 void DirectCallback(IvyClientPtr app, void *user_data, int id, char *msg);
 void PongCallback(IvyClientPtr app, int roundTripOrTimout);
@@ -939,11 +947,35 @@ void IvyPrintBindCallback( IvyClientPtr app, void *user_data, int id, const char
 #ifdef IVYMAINLOOP
 void TimerCall(TimerId id, void *user_data, unsigned long delta)
 {
+	ProbeTimerState *state = (ProbeTimerState *)user_data;
 	char message[64];
-	printf("Timer callback: %ld delta %lu ms\n", (long)user_data, delta);
-	snprintf(message, sizeof(message), "TEST TIMER %ld", (long) user_data);
+
+	(void)id;
+	if (!state)
+		return;
+	state->tick++;
+	printf("Timer callback: %ld delta %lu ms\n", state->tick, delta);
+	snprintf(message, sizeof(message), "TEST TIMER %ld", state->tick);
 	ProbeSendMsgAll(message);
-	/*if  ((int)user_data == 5) TimerModify (id, 2000);*/
+}
+
+static int ProbeStartTimerTest(void)
+{
+	TimerId timer;
+
+	if (probe_bus_count == 0 || !probe_buses[0].ctx)
+		return 0;
+
+	probe_timer_state.tick = 0;
+	timer = IvyContextTimerRepeatAfter(probe_buses[0].ctx,
+		PROBE_TIMER_COUNT, PROBE_TIMER_PERIOD_MS, TimerCall,
+		&probe_timer_state);
+	if (!timer) {
+		fprintf(stderr, "ivyprobe: unable to start timer test: %d\n",
+			IvyGetLastError());
+		return 0;
+	}
+	return 1;
 }
 #endif
 #ifdef GLUTMAINLLOP
@@ -1009,7 +1041,7 @@ int main(int argc, char *argv[])
 	  "\t-f regexfile\tread list of regexp's from file one by line\n"
 	  "\t-c msg1,msg2,msg3,...\tfilter the regexp's not beginning with words\n"
 	  ;
-	while ((c = getopt(argc, argv, "vn:d:b:w:t:sf:c:")) != EOF)
+	while ((c = getopt(argc, argv, "vn:d:b:w:tsf:c:")) != EOF)
 			switch (c) {
 			case 'b':
 				if (!ProbeAddBus(optarg)) {
@@ -1086,7 +1118,14 @@ int main(int argc, char *argv[])
 
 	if  (timer_test) {
 #ifdef IVYMAINLOOP
-		fprintf(stderr, "ivyprobe: -t timer test is not available with multibus mode yet\n");
+		if (!ProbeStartTimerTest()) {
+			ProbeStopBuses();
+			ProbeJoinBuses();
+			ProbeDestroyBuses();
+			exit(1);
+		}
+#else
+		fprintf(stderr, "ivyprobe: -t timer test is only available with the select loop backend\n");
 #endif
 	}
 
