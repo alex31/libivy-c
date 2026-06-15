@@ -43,7 +43,7 @@ global existant.
   publique multibus sans hook `IVY_TESTING`, avec deux bus, deux pairs par bus,
   queries, send, direct, ping, change/unbind et arrêt indépendant d'un bus ;
 - correctif outil associé : `ivythroughput -b` réalloue maintenant la chaîne
-  du bus au lieu d'écraser le buffer alloué pour la valeur par défaut.
+  du bus au lieu d'écraser le buffer alloué pour la valeur par défaut ;
 - phase 8 terminée : `IvyContextTimerRepeatAfter()` expose un timer
   contextuel minimal, et `ivyprobe -t` utilise un timer unique qui diffuse les
   messages de test sur tous les bus configurés ;
@@ -51,7 +51,7 @@ global existant.
   maintenant compatible `select()` via une paire de sockets TCP loopback
   émulant un `socketpair`, et le test `tests/run_phase9_select_wakeup.sh`
   couvre le cas `IvyContextStop()` appelé depuis un autre thread pendant que la
-  loop est bloquée.
+  loop est bloquée ;
 - phase 10 terminée pour les outils `select` fournis : `ivythroughput`,
   `ivyperf`, `ivytestready`, `ivytranslater` et `examples/testUnbind.c`
   utilisent l'API contextuelle publique ; le Makefile des outils les compile
@@ -68,7 +68,9 @@ Limites encore présentes :
   depuis un worker sont seulement sortis des verrous internes à ce stade ; leur
   repost systématique vers la loop propriétaire reste une optimisation/garantie
   à formaliser avec la contextualisation complète ;
-- les API legacy de query gardent encore leurs buffers et handles historiques.
+- les API legacy de query gardent encore leurs buffers et handles historiques,
+  même si les variantes à buffer fourni par l'appelant existent maintenant pour
+  les nouveaux usages ;
 - les exemples GTK/Motif restent liés aux backends toolkit legacy et ne sont
   pas présentés comme exemples MT-safe multibus.
 
@@ -107,15 +109,18 @@ Plusieurs fonctions utilisent aussi des buffers `static` pour éviter des
 allocations répétées. C'est pratique dans une boucle mono-thread historique,
 mais incompatible avec une API strictement réentrante. Plusieurs chemins ont
 été corrigés, notamment `IvySendMsg()` et les buffers scratch principaux, mais
-les queries legacy et leurs variantes contextuelles actuelles retournent encore
-des buffers possédés par le contexte. Certaines zones ont un traitement OpenMP
-`threadprivate`, mais cela ne couvre qu'un chemin étroit regexp/envoi.
+les queries de compatibilité, y compris les formes contextuelles sans buffer
+appelant, retournent encore du stockage possédé par Ivy. Les nouveaux usages
+doivent préférer `IvyContextGetApplicationListBuffer()` et
+`IvyContextGetApplicationMessagesBuffer()`. Certaines zones ont un traitement
+OpenMP `threadprivate`, mais cela ne couvre qu'un chemin étroit regexp/envoi.
 
 `IvyStop()` est maintenant une façade sur `IvyContextStop()` du contexte
 courant. Sur POSIX, la boucle select est réveillée par un pipe non bloquant
 porté par son `IvyChannelState`. Sur Windows, elle est réveillée par deux
 sockets TCP loopback non bloquantes, afin que le descripteur de réveil reste
-compatible avec le `select()` Winsock existant.
+compatible avec le `select()` Winsock existant. Ce chemin compile dans le code
+commun, mais une validation native Windows reste à effectuer.
 
 ## Objectifs
 
@@ -779,7 +784,7 @@ premier contexte de `ivyprobe`, puis le callback utilise `ProbeSendMsgAll()`
 pour diffuser `TEST TIMER 1` à `TEST TIMER 5` sur tous les bus. Le test
 `tests/run_phase8_ivyprobe_timer.sh` démarre deux peers, un par bus, et vérifie
 que les deux reçoivent le début et la fin du flux timer. Le portage des autres
-outils reste prévu pour la phase 10.
+outils `select` a ensuite été réalisé en phase 10.
 
 ### Phase 9 : portabilité et backends de boucle alternatifs
 
@@ -821,12 +826,14 @@ Statut : implémentée dans `FEATURE/multi_bus-MT_safe_phase10` pour les outils
 `IvyContext`, utilisent `IvyContextBindMsg()`, `IvyContextSendMsg()`,
 `IvyContextStart()`, `IvyContextMainLoop()` et `IvyContextDestroy()`, et
 remplacent les timers legacy par `IvyContextTimerRepeatAfter()` quand ils ont
-un timer. `tools/Makefile` compile ces outils par défaut. Les exemples
-GTK/Motif ne sont pas portés dans cette phase parce qu'ils reposent sur les
-backends toolkit documentés en phase 9 comme legacy mono-boucle. Le test
-`tests/run_phase10_tools.sh` compile les outils, vérifie que les wrappers
-legacy de bus ne réapparaissent pas dans les fichiers portés, puis exécute un
-smoke `ivythroughput -V` avec un émetteur et un récepteur sur un bus local.
+un timer. `tools/Makefile` compile ces outils par défaut. Il n'existe pas de
+manpage dédiée pour ces outils à mettre à jour dans l'arbre, contrairement à
+`ivyprobe`. Les exemples GTK/Motif ne sont pas portés dans cette phase parce
+qu'ils reposent sur les backends toolkit documentés en phase 9 comme legacy
+mono-boucle. Le test `tests/run_phase10_tools.sh` compile les outils, vérifie
+que les wrappers legacy de bus ne réapparaissent pas dans les fichiers portés,
+puis exécute un smoke `ivythroughput -V` avec un émetteur et un récepteur sur
+un bus local.
 
 ## Protocole de test continu (TDD)
 

@@ -113,10 +113,10 @@ Points corrigés dans cette passe :
 - un test de régression couvre le cas `IvyFifoSendSocket()` avec `send()` en
   erreur.
 
-## État après les phases MT-safe 1 à 5
+## État après les phases MT-safe 1 à 10
 
-La migration multi-thread a maintenant avancé jusqu'à
-`FEATURE/multi_bus-MT_safe_phase5`.
+La migration multi-thread et multibus a maintenant avancé jusqu'à
+`FEATURE/multi_bus-MT_safe_phase10`.
 
 Points de durcissement ou de sûreté ajoutés depuis la première passe :
 
@@ -136,12 +136,30 @@ Points de durcissement ou de sûreté ajoutés depuis la première passe :
   `client->send_lock` pendant l'appel ;
 - un compteur de callbacks actifs empêche la destruction du contexte pendant
   une callback en cours ;
-- les tests `run_phase1.sh` à `run_phase5.sh`, `run_audit_hardening.sh` et
-  `run_phase3_multiprocess.sh` valident ces étapes.
+- `ivyloop.c`, `ivysocket.c` et `timer.c` ont maintenant des états
+  contextuels, associés au contexte Ivy propriétaire ;
+- l'API publique `IvyContext*` couvre désormais le cycle de vie, la boucle
+  `select`, bind/change/unbind, send, direct, die, ping, callbacks bind/pong,
+  queries applicatives et timers contextuels ;
+- les queries modernes à buffer fourni par l'appelant existent pour éviter les
+  buffers partagés dans les nouveaux usages ;
+- `ivyprobe` est multibus : `IVYBUS` est démarré s'il existe, chaque `-b`
+  ajoute un bus, les messages sortants sont diffusés sur tous les bus et les
+  regexps sont posées sur tous les contextes ;
+- `ivyprobe -t` utilise un timer contextuel unique qui diffuse sur tous les bus
+  configurés ;
+- la boucle `select` dispose maintenant d'un wakeup POSIX et d'un wakeup
+  Windows compatible Winsock `select()` via sockets TCP loopback ;
+- `ivythroughput`, `ivyperf`, `ivytestready`, `ivytranslater` et
+  `examples/testUnbind.c` utilisent l'API contextuelle publique ;
+- les tests `run_phase1.sh` à `run_phase10_tools.sh`,
+  `run_audit_hardening.sh` et `run_phase3_multiprocess.sh` couvrent ces étapes.
 
 Ce document reste utile pour les points non traités : `exit()` socket non-OOM,
-état global de loop/socket/timer, buffers statiques des APIs de query,
-`SIGPIPE`, `FD_SETSIZE`, types de taille et modernisation des parsers.
+politique globale `SIGPIPE`, absence de garde `FD_SETSIZE`, `inet_ntoa()`,
+`rand()/srand()`, parsers numériques historiques, buffers statiques legacy,
+types de taille et de temps, `intervalRegexp.c`, `ivytcl.c`, prototypes C et
+politique de logging.
 
 ## Priorités hautes
 
@@ -187,6 +205,12 @@ Correction recommandée, par priorité :
 Ce point ne bloque donc pas la suite immédiate de la migration multi-thread,
 mais les `exit()` socket non-OOM doivent être corrigés avant d'exposer une API
 réentrante propre.
+
+Statut après phase 10 : encore ouvert. `rg '\bexit\s*\('` signale toujours des
+appels directs dans `src/ivysocket.c`, `src/ivyloop.c`, `src/ivybind.c`,
+`src/list.h` et les backends toolkit. La migration contextuelle rend ces
+erreurs plus visibles, mais elle ne remplace pas encore tous les chemins fatals
+par des retours d'erreur.
 
 ### Corriger la gestion des retours négatifs de `send()`
 
@@ -366,6 +390,9 @@ Options de remplacement :
 - si un réglage global reste nécessaire pour compatibilité, le documenter et
   le rendre optionnel.
 
+Statut après phase 10 : encore ouvert. Les boucles `select`, GLib, Xt, Tcl et
+GLUT appellent encore `signal(SIGPIPE, SIG_IGN)`.
+
 ### Vérifier `FD_SETSIZE` et envisager `poll`
 
 `ivyloop.c` utilise `select()` et `fd_set` sans vérifier que les descriptors
@@ -388,6 +415,10 @@ Direction moderne :
 - migrer la couche channel vers `poll()` comme étape portable ;
 - puis éventuellement `epoll/kqueue` derrière une abstraction.
 
+Statut après phase 10 : encore ouvert. Les états `IvyChannelState` sont
+contextualisés, mais `FD_SET()` n'est pas encore protégé contre un fd supérieur
+ou égal à `FD_SETSIZE`.
+
 ## Priorités moyennes
 
 ### Remplacer les conversions `atoi/atol`
@@ -407,6 +438,10 @@ Préférer :
 Pour les ports : plage `1..65535`. Pour les tailles et compteurs : type cible
 explicite.
 
+Statut après phase 10 : partiellement traité. Le parsing du bus dans
+`IvyStart()` utilise `strtoul()`, mais `atoi()/atol()` restent présents dans
+`intervalRegexp.c` et certains outils.
+
 ### Remplacer `inet_ntoa`
 
 `src/ivy.c` utilise `inet_ntoa()` pour afficher les adresses IPv4.
@@ -414,6 +449,9 @@ explicite.
 `inet_ntoa()` retourne un buffer statique et n'est pas réentrant. Préférer
 `inet_ntop()` avec un buffer fourni par l'appelant. Cela sera de toute façon
 nécessaire pour une API multi-contexte propre.
+
+Statut après phase 10 : encore ouvert. `ivy.c` utilise toujours `inet_ntoa()`
+pour l'affichage du broadcast IPv4.
 
 ### Revoir l'identifiant applicatif
 
@@ -434,6 +472,9 @@ Alternatives :
 - combinaison monotonic time + pid + compteur atomique + port ;
 - générateur local au contexte, sans toucher au PRNG global du processus.
 
+Statut après phase 10 : encore ouvert. `GenApplicationUniqueIdentifier()`
+utilise toujours `srand()` et `rand()`.
+
 ### Supprimer les buffers statiques retournés
 
 Exemples :
@@ -451,6 +492,11 @@ Pour l'API legacy, garder le comportement si nécessaire. Pour une API durcie :
 - ou retourner un objet alloué/libéré explicitement ;
 - ou copier l'information dans une structure résultat.
 
+Statut après phase 10 : partiellement traité. Les variantes modernes à buffer
+fourni par l'appelant existent pour les listes d'applications et de messages.
+Les wrappers legacy et certaines helpers socket gardent encore des buffers
+statiques ou du stockage possédé par Ivy.
+
 ### Remplacer les concaténations manuelles non bornées
 
 `src/ivytcl.c` construit des scripts Tcl avec `strcpy` et `strcat`. Même quand
@@ -466,6 +512,8 @@ Préférer :
 - `snprintf` avec contrôle du retour ;
 - API Tcl de construction de listes/objets si cette intégration reste
   maintenue.
+
+Statut après phase 10 : encore ouvert pour `ivytcl.c`.
 
 ### Sécuriser `make_message`
 
@@ -509,6 +557,8 @@ Recommandations :
 - temps monotone : `uint64_t` en millisecondes ou nanosecondes ;
 - éviter les casts implicites dans les chemins socket/FIFO.
 
+Statut après phase 10 : encore ouvert, hors corrections ciblées déjà listées.
+
 ### Revoir `intervalRegexp.c`
 
 Les warnings stricts signalent des boucles du type :
@@ -527,6 +577,8 @@ vsprintf(buffer, fmt, args);
 ```
 
 à remplacer par `vsnprintf`.
+
+Statut après phase 10 : encore ouvert.
 
 ## Priorités basses mais utiles
 
@@ -548,6 +600,9 @@ void TimerScan(void);
 Cela déclenche des warnings `-Wstrict-prototypes` et facilite l'analyse
 statique.
 
+Statut après phase 10 : encore ouvert. Des prototypes de type `TimerScan()`,
+`TimerGetSmallestTimeout()` ou `IvyBindingGetFilterCount()` restent présents.
+
 ### Documenter la dépendance GNU `typeof`
 
 `src/list.h` dépend de `typeof`, donc d'un dialecte GNU C. C'est acceptable si
@@ -560,6 +615,8 @@ priorité de portabilité immédiate. Options possibles à terme :
 - utiliser une liste intrusive avec helpers typés par module ;
 - ou accepter officiellement `-std=gnu99` et l'ajouter aux flags.
 
+Statut après phase 10 : inchangé.
+
 ### Clarifier la politique de logging
 
 Le code mélange `printf`, `fprintf(stderr, ...)`, `perror` et `TRACE`.
@@ -569,6 +626,8 @@ Pour une bibliothèque :
 - éviter l'écriture directe sur stdout ;
 - concentrer les logs via un callback ou une macro configurable ;
 - retourner les erreurs à l'appelant quand c'est possible.
+
+Statut après phase 10 : encore ouvert.
 
 ## Observations complémentaires
 
@@ -696,9 +755,12 @@ taille (`size_t`, `ssize_t`).
 
 7. Continuer la migration `IvyContext` décrite dans `IVY_MTSAFE.md`.
 
-Statut : les phases 1 à 5 sont maintenant implémentées. La priorité suivante
-est la phase 6 : contextualiser loop, sockets et timers, puis traiter les
-buffers statiques et handles legacy dans la phase 7.
+Statut : les phases 1 à 10 sont maintenant implémentées pour la boucle
+`select` et les outils maintenus dans cette ligne. La priorité suivante, côté
+qualité pure, n'est plus la migration multibus elle-même mais la fermeture des
+points d'audit encore ouverts : `exit()` runtime, `SIGPIPE`, `FD_SETSIZE`,
+parsers historiques, `inet_ntoa()`, `rand()/srand()` et nettoyage des backends
+legacy.
 
 ## Ligne directrice
 
