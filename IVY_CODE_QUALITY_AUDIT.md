@@ -113,10 +113,10 @@ Points corrigés dans cette passe :
 - un test de régression couvre le cas `IvyFifoSendSocket()` avec `send()` en
   erreur.
 
-## État après les phases MT-safe 1 à 10
+## État après les phases MT-safe 1 à 11
 
 La migration multi-thread et multibus a maintenant avancé jusqu'à
-`FEATURE/multi_bus-MT_safe_phase10`.
+`FEATURE/multi_bus-MT_safe_phase11`.
 
 Points de durcissement ou de sûreté ajoutés depuis la première passe :
 
@@ -153,13 +153,14 @@ Points de durcissement ou de sûreté ajoutés depuis la première passe :
 - `ivythroughput`, `ivyperf`, `ivytestready`, `ivytranslater` et
   `examples/testUnbind.c` utilisent l'API contextuelle publique ;
 - les tests `run_phase1.sh` à `run_phase10_tools.sh`,
+  `run_phase11_runtime_errors.sh`, `run_phase11_interval_regexp.sh`,
   `run_audit_hardening.sh` et `run_phase3_multiprocess.sh` couvrent ces étapes.
 
 Ce document reste utile pour les points non traités : politique globale
 `SIGPIPE`, absence de garde `FD_SETSIZE`, isolation complète éventuelle de
 `rand()/srand()`, parsers numériques historiques, stockage legacy possédé par
-Ivy, types de taille et de temps, `intervalRegexp.c`, `ivytcl.c`, prototypes C
-et politique de logging.
+Ivy, types de taille et de temps, `ivytcl.c`, prototypes C et politique de
+logging.
 
 ## Priorités hautes
 
@@ -446,9 +447,9 @@ Préférer :
 Pour les ports : plage `1..65535`. Pour les tailles et compteurs : type cible
 explicite.
 
-Statut après phase 10 : partiellement traité. Le parsing du bus dans
-`IvyStart()` utilise `strtoul()`, mais `atoi()/atol()` restent présents dans
-`intervalRegexp.c` et certains outils.
+Statut après phase 11 : traité côté bibliothèque pour `IvyStart()` et
+`intervalRegexp.c`. Les `atoi()/atol()/atof()` restants sont dans les outils
+CLI (`ivyprobe`, `ivythroughput`, `ivyperf`) et restent à migrer.
 
 ### Remplacer `inet_ntoa`
 
@@ -596,7 +597,10 @@ vsprintf(buffer, fmt, args);
 
 à remplacer par `vsnprintf`.
 
-Statut après phase 10 : encore ouvert.
+Statut après phase 11 : corrigé pour les boucles inversées dangereuses,
+`atoi()` et `vsprintf()`. `tests/run_phase11_interval_regexp.sh` compile les
+regex générées avec PCRE2 et vérifie des plages positives, négatives,
+inversées, traversant zéro et décimales.
 
 ## Priorités basses mais utiles
 

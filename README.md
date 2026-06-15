@@ -4,7 +4,7 @@ ivy software bus
 ## Current development status
 
 The current development line has been migrated through
-`FEATURE/multi_bus-MT_safe_phase10`.
+`FEATURE/multi_bus-MT_safe_phase11`.
 
 New C code should prefer the explicit `IvyContext*` API:
 
@@ -79,6 +79,7 @@ root:
 ./tests/run_phase9_select_wakeup.sh
 ./tests/run_phase10_tools.sh
 ./tests/run_phase11_runtime_errors.sh
+./tests/run_phase11_interval_regexp.sh
 ```
 
 Optional OpenMP build:
