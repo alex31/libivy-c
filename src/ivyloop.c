@@ -16,6 +16,10 @@
  */
 
 #ifdef WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
 #include <windows.h>
 #endif
 #include <stdlib.h>
@@ -73,7 +77,9 @@ struct _ivy_channel_state {
   IvyThreadId loop_thread;
   int loop_thread_set;
   int loop_active;
-#ifndef WIN32
+#ifdef WIN32
+  SOCKET wakeup_socket[2];
+#else
   int wakeup_pipe[2];
 #endif
   IvyHookPtr BeforeSelect;
@@ -86,7 +92,9 @@ struct _ivy_channel_state {
 
 static IvyChannelState default_channel_state = {
   .MainLoop = 1,
-#ifndef WIN32
+#ifdef WIN32
+  .wakeup_socket = {INVALID_SOCKET, INVALID_SOCKET},
+#else
   .wakeup_pipe = {-1, -1},
 #endif
 };
@@ -111,7 +119,10 @@ static void
 IvyChannelStateInitFields(IvyChannelState *state)
 {
   state->MainLoop = 1;
-#ifndef WIN32
+#ifdef WIN32
+  state->wakeup_socket[0] = INVALID_SOCKET;
+  state->wakeup_socket[1] = INVALID_SOCKET;
+#else
   state->wakeup_pipe[0] = -1;
   state->wakeup_pipe[1] = -1;
 #endif
@@ -168,7 +179,12 @@ IvyChannelStateDestroy(IvyChannelState *state)
   }
   state->control_tail = NULL;
 
-#ifndef WIN32
+#ifdef WIN32
+  if (state->wakeup_socket[0] != INVALID_SOCKET)
+    closesocket(state->wakeup_socket[0]);
+  if (state->wakeup_socket[1] != INVALID_SOCKET)
+    closesocket(state->wakeup_socket[1]);
+#else
   if (state->wakeup_pipe[0] >= 0)
     close(state->wakeup_pipe[0]);
   if (state->wakeup_pipe[1] >= 0)
@@ -194,7 +210,112 @@ IvyControlInit(IvyChannelState *state)
   return 0;
 }
 
-#ifndef WIN32
+#ifdef WIN32
+static void
+IvySetSocketNonBlocking(SOCKET socket)
+{
+  u_long mode = 1;
+  (void)ioctlsocket(socket, FIONBIO, &mode);
+}
+
+static void
+IvyCloseSocketIfValid(SOCKET *socket)
+{
+  if (*socket != INVALID_SOCKET) {
+    closesocket(*socket);
+    *socket = INVALID_SOCKET;
+  }
+}
+
+static int
+IvyWakeupInit(IvyChannelState *state)
+{
+  SOCKET listener = INVALID_SOCKET;
+  SOCKET reader = INVALID_SOCKET;
+  SOCKET writer = INVALID_SOCKET;
+  struct sockaddr_in addr;
+  int addr_len = sizeof(addr);
+  int ok = 0;
+
+  if (state->wakeup_socket[0] != INVALID_SOCKET)
+    return 0;
+
+  listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (listener == INVALID_SOCKET)
+    goto cleanup;
+
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(listener, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR)
+    goto cleanup;
+  if (listen(listener, 1) == SOCKET_ERROR)
+    goto cleanup;
+  if (getsockname(listener, (struct sockaddr *)&addr, &addr_len) == SOCKET_ERROR)
+    goto cleanup;
+
+  writer = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (writer == INVALID_SOCKET)
+    goto cleanup;
+  if (connect(writer, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR)
+    goto cleanup;
+
+  reader = accept(listener, NULL, NULL);
+  if (reader == INVALID_SOCKET)
+    goto cleanup;
+
+  IvySetSocketNonBlocking(reader);
+  IvySetSocketNonBlocking(writer);
+  state->wakeup_socket[0] = reader;
+  state->wakeup_socket[1] = writer;
+  reader = INVALID_SOCKET;
+  writer = INVALID_SOCKET;
+  ok = 1;
+
+cleanup:
+  IvyCloseSocketIfValid(&listener);
+  IvyCloseSocketIfValid(&reader);
+  IvyCloseSocketIfValid(&writer);
+  return ok ? 0 : -1;
+}
+
+static void
+IvyWakeupRegister(IvyChannelState *state)
+{
+  if (state->wakeup_socket[0] == INVALID_SOCKET)
+    return;
+
+  if (state->wakeup_socket[0] >= state->highestFd)
+    state->highestFd = state->wakeup_socket[0] + 1;
+  FD_SET(state->wakeup_socket[0], &state->open_fds);
+}
+
+static int
+IvyWakeupIsReady(IvyChannelState *state, fd_set *current)
+{
+  return state->wakeup_socket[0] != INVALID_SOCKET &&
+    FD_ISSET(state->wakeup_socket[0], current);
+}
+
+static void
+IvyWakeupDrain(IvyChannelState *state)
+{
+  char buffer[64];
+
+  if (state->wakeup_socket[0] == INVALID_SOCKET)
+    return;
+
+  for (;;) {
+    int nb = recv(state->wakeup_socket[0], buffer, sizeof(buffer), 0);
+    if (nb > 0)
+      continue;
+    if (nb == SOCKET_ERROR && WSAGetLastError() == WSAEINTR)
+      continue;
+    break;
+  }
+}
+#else
 static void
 IvySetNonBlocking(int fd)
 {
@@ -228,6 +349,12 @@ IvyWakeupRegister(IvyChannelState *state)
   FD_SET(state->wakeup_pipe[0], &state->open_fds);
 }
 
+static int
+IvyWakeupIsReady(IvyChannelState *state, fd_set *current)
+{
+  return state->wakeup_pipe[0] >= 0 && FD_ISSET(state->wakeup_pipe[0], current);
+}
+
 static void
 IvyWakeupDrain(IvyChannelState *state)
 {
@@ -250,11 +377,21 @@ IvyWakeupDrain(IvyChannelState *state)
 void
 IvyChannelWakeFor(IvyChannelState *state)
 {
-#ifndef WIN32
+  state = IvyChannelNormalizeState(state);
+#ifdef WIN32
+  char wake = 'w';
+  int sent;
+
+  if (state->wakeup_socket[1] == INVALID_SOCKET)
+    return;
+
+  do {
+    sent = send(state->wakeup_socket[1], &wake, 1, 0);
+  } while (sent == SOCKET_ERROR && WSAGetLastError() == WSAEINTR);
+#else
   char wake = 'w';
   ssize_t written;
 
-  state = IvyChannelNormalizeState(state);
   if (state->wakeup_pipe[1] < 0)
     return;
 
@@ -595,25 +732,27 @@ void IvyChannelInitFor (IvyChannelState *state)
 
   if (state->channel_initialized) return;
 
+#ifdef WIN32
+  error = WSAStartup (0x0101, &WsaData);
+  if (error != 0) {
+    printf ("WSAStartup failed.\n");
+  }
+#endif
+
   FD_ZERO (&state->open_fds);
   FD_ZERO (&state->wrdy_fds);
   state->highestFd = 0;
   (void)IvyChannelGetTimerState(state);
 
-#ifndef WIN32
   if (IvyWakeupInit(state) != 0) {
+#ifdef WIN32
+    fprintf(stderr, "IvyChannelInit wakeup socket failed\n");
+#else
     perror("IvyChannelInit wakeup pipe");
+#endif
     exit(0);
   }
   IvyWakeupRegister(state);
-#endif
-
-#ifdef WIN32
-  error = WSAStartup (0x0101, &WsaData);
-  if (error == SOCKET_ERROR) {
-    printf ("WSAStartup failed.\n");
-  }
-#endif
   state->channel_initialized = 1;
 }
 
@@ -668,11 +807,9 @@ void IvyMainLoopFor(IvyChannelState *state)
       return;
     }
     if (ready > 0) {
-#ifndef WIN32
-      if (state->wakeup_pipe[0] >= 0 && FD_ISSET(state->wakeup_pipe[0], &rdset)) {
+      if (IvyWakeupIsReady(state, &rdset)) {
 	IvyWakeupDrain(state);
       }
-#endif
       IvyChannelDrainControlFor(state);
       if (!state->MainLoop)
 	break;
@@ -713,11 +850,9 @@ void IvyIdleFor(IvyChannelState *state)
     return;
   }
   if (ready > 0) {
-#ifndef WIN32
-    if (state->wakeup_pipe[0] >= 0 && FD_ISSET(state->wakeup_pipe[0], &rdset)) {
+    if (IvyWakeupIsReady(state, &rdset)) {
       IvyWakeupDrain(state);
     }
-#endif
     IvyChannelDrainControlFor(state);
   }
   if (ready > 0) {

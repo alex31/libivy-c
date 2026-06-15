@@ -10,7 +10,7 @@ global existant.
 
 ## État d'avancement
 
-État de la branche `FEATURE/multi_bus-MT_safe_phase6` :
+État au terme de la branche `FEATURE/multi_bus-MT_safe_phase9` :
 
 - phase 1 terminée : l'état mutable principal de `src/ivy.c` est porté par
   `IvyContext`, avec un contexte legacy construit paresseusement ;
@@ -44,6 +44,14 @@ global existant.
   queries, send, direct, ping, change/unbind et arrêt indépendant d'un bus ;
 - correctif outil associé : `ivythroughput -b` réalloue maintenant la chaîne
   du bus au lieu d'écraser le buffer alloué pour la valeur par défaut.
+- phase 8 terminée : `IvyContextTimerRepeatAfter()` expose un timer
+  contextuel minimal, et `ivyprobe -t` utilise un timer unique qui diffuse les
+  messages de test sur tous les bus configurés ;
+- phase 9 terminée pour la boucle `select` principale : le wakeup Windows est
+  maintenant compatible `select()` via une paire de sockets TCP loopback
+  émulant un `socketpair`, et le test `tests/run_phase9_select_wakeup.sh`
+  couvre le cas `IvyContextStop()` appelé depuis un autre thread pendant que la
+  loop est bloquée.
 
 Limites encore présentes :
 
@@ -56,8 +64,8 @@ Limites encore présentes :
   repost systématique vers la loop propriétaire reste une optimisation/garantie
   à formaliser avec la contextualisation complète ;
 - les API legacy de query gardent encore leurs buffers et handles historiques.
-- le test timer `ivyprobe -t` n'est pas encore recâblé sur des timers
-  contextuels multi-bus.
+- les outils historiques autres que `ivyprobe` restent à inventorier et à
+  porter, quand cela apporte un exemple utile d'API contextuelle.
 
 ## Situation actuelle
 
@@ -68,7 +76,8 @@ L'implémentation historique supposait implicitement :
 - des callbacks utilisateur appelés directement depuis le dispatch réseau ;
 - des pointeurs internes exposés comme handles publics.
 
-La branche `FEATURE/multi_bus-MT_safe_phase6` a levé les trois premières
+Les branches `FEATURE/multi_bus-MT_safe_phase6` à
+`FEATURE/multi_bus-MT_safe_phase9` ont levé les trois premières
 frontières globales pour la boucle select principale. L'état Ivy principal est
 porté par `IvyContext`; la boucle, les sockets et les timers disposent d'états
 contextuels séparés. Les wrappers legacy restent une façade sur un contexte par
@@ -81,8 +90,8 @@ défaut et conservent donc une partie du modèle historique pour la compatibilit
   sont dans `IvyContext`; les globals restants concernent le contexte legacy,
   l'erreur thread-local et le contexte courant thread-local ;
 - `src/ivyloop.c` : les channels, `fd_set`, `highestFd`, `MainLoop`, hooks et
-  wakeup POSIX sont portés par `IvyChannelState`; un état par défaut subsiste
-  pour l'API legacy ;
+  wakeup POSIX/Windows sont portés par `IvyChannelState`; un état par défaut
+  subsiste pour l'API legacy ;
 - `src/ivysocket.c` : les listes de sockets serveur/client sont portées par
   `SocketState`, associé à sa boucle propriétaire ;
 - `src/timer.c` : la liste de timers et le timeout de `select()` sont portés
@@ -98,10 +107,10 @@ des buffers possédés par le contexte. Certaines zones ont un traitement OpenMP
 `threadprivate`, mais cela ne couvre qu'un chemin étroit regexp/envoi.
 
 `IvyStop()` est maintenant une façade sur `IvyContextStop()` du contexte
-courant. Sur POSIX, la boucle select est réveillée par le canal de wakeup de
-son `IvyChannelState`. Le chemin Windows reste à finaliser : sans équivalent
-socket/event compatible avec `select()`, l'interruption asynchrone de la boucle
-ne peut pas être considérée aussi robuste que le chemin POSIX.
+courant. Sur POSIX, la boucle select est réveillée par un pipe non bloquant
+porté par son `IvyChannelState`. Sur Windows, elle est réveillée par deux
+sockets TCP loopback non bloquantes, afin que le descripteur de réveil reste
+compatible avec le `select()` Winsock existant.
 
 ## Objectifs
 
@@ -369,17 +378,19 @@ de réveil, puis draine la file de contrôle.
 
 Sur Windows, utiliser un équivalent compatible avec le mécanisme d'attente
 choisi. Comme le code actuel utilise `select()`, l'objet de réveil devrait
-idéalement être compatible socket.
+être compatible socket. La phase 9 implémente ce chemin par une paire de
+sockets TCP loopback non bloquantes : la socket de lecture est ajoutée au
+`fd_set`, et `IvyChannelWakeFor()` écrit un octet côté écriture.
 
 Sans ce mécanisme, un `IvyContextStop()` peut rester bloqué jusqu'à l'arrivée
 d'un trafic réseau ou d'un timeout de timer.
 
-Les backends GLib, Xt, Tcl et GLUT doivent suivre la même règle mais ne sont
-pas encore contextualisés. Un thread applicatif peut demander une opération,
-mais l'ajout/retrait effectif d'une watch toolkit doit se faire dans le thread
-propriétaire de la boucle. Cela concerne en particulier
-`IvyChannelAddWritableEvent()` et `IvyChannelClearWritableEvent()` quand un
-envoi depuis un worker thread fait entrer ou sortir une socket de congestion.
+Les backends GLib, Xt, Tcl et GLUT doivent suivre la même règle s'ils sont
+modernisés, mais ils restent aujourd'hui des backends legacy mono-boucle. Un
+programme qui veut plusieurs bus dans le même processus ou des appels depuis
+workers doit utiliser la boucle `select` contextuelle. L'ajout/retrait effectif
+d'une watch toolkit depuis un worker thread n'est donc pas encore garanti pour
+ces backends.
 
 ## Sémantique d'arrêt
 
@@ -776,6 +787,15 @@ outils reste prévu pour la phase 10.
 - Vérifier que les changements de watch writable déclenchés par un worker
   thread sont toujours exécutés dans le thread propriétaire du backend concerné.
 
+Statut : implémentée dans `FEATURE/multi_bus-MT_safe_phase9` pour la boucle
+`select` principale. Le wakeup Windows utilise une paire de sockets TCP
+loopback non bloquantes compatible Winsock `select()`. Les backends GLib, Xt,
+Tcl et GLUT restent explicitement documentés comme legacy mono-boucle ; leur
+portage n'est pas inclus parce qu'il impliquerait de redéfinir leur contrat
+d'intégration toolkit au-delà du besoin multibus actuel. Le test
+`tests/run_phase9_select_wakeup.sh` vérifie le cas concret d'un
+`IvyContextStop()` appelé depuis un thread pendant que la loop est bloquée.
+
 ### Phase 10 : outils et exemples restants
 
 - Inventorier les outils fournis (`ivythroughput`, `ivyperf`, `ivytestready`,
@@ -853,6 +873,12 @@ depuis son callback applicatif de connexion.
 - **Backends toolkit :** Pour chaque backend compilable, poster un changement
   writable depuis un worker thread et vérifier que l'opération effective est
   exécutée par le thread propriétaire du backend.
+
+Statut : le chemin `select` dispose du wakeup POSIX et Windows. Le test
+automatisé phase 9 est exécuté sur la plateforme courante ; une passe Windows
+native reste nécessaire pour valider Winsock en conditions réelles. Les
+backends toolkit restent hors périmètre MT-safe et ne doivent pas être présentés
+comme exemples multibus.
 
 ### Phase 10 : Outils et exemples restants
 - **Smoke tests outils :** Pour chaque outil porté, lancer l'outil sur un bus
