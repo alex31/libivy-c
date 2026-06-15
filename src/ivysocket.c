@@ -53,8 +53,8 @@ typedef long ssize_t;
 #include "ivyloop.h"
 #include "ivybuffer.h"
 #include "ivyfifo.h"
-#include "ivydebug.h"
 #include "ivythread.h"
+#include "ivydebug.h"
 
 
 union sockaddr_46 {
@@ -121,6 +121,22 @@ static SocketState default_socket_state = {
 	0
 };
 
+#ifdef IVY_TESTING
+static int ivy_testing_socket_server_fail_step;
+
+void IvyTestingSocketServerFailStep(int step)
+{
+	ivy_testing_socket_server_fail_step = step;
+}
+
+static int IvyTestingSocketServerShouldFail(int step)
+{
+	return ivy_testing_socket_server_fail_step == step;
+}
+#else
+#define IvyTestingSocketServerShouldFail(step) 0
+#endif
+
 /*#ifdef WIN32
 WSADATA	WsaData;
 #endif*/
@@ -176,16 +192,16 @@ static int InitClientSendLock(Client client)
 }
 
 
-void SocketInitFor(SocketState *state)
+int SocketInitFor(SocketState *state)
 {
 	state = SocketNormalizeState(state);
 	if ( getenv( "IVY_DEBUG_SEND" )) state->debug_send = 1;
-	IvyChannelInitFor(state->channels);
+	return IvyChannelInitFor(state->channels);
 }
 
 void SocketInit()
 {
-	SocketInitFor(SocketGetDefaultState());
+	(void)SocketInitFor(SocketGetDefaultState());
 }
 
 static void DeleteSocket(void *data)
@@ -372,11 +388,12 @@ static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 		       (char *) &TCP_NO_DELAY_ACTIVATED,  /* the cast is historical */
  		       sizeof(TCP_NO_DELAY_ACTIVATED)) < 0)    /* length of option value */
 	  {
-#ifdef WIN32
-	    fprintf(stderr," setsockopt %d\n",WSAGetLastError());
-#endif
-	    perror ("*** set socket option  TCP_NODELAY***");
-	    exit(0);
+	    IvyMutexDestroy(&client->send_lock);
+	    client->send_lock_initialized = 0;
+	    free(client->buffer);
+	    close(ns);
+	    free(client);
+	    return;
 	  }
 
 
@@ -407,27 +424,26 @@ Server SocketServerFor(SocketState *state, int ipv6, unsigned short port,
 	socklen_t addrlen;
 
 	state = SocketNormalizeState(state);
-	if ((fd = socket (ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)) < 0){
-		perror ("***open socket ***");
-		exit(0);
-		};
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_SOCKET))
+		return NULL;
+	if ((fd = socket (ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)) < 0)
+		return NULL;
 
 
-	if (setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,(char*)&one,sizeof(one)) < 0)
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_REUSEADDR) ||
+	    setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,(char*)&one,sizeof(one)) < 0)
 	  {
-#ifdef WIN32
-	    fprintf(stderr," setsockopt %d\n",WSAGetLastError());
-#endif
-	    perror ("*** set socket option SO_REUSEADDR ***");
-	    exit(0);
+	    close(fd);
+	    return NULL;
 	  }
 
 #ifdef SO_REUSEPORT
 
-	if (setsockopt (fd, SOL_SOCKET, SO_REUSEPORT, (char *)&one, sizeof (one)) < 0)
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_REUSEPORT) ||
+	    setsockopt (fd, SOL_SOCKET, SO_REUSEPORT, (char *)&one, sizeof (one)) < 0)
 	  {
-	    perror ("*** set socket option REUSEPORT ***");
-	    exit(0);
+	    close(fd);
+	    return NULL;
 	  }
 #endif
 
@@ -449,21 +465,24 @@ Server SocketServerFor(SocketState *state, int ipv6, unsigned short port,
 		addrlen = sizeof(struct sockaddr_in);
 	}
 
-	if (bind(fd, &local.sa, addrlen) < 0)
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_BIND) ||
+	    bind(fd, &local.sa, addrlen) < 0)
 		{
-		perror ("*** bind ***");
-		exit(0);
+		close(fd);
+		return NULL;
 		}
 
-	if (getsockname(fd, &local.sa, &addrlen) < 0)
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_GETSOCKNAME) ||
+	    getsockname(fd, &local.sa, &addrlen) < 0)
 		{
-		perror ("***get socket name ***");
-		exit(0);
+		close(fd);
+		return NULL;
 		}
 
-	if (listen (fd, 128) < 0){
-		perror ("*** listen ***");
-		exit(0);
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_LISTEN) ||
+	    listen (fd, 128) < 0){
+		close(fd);
+		return NULL;
 		};
 
 
@@ -510,8 +529,8 @@ const char *SocketGetPeerHost (Client client )
 	int err;
 	struct sockaddr_storage name;
 	socklen_t len = sizeof(name);
-	static char host[NI_MAXHOST];
-	static char serv[NI_MAXSERV];
+	static IVY_TLS char host[NI_MAXHOST];
+	static IVY_TLS char serv[NI_MAXSERV];
 
 	if (!client)
 		return "undefined";
@@ -585,8 +604,8 @@ struct sockaddr_storage * SocketGetRemoteAddr (Client client )
 void SocketGetRemoteHost (Client client, const char **hostptr, unsigned short *port )
 {
 	int err;
-	static char host[NI_MAXHOST];
-	static char serv[NI_MAXSERV];
+	static IVY_TLS char host[NI_MAXHOST];
+	static IVY_TLS char serv[NI_MAXSERV];
 
 	if (!client)
 		return;
@@ -935,11 +954,8 @@ Client SocketConnectAddrFor (SocketState *state, int ipv6, struct sockaddr_stora
 		       (char *) &TCP_NO_DELAY_ACTIVATED,  /* the cast is historical */
  		       sizeof(TCP_NO_DELAY_ACTIVATED)) < 0)    /* length of option value */
 	  {
-#ifdef WIN32
-	    fprintf(stderr," setsockopt %d\n",WSAGetLastError());
-#endif
-	    perror ("*** set socket option  TCP_NODELAY***");
-	    exit(0);
+	    close(handle);
+	    return NULL;
 	  }
 
 

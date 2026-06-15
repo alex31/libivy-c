@@ -56,7 +56,7 @@ typedef enum {SendOk, SendStillCongestion, SendStateChangeToCongestion,
 extern SocketState *SocketStateCreate(IvyChannelState *channels, const void *owner_data);
 extern void SocketStateDestroy(SocketState *state);
 extern SocketState *SocketGetDefaultState(void);
-extern void SocketInitFor(SocketState *state);
+extern int SocketInitFor(SocketState *state);
 extern void SocketInit();
 
 /* Forward def */
@@ -77,6 +77,19 @@ extern Server SocketServer(int ipv6, unsigned short port,
         SocketInterpretation interpretation);
 extern unsigned short SocketServerGetPort( Server server );
 extern void SocketServerClose( Server server );
+
+#ifdef IVY_TESTING
+enum {
+	IVY_TEST_SOCKET_SERVER_FAIL_NONE = 0,
+	IVY_TEST_SOCKET_SERVER_FAIL_SOCKET = 1,
+	IVY_TEST_SOCKET_SERVER_FAIL_REUSEADDR = 2,
+	IVY_TEST_SOCKET_SERVER_FAIL_REUSEPORT = 3,
+	IVY_TEST_SOCKET_SERVER_FAIL_BIND = 4,
+	IVY_TEST_SOCKET_SERVER_FAIL_GETSOCKNAME = 5,
+	IVY_TEST_SOCKET_SERVER_FAIL_LISTEN = 6
+};
+extern void IvyTestingSocketServerFailStep(int step);
+#endif
 
 /* Client Part */
 

@@ -46,7 +46,7 @@ extern void IvyChannelStateDestroy(IvyChannelState *state);
 extern IvyChannelState *IvyChannelGetDefaultState(void);
 extern IvyTimerState *IvyChannelGetTimerState(IvyChannelState *state);
 
-extern void IvyChannelInitFor(IvyChannelState *state);
+extern int IvyChannelInitFor(IvyChannelState *state);
 extern void IvyChannelInit(void);
 
 extern void IvyChannelStopFor(IvyChannelState *state);
@@ -59,6 +59,15 @@ extern int IvyChannelLoopIsActiveFor(IvyChannelState *state);
 extern int IvyChannelLoopIsActive(void);
 extern int IvyChannelIsLoopThreadFor(IvyChannelState *state);
 extern int IvyChannelIsLoopThread(void);
+
+#ifdef IVY_TESTING
+enum {
+	IVY_TEST_CHANNEL_INIT_FAIL_NONE = 0,
+	IVY_TEST_CHANNEL_INIT_FAIL_CONTROL = 1,
+	IVY_TEST_CHANNEL_INIT_FAIL_WAKEUP = 2
+};
+extern void IvyTestingChannelInitFailStep(int step);
+#endif
 
 /* fonction appele par le bus pour mise en place des callback sur le canal */
 extern Channel IvyChannelAddFor(

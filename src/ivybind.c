@@ -40,19 +40,9 @@
 
 #include "list.h"
 #include "ivybind.h"
+#include "ivythread.h"
 
-static int err_offset;
-static char err_buf[4096];
-
-#ifdef USE_PCRE_REGEX
-#if defined(_MSC_VER)
-#define IVY_TLS __declspec(thread)
-#elif defined(__GNUC__)
-#define IVY_TLS __thread
-#else
-#define IVY_TLS _Thread_local
-#endif
-#endif /* USE_PCRE_REGEX */
+static IVY_TLS char err_buf[4096];
 
 struct _binding {
 #ifdef USE_PCRE_REGEX
@@ -137,8 +127,7 @@ IvyBinding IvyBindingCompile( const char * expression,  int *erroffset, const ch
 		}
 		else
 		{
-		err_offset = (int)pcre2_err_offset;
-		*erroffset = err_offset;
+		*erroffset = (int)pcre2_err_offset;
 		if (pcre2_get_error_message(errcode, (PCRE2_UCHAR *)err_buf, sizeof(err_buf)) < 0)
 			snprintf(err_buf, sizeof(err_buf), "PCRE2 error %d", errcode);
 		*errmessage = err_buf;

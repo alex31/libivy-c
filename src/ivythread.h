@@ -1,6 +1,16 @@
 #ifndef IVYTHREAD_H
 #define IVYTHREAD_H
 
+#ifndef IVY_TLS
+#if defined(_MSC_VER)
+#define IVY_TLS __declspec(thread)
+#elif defined(__GNUC__)
+#define IVY_TLS __thread
+#else
+#define IVY_TLS _Thread_local
+#endif
+#endif
+
 #ifdef WIN32
 #include <windows.h>
 

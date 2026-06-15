@@ -78,6 +78,7 @@ root:
 ./tests/run_phase8_ivyprobe_timer.sh
 ./tests/run_phase9_select_wakeup.sh
 ./tests/run_phase10_tools.sh
+./tests/run_phase11_runtime_errors.sh
 ```
 
 Optional OpenMP build:

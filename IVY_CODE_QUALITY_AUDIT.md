@@ -155,11 +155,11 @@ Points de durcissement ou de sûreté ajoutés depuis la première passe :
 - les tests `run_phase1.sh` à `run_phase10_tools.sh`,
   `run_audit_hardening.sh` et `run_phase3_multiprocess.sh` couvrent ces étapes.
 
-Ce document reste utile pour les points non traités : `exit()` socket non-OOM,
-politique globale `SIGPIPE`, absence de garde `FD_SETSIZE`, `inet_ntoa()`,
-`rand()/srand()`, parsers numériques historiques, buffers statiques legacy,
-types de taille et de temps, `intervalRegexp.c`, `ivytcl.c`, prototypes C et
-politique de logging.
+Ce document reste utile pour les points non traités : politique globale
+`SIGPIPE`, absence de garde `FD_SETSIZE`, isolation complète éventuelle de
+`rand()/srand()`, parsers numériques historiques, stockage legacy possédé par
+Ivy, types de taille et de temps, `intervalRegexp.c`, `ivytcl.c`, prototypes C
+et politique de logging.
 
 ## Priorités hautes
 
@@ -180,22 +180,23 @@ Après revue, tous ces cas ne méritent pas le même niveau de priorité :
 
 - les `exit()` sur échec d'allocation (`IvyContextCreate`,
   `IvyBindingCompile`, `IVY_LIST_ADD_END`, buffers socket, wrappers GUI) sont
-  proches d'un scénario OOM. On peut les laisser temporairement tant que la
-  politique mémoire globale n'est pas redéfinie ;
+  proches d'un scénario OOM. Ils restent hors périmètre phase 11 : si le
+  processus ne peut plus allouer ces petites structures, il est généralement
+  déjà dans un état que l'application ne saura pas récupérer proprement ;
 - les `exit()` dans `SocketServer()` sur `socket()`, `setsockopt()`, `bind()`,
   `getsockname()` ou `listen()` sont des erreurs runtime normales possibles
   pour une bibliothèque. Même si `IvyStart()` utilise généralement `ANYPORT`,
   ces chemins ne devraient pas tuer le processus appelant ;
 - les `exit()` sur `TCP_NODELAY` dans les connexions entrantes/sortantes sont
-  trop agressifs. La bibliothèque devrait plutôt fermer la connexion concernée
-  ou continuer sans `TCP_NODELAY`.
+  trop agressifs. La bibliothèque doit échouer proprement la création de la
+  connexion et notifier l'appelant par le retour existant quand il y en a un,
+  plutôt que continuer silencieusement avec une option de transport non posée ;
 
 Correction recommandée, par priorité :
 
 1. traiter d'abord les `exit()` socket non-OOM (`SocketServer()` et
    `TCP_NODELAY`) ;
-2. garder les `exit()` OOM en attendant une politique d'erreur mémoire
-   cohérente ;
+2. garder les `exit()` OOM hors périmètre immédiat ;
 3. pour la future API à contexte, remplacer les erreurs fatales par :
 
 - des retours d'erreur ;
@@ -206,11 +207,18 @@ Ce point ne bloque donc pas la suite immédiate de la migration multi-thread,
 mais les `exit()` socket non-OOM doivent être corrigés avant d'exposer une API
 réentrante propre.
 
-Statut après phase 10 : encore ouvert. `rg '\bexit\s*\('` signale toujours des
-appels directs dans `src/ivysocket.c`, `src/ivyloop.c`, `src/ivybind.c`,
-`src/list.h` et les backends toolkit. La migration contextuelle rend ces
-erreurs plus visibles, mais elle ne remplace pas encore tous les chemins fatals
-par des retours d'erreur.
+Statut après phase 11 : corrigé pour la boucle `select` et les sockets non-OOM.
+Les échecs `TCP_NODELAY` ne font plus `exit()` : la connexion sortante échoue
+par retour `NULL`, et la connexion entrante acceptée est fermée avant d'être
+exposée à Ivy. Les erreurs serveur TCP non-OOM de `SocketServerFor()`
+(`socket()`, `setsockopt()`, `bind()`, `getsockname()`, `listen()`) retournent
+maintenant `NULL`, que `IvyContextStart()` propage en `IVY_EIO`. Les échecs
+d'initialisation de la boucle `select` ou de son wakeup remontent aussi via
+`IvyChannelInitFor()` / `SocketInitFor()` jusqu'à `IvyContextStart()`. Le test
+`tests/run_phase11_runtime_errors.sh` couvre ces chemins par injection de
+faute sous `IVY_TESTING`. `rg '\bexit\s*\('` signale encore des appels directs
+liés aux OOM, au contexte legacy par défaut, aux macros `uthash` et aux
+backends toolkit legacy ; ils restent hors périmètre phase 11.
 
 ### Corriger la gestion des retours négatifs de `send()`
 
@@ -450,8 +458,8 @@ Statut après phase 10 : partiellement traité. Le parsing du bus dans
 `inet_ntop()` avec un buffer fourni par l'appelant. Cela sera de toute façon
 nécessaire pour une API multi-contexte propre.
 
-Statut après phase 10 : encore ouvert. `ivy.c` utilise toujours `inet_ntoa()`
-pour l'affichage du broadcast IPv4.
+Statut après phase 11 : corrigé. L'affichage du broadcast IPv4 utilise
+maintenant `inet_ntop()` avec un buffer local à l'appel, comme le chemin IPv6.
 
 ### Revoir l'identifiant applicatif
 
@@ -472,8 +480,14 @@ Alternatives :
 - combinaison monotonic time + pid + compteur atomique + port ;
 - générateur local au contexte, sans toucher au PRNG global du processus.
 
-Statut après phase 10 : encore ouvert. `GenApplicationUniqueIdentifier()`
-utilise toujours `srand()` et `rand()`.
+Statut après phase 11 : mitigé pour la sûreté multi-thread. Les appels à
+`srand()` et `rand()` sont sérialisés par un verrou global Ivy, `srand()` n'est
+plus appelé qu'une seule fois, et l'identifiant ajoute un compteur monotone
+protégé par le même verrou afin que deux démarrages parallèles dans le même
+processus ne produisent pas le même identifiant seulement parce qu'ils tombent
+dans la même milliseconde. Ce choix conserve le PRNG C global pour compatibilité
+et simplicité ; une génération totalement locale à Ivy reste une amélioration
+possible si l'on veut éviter toute interaction avec le PRNG du processus.
 
 ### Supprimer les buffers statiques retournés
 
@@ -492,10 +506,14 @@ Pour l'API legacy, garder le comportement si nécessaire. Pour une API durcie :
 - ou retourner un objet alloué/libéré explicitement ;
 - ou copier l'information dans une structure résultat.
 
-Statut après phase 10 : partiellement traité. Les variantes modernes à buffer
+Statut après phase 11 : partiellement traité. Les variantes modernes à buffer
 fourni par l'appelant existent pour les listes d'applications et de messages.
-Les wrappers legacy et certaines helpers socket gardent encore des buffers
-statiques ou du stockage possédé par Ivy.
+Les buffers `static` de `SocketGetPeerHost()`, `SocketGetRemoteHost()` et du
+message d'erreur `IvyBindingCompile()` sont maintenant en TLS, ce qui évite
+l'écrasement entre threads sans changer l'API legacy. Les wrappers legacy et
+les queries contextuelles historiques gardent encore du stockage possédé par
+Ivy ; les nouveaux usages doivent continuer à préférer les variantes à buffer
+appelant, dont le retour indique la taille nécessaire terminateur `NUL` inclus.
 
 ### Remplacer les concaténations manuelles non bornées
 
@@ -732,8 +750,12 @@ Priorité courte :
   `listen()` ;
 - `TCP_NODELAY` sur connexion acceptée ou sortante.
 
-Les `exit()` sur échec d'allocation peuvent rester temporairement tant que la
-future API à contexte n'a pas une politique d'erreur mémoire explicite.
+Statut après phase 11 : traité pour la boucle `select` et les sockets non-OOM.
+`SocketServerFor()` retourne `NULL` pour les erreurs runtime normales, les
+échecs `TCP_NODELAY` échouent la connexion concernée sans tuer le processus, et
+les échecs d'initialisation de wakeup remontent en `IVY_EIO` via
+`IvyContextStart()`. Les `exit()` sur échec d'allocation restent hors périmètre
+immédiat.
 
 4. Moderniser les parsers numériques (`strtol/strtoul`) et les types de
 taille (`size_t`, `ssize_t`).
@@ -741,7 +763,7 @@ taille (`size_t`, `ssize_t`).
 5. Remplacer les API non réentrantes ou globales :
 
 - `inet_ntoa` vers `inet_ntop` ;
-- `rand/srand` vers génération locale ;
+- `rand/srand` vers génération locale ou, à défaut legacy, verrou + seed unique ;
 - `signal(SIGPIPE, SIG_IGN)` vers politique configurable ou `MSG_NOSIGNAL`.
 
 6. Ajouter des tests ciblés de régression :
@@ -758,8 +780,8 @@ taille (`size_t`, `ssize_t`).
 Statut : les phases 1 à 10 sont maintenant implémentées pour la boucle
 `select` et les outils maintenus dans cette ligne. La priorité suivante, côté
 qualité pure, n'est plus la migration multibus elle-même mais la fermeture des
-points d'audit encore ouverts : `exit()` runtime, `SIGPIPE`, `FD_SETSIZE`,
-parsers historiques, `inet_ntoa()`, `rand()/srand()` et nettoyage des backends
+points d'audit encore ouverts : `SIGPIPE`, `FD_SETSIZE`, parsers historiques,
+isolation complète éventuelle de `rand()/srand()` et nettoyage des backends
 legacy.
 
 ## Ligne directrice

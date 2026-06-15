@@ -69,14 +69,6 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #define ARG_START "\002"
 #define ARG_END "\003"
 
-#if defined(_MSC_VER)
-#define IVY_TLS __declspec(thread)
-#elif defined(__GNUC__)
-#define IVY_TLS __thread
-#else
-#define IVY_TLS _Thread_local
-#endif
-
 #ifdef __APPLE__
 #define DEFAULT_DOMAIN 127.0.0.1
 #else
@@ -1610,8 +1602,7 @@ static void BroadcastReceive( Client client, const void *data, char *line )
 		SocketSetUuid (clnt->client, appid);
 
 	} else {
-	  printf ("SocketConnectAddr error .....\n");
-	  SocketSetData( app, NULL);
+	  IvySetLastError(IVY_EIO);
 	}
 	IvyPopCurrentContext(previous_ctx);
 }
@@ -1629,13 +1620,50 @@ static unsigned long currentTime()
         return  current;
 }
 
+#ifdef WIN32
+static SRWLOCK ivy_rand_lock = SRWLOCK_INIT;
+#else
+static IvyMutex ivy_rand_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
+static unsigned long ivy_application_id_sequence;
+static int ivy_rand_seeded;
+
+static int IvyLockedRand(unsigned long curtime, unsigned long *sequence)
+{
+	int value;
+
+#ifdef WIN32
+	AcquireSRWLockExclusive(&ivy_rand_lock);
+#else
+	IvyMutexLock(&ivy_rand_lock);
+#endif
+	if (!ivy_rand_seeded) {
+		srand((unsigned int)curtime);
+		ivy_rand_seeded = 1;
+	}
+	ivy_application_id_sequence++;
+	*sequence = ivy_application_id_sequence;
+	value = rand();
+#ifdef WIN32
+	ReleaseSRWLockExclusive(&ivy_rand_lock);
+#else
+	IvyMutexUnlock(&ivy_rand_lock);
+#endif
+
+	return value;
+}
+
 static const char * GenApplicationUniqueIdentifier(IvyContext *ctx)
 {
 	unsigned long curtime;
+	unsigned long sequence;
+	int random_value;
+
 	curtime = currentTime();
-	srand( curtime );
+	random_value = IvyLockedRand(curtime, &sequence);
 	snprintf(ctx->ivy_application_id_buffer, sizeof (ctx->ivy_application_id_buffer),
-		 "%d:%lu:%d", rand(), curtime, ctx->ivy_application_port);
+		 "%d:%lu:%lu:%d", random_value, curtime, sequence,
+		 ctx->ivy_application_port);
 	return ctx->ivy_application_id_buffer;
 }
 
@@ -1666,7 +1694,11 @@ int IvyInit (const char *appname, const char *ready,
 		}
 	}
 
-	SocketInitFor(ctx->ivy_sockets);
+	if (SocketInitFor(ctx->ivy_sockets) != 0) {
+		free(new_appname);
+		free(new_ready);
+		return IvyReturnStatus(IVY_EIO);
+	}
 	free(ctx->ivy_application_name);
 	ctx->ivy_application_name = new_appname;
 	ctx->ivy_application_callback = callback;
@@ -1970,7 +2002,10 @@ int IvyContextStart(IvyContext *ctx, const char* bus)
 	/*
 	 * Initialize TCP port
 	 */
-	SocketInitFor(ctx->ivy_sockets);
+	if (SocketInitFor(ctx->ivy_sockets) != 0) {
+		IvyContextSetState(ctx, IVY_CTX_CREATED);
+		return IvyReturnStatus(IVY_EIO);
+	}
 	ctx->ivy_server = SocketServerFor (ctx->ivy_sockets, ctx->ivy_ipv6, ANYPORT, ClientCreate, ClientDelete,
 			       ClientDecongestion, Receive);
 	if (!ctx->ivy_server) {
@@ -1985,6 +2020,12 @@ int IvyContextStart(IvyContext *ctx, const char* bus)
 	 * Now we have a port number it's time to initialize the UDP port
 	 */
 	ctx->ivy_broadcast =  SocketBroadcastCreateFor (ctx->ivy_sockets, ctx->ivy_ipv6, ctx->ivy_supervision_port, 0, BroadcastReceive );
+	if (!ctx->ivy_broadcast) {
+		SocketServerClose(ctx->ivy_server);
+		ctx->ivy_server = NULL;
+		IvyContextSetState(ctx, IVY_CTX_CREATED);
+		return IvyReturnStatus(IVY_EIO);
+	}
 
 
 	/* then, if we only have a port number, resort to default value for network */
@@ -2023,9 +2064,14 @@ int IvyContextStart(IvyContext *ctx, const char* bus)
 			p++;
 
 		if (ParseIvyIPv4Broadcast(addr_start, p, &mask)) {
+				char dst[INET_ADDRSTRLEN];
+				const char *bcast_addr;
+
 				baddr.s_addr = htonl(mask);
+				bcast_addr = inet_ntop(AF_INET, &baddr, dst, sizeof(dst));
 				printf ("Broadcasting on network %s, port %d\n",
-					inet_ntoa(baddr), ctx->ivy_supervision_port);
+					bcast_addr ? bcast_addr : "unknown",
+					ctx->ivy_supervision_port);
 				/* test mask value agaisnt CLASS D */
 				if ( IN_MULTICAST( mask ) )
 					SocketAddMember (ctx->ivy_broadcast , mask );

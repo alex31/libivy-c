@@ -99,6 +99,24 @@ static IvyChannelState default_channel_state = {
 #endif
 };
 
+#ifdef IVY_TESTING
+static int ivy_testing_channel_init_fail_step;
+
+void
+IvyTestingChannelInitFailStep(int step)
+{
+  ivy_testing_channel_init_fail_step = step;
+}
+
+static int
+IvyTestingChannelInitShouldFail(int step)
+{
+  return ivy_testing_channel_init_fail_step == step;
+}
+#else
+#define IvyTestingChannelInitShouldFail(step) 0
+#endif
+
 #ifdef WIN32
 WSADATA WsaData;
 #endif
@@ -715,7 +733,7 @@ IvyChannelHandleExcpt (IvyChannelState *state, fd_set *current)
   }
 }
 
-void IvyChannelInitFor (IvyChannelState *state)
+int IvyChannelInitFor (IvyChannelState *state)
 {
   state = IvyChannelNormalizeState(state);
 #ifdef WIN32
@@ -725,18 +743,17 @@ void IvyChannelInitFor (IvyChannelState *state)
   signal (SIGPIPE, SIG_IGN);
 #endif
   state->MainLoop = 1;
-  if (IvyControlInit(state) != 0) {
-    fprintf(stderr, "IvyChannelInit control mutex init failed\n");
-    exit(0);
-  }
+  if (IvyTestingChannelInitShouldFail(IVY_TEST_CHANNEL_INIT_FAIL_CONTROL))
+    return -1;
+  if (IvyControlInit(state) != 0)
+    return -1;
 
-  if (state->channel_initialized) return;
+  if (state->channel_initialized) return 0;
 
 #ifdef WIN32
   error = WSAStartup (0x0101, &WsaData);
-  if (error != 0) {
-    printf ("WSAStartup failed.\n");
-  }
+  if (error != 0)
+    return -1;
 #endif
 
   FD_ZERO (&state->open_fds);
@@ -744,21 +761,18 @@ void IvyChannelInitFor (IvyChannelState *state)
   state->highestFd = 0;
   (void)IvyChannelGetTimerState(state);
 
-  if (IvyWakeupInit(state) != 0) {
-#ifdef WIN32
-    fprintf(stderr, "IvyChannelInit wakeup socket failed\n");
-#else
-    perror("IvyChannelInit wakeup pipe");
-#endif
-    exit(0);
-  }
+  if (IvyTestingChannelInitShouldFail(IVY_TEST_CHANNEL_INIT_FAIL_WAKEUP))
+    return -1;
+  if (IvyWakeupInit(state) != 0)
+    return -1;
   IvyWakeupRegister(state);
   state->channel_initialized = 1;
+  return 0;
 }
 
 void IvyChannelInit (void)
 {
-  IvyChannelInitFor(IvyChannelGetDefaultState());
+  (void)IvyChannelInitFor(IvyChannelGetDefaultState());
 }
 
 void IvyChannelStopFor (IvyChannelState *state)
@@ -780,7 +794,8 @@ void IvyMainLoopFor(IvyChannelState *state)
   int ready;
 
   state = IvyChannelNormalizeState(state);
-  IvyChannelInitFor(state);
+  if (IvyChannelInitFor(state) != 0)
+    return;
   IvyChannelSetLoopActive(state, 1);
   while (state->MainLoop) {
 
@@ -837,7 +852,8 @@ void IvyIdleFor(IvyChannelState *state)
   struct timeval timeout = {0,0};
 
   state = IvyChannelNormalizeState(state);
-  IvyChannelInitFor(state);
+  if (IvyChannelInitFor(state) != 0)
+    return;
   ChannelDefferedDeleteFor(state);
   IvyChannelDrainControlFor(state);
   rdset = state->open_fds;
