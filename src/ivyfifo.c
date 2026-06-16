@@ -9,6 +9,7 @@
 #endif
 #include <stdio.h> // DEBUG, pour printf
 #include "ivyfifo.h"
+#include "ivysocket.h"
 #include "param.h"
 
 
@@ -170,11 +171,11 @@ unsigned int IvyFifoSendSocket (IvyFifoBuffer *f, const int fd)
     if (maxLen == 0)
       break;
 #ifdef WIN32
-    realLen = send (fd, f->rptr, maxLen, 0);
+    realLen = send (fd, f->rptr, maxLen, IVY_MSG_NOSIGNAL);
     if (realLen == SOCKET_ERROR)
       break;
 #else
-	realLen = send (fd, f->rptr, maxLen, MSG_DONTWAIT);
+	realLen = send (fd, f->rptr, maxLen, MSG_DONTWAIT | IVY_MSG_NOSIGNAL);
     if (realLen < 0) {
       if (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR)
         break;

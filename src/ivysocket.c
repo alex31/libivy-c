@@ -56,6 +56,13 @@ typedef long ssize_t;
 #include "ivythread.h"
 #include "ivydebug.h"
 
+void IvySocketDisableSigpipe(int fd)
+{
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+	int set = 1;
+	setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, (void *)&set, sizeof(int));
+#endif
+}
 
 union sockaddr_46 {
   struct sockaddr_in  s4;
@@ -344,7 +351,8 @@ static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 		{
 		perror ("*** accept ***");
 		return;
-		};
+		}
+	IvySocketDisableSigpipe(ns);
 
 	TRACE( "Accepting Connection ret\n", );
 
@@ -428,6 +436,7 @@ Server SocketServerFor(SocketState *state, int ipv6, unsigned short port,
 		return NULL;
 	if ((fd = socket (ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)) < 0)
 		return NULL;
+	IvySocketDisableSigpipe(fd);
 
 
 	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_REUSEADDR) ||
@@ -692,7 +701,7 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
     state = IvyFifoIsFull (client->ifb) ? SendStateFifoFull : SendStillCongestion;
   } else {
     // on tente d'ecrire direct dans la socket
-    reallySent =  send (client->fd, buffer, len, 0);
+    reallySent =  send (client->fd, buffer, len, IVY_MSG_NOSIGNAL);
     if (reallySent == len)
 	{
       state = SendOk; // PAS CONGESTIONNEE
@@ -913,7 +922,8 @@ Client SocketConnectAddrFor (SocketState *state, int ipv6, struct sockaddr_stora
 	if ((handle = socket ( ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)) < 0){
 		perror ("*** client socket ***");
 		return NULL;
-	};
+	}
+	IvySocketDisableSigpipe(handle);
 	memset( &remote,0,sizeof(remote) );
 
 	if ( ipv6 )
@@ -1094,7 +1104,8 @@ Client SocketBroadcastCreateFor (SocketState *state, int ipv6, unsigned short po
 	if ((handle = socket ( ipv6 ? AF_INET6 : AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0){
 		perror ("*** dgram socket ***");
 		return NULL;
-	};
+	}
+	IvySocketDisableSigpipe(handle);
 
 	/* wee need to used multiple client on the same host */
 	if (setsockopt (handle, SOL_SOCKET, SO_REUSEADDR, (char *)&on, sizeof (on)) < 0)

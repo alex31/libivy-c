@@ -46,6 +46,17 @@ extern "C" {
 #define socklen_t int
 #endif
 
+#if defined(__linux__)
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0x4000
+#endif
+#define IVY_MSG_NOSIGNAL MSG_NOSIGNAL
+#else
+#define IVY_MSG_NOSIGNAL 0
+#endif
+
+extern void IvySocketDisableSigpipe(int fd);
+
 typedef struct _socket_state SocketState;
 
 typedef enum {SendOk, SendStillCongestion, SendStateChangeToCongestion,

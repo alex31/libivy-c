@@ -60,8 +60,7 @@ void IvyChannelInit(void) {
   if ( channel_initialized ) return;
   /* fixes bug when another app coredumps */
 #ifndef WIN32
-  signal( SIGPIPE, SIG_IGN);
-#endif
+  /* signal( SIGPIPE, SIG_IGN); removed: managed locally by sockets */#endif
   channel_initialized = 1;
 }
 

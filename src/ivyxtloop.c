@@ -69,8 +69,7 @@ void IvyChannelInit(void)
 
 	/* pour eviter les plantages quand les autres applis font core-dump */
 #ifndef WIN32
-	signal( SIGPIPE, SIG_IGN);
-#endif
+	/* signal( SIGPIPE, SIG_IGN); removed: managed locally by sockets */#endif
 	/* verifie si init correct */
 	if ( !app )
 	{
