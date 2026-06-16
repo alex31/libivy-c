@@ -199,10 +199,10 @@ int main(int argc, char *argv[])
 	/* Mainloop management */
 	if ( optind < argc ) {
 		sender_mode = 1;
-		send_period = atol( argv[optind++] );
+		send_period = strtol( argv[optind++], NULL, 10 );
 		nbMsg = 10;
 		if ( optind < argc )
-			nbMsg = atol( argv[optind++] );
+			nbMsg = strtol( argv[optind++], NULL, 10 );
 	}
 	if ( optind < argc || send_period <= 0 ||
 	     (sender_mode && nbMsg <= 0) ) {

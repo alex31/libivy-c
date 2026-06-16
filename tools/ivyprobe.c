@@ -757,7 +757,7 @@ static void ExecuteProbeCommand(char *line)
 				size_t i;
 				int found = 0;
 				arg = ProbeStrtok(NULL, " ", &saveptr);
-				id = arg ? atoi (arg) : 0;
+				id = arg ? (int)strtol(arg, NULL, 10) : 0;
 				arg = ProbeStrtok(NULL, "'", &saveptr);
 				for (i = 0; i < probe_bus_count; i++) {
 					app = IvyContextGetApplication(probe_buses[i].ctx, target);
@@ -1050,7 +1050,7 @@ int main(int argc, char *argv[])
 				}
 				break;
 			case 'w':
-				wait_count = atoi(optarg) ;
+				wait_count = (int)strtol(optarg, NULL, 10);
 				break;
 			case 'f':
 				regex_file = optarg ;
