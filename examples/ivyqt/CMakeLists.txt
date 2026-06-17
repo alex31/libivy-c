@@ -9,21 +9,16 @@ set(CMAKE_AUTOUIC OFF)
 set(CMAKE_AUTORCC OFF)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(IVY REQUIRED IMPORTED_TARGET libivy)
+find_package(Threads REQUIRED)
 
 add_executable(qtdemo
   main.cpp
 )
 
-target_include_directories(qtdemo PRIVATE
-  /usr/local/include/Ivy
-)
-
-target_link_directories(qtdemo PRIVATE
-  /usr/local/lib
-)
-
 target_link_libraries(qtdemo PRIVATE
   Qt6::Widgets
-  ivy
-  pthread
+  PkgConfig::IVY
+  Threads::Threads
 )
