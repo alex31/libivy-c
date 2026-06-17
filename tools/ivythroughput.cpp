@@ -233,18 +233,42 @@ int main(int argc, char *argv[])
     case 'm':
       strcpy (messageFile, optarg);
       break;
-    case 'R':
-       numRegexps = atoi (optarg);
+    case 'R': {
+      unsigned int parsed;
+      if (!parseUnsigned(optarg, &parsed) || parsed == 0) {
+	printf("usage: %s %s",argv[0],helpmsg);
+	exit(1);
+      }
+      numRegexps = parsed;
       break;
-    case 'M':
-       numMessages = atoi (optarg);
+    }
+    case 'M': {
+      unsigned int parsed;
+      if (!parseUnsigned(optarg, &parsed) || parsed == 0) {
+	printf("usage: %s %s",argv[0],helpmsg);
+	exit(1);
+      }
+      numMessages = parsed;
       break;
-    case 'n':
-      numClients = atoi (optarg);
+    }
+    case 'n': {
+      unsigned int parsed;
+      if (!parseUnsigned(optarg, &parsed) || parsed == 0) {
+	printf("usage: %s %s",argv[0],helpmsg);
+	exit(1);
+      }
+      numClients = parsed;
       break;
-    case 'd':
-      testDuration = atoi (optarg);
+    }
+    case 'd': {
+      unsigned int parsed;
+      if (!parseUnsigned(optarg, &parsed) || parsed == 0 || parsed > (unsigned int)INT_MAX) {
+	printf("usage: %s %s",argv[0],helpmsg);
+	exit(1);
+      }
+      testDuration = (int)parsed;
       break;
+    }
     default:
       printf("usage: %s %s",argv[0],helpmsg);
       exit(1);
@@ -881,7 +905,13 @@ void verifyAckCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
 void recepteurReadyCB (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
   ListOfString  *messages = (ListOfString *) user_data;
-  unsigned int instance = atoi( *argv++ );
+  unsigned int instance;
+
+  if (argc < 1 || !parseUnsigned(argv[0], &instance) || instance >= numClients) {
+    fprintf(stderr, "Emetteur : invalid receiver instance\n");
+    IvyContextStop(throughput_ctx);
+    return;
+  }
 
   recReady[instance] = true;
   bool readyToStart = true;

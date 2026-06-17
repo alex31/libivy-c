@@ -223,10 +223,15 @@ static void DeleteSocket(void *data)
 	shutdown (client->fd, 2 );
 	close (client->fd );
 	if (client->send_lock_initialized) {
+	  IvyMutexLock (&client->send_lock);
+	  if (client->ifb != NULL) {
+	    IvyFifoDelete (client->ifb);
+	    client->ifb = NULL;
+	  }
+	  IvyMutexUnlock (&client->send_lock);
 	  IvyMutexDestroy (&client->send_lock);
 	  client->send_lock_initialized = 0;
-	}
-	if (client->ifb != NULL) {
+	} else if (client->ifb != NULL) {
 	  IvyFifoDelete (client->ifb);
 	  client->ifb = NULL;
 	}
@@ -317,17 +322,28 @@ static void HandleSocket (Channel channel, IVY_HANDLE fd, void *data)
 static void HandleCongestionWrite (Channel channel, IVY_HANDLE fd, void *data)
 {
   Client client = (Client)data;
+  int decongested = 0;
 
-  if (IvyFifoSendSocket (client->ifb, fd) == 0) {
+  if (!client)
+    return;
+
+  IvyMutexLock (&client->send_lock);
+
+  if (client->ifb == NULL) {
+    IvyChannelClearWritableEvent (channel);
+  } else if (IvyFifoSendSocket (client->ifb, fd) == 0) {
     // Not congestionned anymore
     IvyChannelClearWritableEvent (channel);
     //    printf ("DBG> Socket *DE*congestionnee\n");
     IvyFifoDelete (client->ifb);
     client->ifb = NULL;
-    if (client->handle_decongestion )
-      (*client->handle_decongestion) (client, client->data );
-
+    decongested = 1;
   }
+
+  IvyMutexUnlock (&client->send_lock);
+
+  if (decongested && client->handle_decongestion )
+    (*client->handle_decongestion) (client, client->data );
 }
 
 

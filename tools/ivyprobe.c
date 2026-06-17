@@ -457,9 +457,26 @@ static const char *ProbeFindHistoryByPrefix(const char *prefix)
 	return NULL;
 }
 
-static char *ProbeExpandHistoryShortcut(const char *line)
+static int ProbeParseLong(const char *value, long min_value, long max_value, long *result)
 {
 	char *endptr = NULL;
+	long parsed;
+
+	if (!value || !value[0] || !result)
+		return 0;
+
+	errno = 0;
+	parsed = strtol(value, &endptr, 10);
+	if (errno != 0 || endptr == value || *endptr != '\0' ||
+	    parsed < min_value || parsed > max_value)
+		return 0;
+
+	*result = parsed;
+	return 1;
+}
+
+static char *ProbeExpandHistoryShortcut(const char *line)
+{
 	long offset;
 	const char *expanded = NULL;
 	char *copy = NULL;
@@ -482,8 +499,7 @@ static char *ProbeExpandHistoryShortcut(const char *line)
 	}
 
 	if (isdigit((unsigned char)line[1])) {
-		offset = strtol(line + 1, &endptr, 10);
-		if (endptr && *endptr == '\0' && offset > 0) {
+		if (ProbeParseLong(line + 1, 1, LONG_MAX, &offset)) {
 			const ProbeHistoryEntry *entry = ProbeGetHistoryEntryByChronological((size_t)offset);
 			if (entry) {
 				copy = strdup(entry->line ? entry->line : "");
@@ -491,8 +507,7 @@ static char *ProbeExpandHistoryShortcut(const char *line)
 			}
 		}
 	} else if (line[1] == '-') {
-		offset = strtol(line + 2, &endptr, 10);
-		if (endptr && *endptr == '\0' && offset > 0) {
+		if (ProbeParseLong(line + 2, 1, LONG_MAX, &offset)) {
 			const ProbeHistoryEntry *entry = ProbeGetHistoryEntryFromEnd((size_t)offset);
 			if (entry) {
 				copy = strdup(entry->line ? entry->line : "");
@@ -1266,18 +1281,23 @@ static void ExecuteProbeCommand(char *line)
 				char *target = arg;
 				size_t i;
 				int found = 0;
+				long parsed_id = 0;
 				arg = ProbeStrtok(NULL, " ", &saveptr);
-				id = arg ? (int)strtol(arg, NULL, 10) : 0;
-				arg = ProbeStrtok(NULL, "'", &saveptr);
-				for (i = 0; i < probe_bus_count; i++) {
-					app = IvyContextGetApplication(probe_buses[i].ctx, target);
-					if (app) {
-						IvyContextSendDirectMsg(probe_buses[i].ctx, app, id, Chop(arg));
-						found++;
+				if (arg && !ProbeParseLong(arg, INT_MIN, INT_MAX, &parsed_id)) {
+					printf ("usage: .direct appname id 'arg'\n");
+				} else {
+					id = (int)parsed_id;
+					arg = ProbeStrtok(NULL, "'", &saveptr);
+					for (i = 0; i < probe_bus_count; i++) {
+						app = IvyContextGetApplication(probe_buses[i].ctx, target);
+						if (app) {
+							IvyContextSendDirectMsg(probe_buses[i].ctx, app, id, Chop(arg));
+							found++;
+						}
 					}
+					if (!found)
+						printf ("No Application %s!!!\n",target);
 				}
-				if (!found)
-					printf ("No Application %s!!!\n",target);
 			}
 
 		} else if  (strcmp(cmd, "who") == 0) {
@@ -1338,7 +1358,6 @@ static void ExecuteProbeCommand(char *line)
 			}
 		} else if  (strcmp(cmd, "history") == 0) {
 			char *history_arg;
-			char *endptr = NULL;
 			long requested;
 
 			history_arg = ProbeStrtok(NULL, " \t\n", &saveptr);
@@ -1348,8 +1367,7 @@ static void ExecuteProbeCommand(char *line)
 				ProbeClearHistory();
 				printf("History cleared.\n");
 			} else {
-				requested = strtol(history_arg, &endptr, 10);
-				if (endptr && *endptr == '\0' && requested > 0) {
+				if (ProbeParseLong(history_arg, 1, INT_MAX, &requested)) {
 					ProbePrintHistory((int)requested);
 				} else {
 					printf("usage: .history [N|-clear]\n");
@@ -1578,9 +1596,15 @@ int main(int argc, char *argv[])
 					exit(1);
 				}
 				break;
-			case 'w':
-				wait_count = (int)strtol(optarg, NULL, 10);
+			case 'w': {
+				long parsed_wait;
+				if (!ProbeParseLong(optarg, 0, INT_MAX, &parsed_wait)) {
+					printf("usage: %s %s", argv[0], helpmsg);
+					exit(1);
+				}
+				wait_count = (int)parsed_wait;
 				break;
+			}
 			case 'f':
 				regex_file = optarg ;
 				break;

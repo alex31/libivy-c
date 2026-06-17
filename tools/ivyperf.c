@@ -14,6 +14,7 @@
  */
 
 #include "version.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -105,6 +106,23 @@ static void PrintUsage(const char *program)
 		"       message_count defaults to 10 when period_ms is supplied\n"
 		"       -l repeats sender batches instead of exiting\n",
 		program);
+}
+
+static int ParsePositiveLong(const char *value, long *result)
+{
+	char *end = NULL;
+	long parsed;
+
+	if (!value || !value[0] || !result)
+		return 0;
+
+	errno = 0;
+	parsed = strtol(value, &end, 10);
+	if (errno != 0 || end == value || *end != '\0' || parsed <= 0)
+		return 0;
+
+	*result = parsed;
+	return 1;
 }
 
 
@@ -199,10 +217,16 @@ int main(int argc, char *argv[])
 	/* Mainloop management */
 	if ( optind < argc ) {
 		sender_mode = 1;
-		send_period = strtol( argv[optind++], NULL, 10 );
+		if (!ParsePositiveLong(argv[optind++], &send_period)) {
+			PrintUsage(argv[0]);
+			return 1;
+		}
 		nbMsg = 10;
-		if ( optind < argc )
-			nbMsg = strtol( argv[optind++], NULL, 10 );
+		if ( optind < argc &&
+		     !ParsePositiveLong(argv[optind++], &nbMsg)) {
+			PrintUsage(argv[0]);
+			return 1;
+		}
 	}
 	if ( optind < argc || send_period <= 0 ||
 	     (sender_mode && nbMsg <= 0) ) {
