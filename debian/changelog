@@ -1,10 +1,10 @@
-ivy-c (3.16.0) unstable; urgency=low
+ivy-c (3.17.0) unstable; urgency=low
 
   * migrate the regexp backend from PCRE1 to native PCRE2
   * update throughput and example builds for PCRE2
   * modernize macOS and Windows build files for the new regex dependency
   * raise the Linux x86-64 baseline to x86-64-v3
-  * bump the library release to 3.16
+  * bump the library release to 3.17
 
  -- Alexandre Bustico <alexandre.bustico@enac.fr>  Wed, 08 Apr 2026 21:00:00 +0200
 
