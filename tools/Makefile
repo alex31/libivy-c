@@ -6,6 +6,8 @@ OMPLIB = -lgomp -lpthread
 THREADLIB ?= -pthread
 EXTRALIB= -L../src
 EXTRAINC=-I../src
+READLINE_LIBS ?= -lreadline -lhistory
+IVYPROBE_FEATURES ?= -DIVYPROBE_USE_READLINE
 
 .SUFFIXES: .c .o
 
@@ -19,7 +21,7 @@ all: $(TARGETS)
 omp: $(OMP_TARGET)
 
 ivyprobe: ivyprobe.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB) $(READLINE_LIBS)
 
 ivythroughput: ivythroughput.o ../src/libivy.a
 	$(CXX)  $(CFLAGS) $(EXTRAINC) -o $@ ivythroughput.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
@@ -39,7 +41,7 @@ ivythroughput_omp: ivythroughput.o ../src/libivy_omp.a
 	$(CXX)  $(CFLAGS) $(EXTRAINC) -o $@ ivythroughput.o -L. -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB)
 
 ivyprobe.o : ivyprobe.c 
-	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) -c ivyprobe.c -o $@
+	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) $(IVYPROBE_FEATURES) -c ivyprobe.c -o $@
 
 ivyperf: ivyperf.o ../src/libivy.a
 	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
