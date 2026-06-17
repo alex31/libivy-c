@@ -36,11 +36,15 @@ the multibus migration.
 
 ## Installation
 
-The build currently relies on PCRE2 for regular expression support.
+The build currently relies on PCRE2 for regular expression support, and readline/history support for the tools target (`ivyprobe`, etc.).
 
 ### Linux
 
-On Linux, the PCRE2 runtime library is often already present on modern distributions because many other packages depend on it, but you should not assume it is part of the base install. For building this project, the important part is the development package, because the makefiles use `pcre2-config`.
+On Linux, the PCRE2 runtime library is often already present on modern distributions because many other packages depend on it, but you should not assume it is part of the base install.
+
+For this project, the required development packages are:
+- PCRE2 (`pcre2-config`), for regex support
+- readline/history, for `ivyprobe` and other tools
 
 Typical build requirements:
 
@@ -48,18 +52,19 @@ Typical build requirements:
 - `gcc`
 - `g++`
 - PCRE2 development files
+- readline development files (for tools)
 
 Examples:
 
 ```bash
 # Debian / Ubuntu
-sudo apt install build-essential libpcre2-dev
+sudo apt install build-essential libpcre2-dev libreadline-dev
 
 # Fedora
-sudo dnf install gcc gcc-c++ make pcre2-devel
+sudo dnf install gcc gcc-c++ make pcre2-devel readline-devel
 
 # Arch Linux
-sudo pacman -S base-devel pcre2
+sudo pacman -S base-devel pcre2 readline
 ```
 
 Build:
@@ -67,6 +72,15 @@ Build:
 ```bash
 cd src
 make
+```
+
+This default build includes tools, so readline/history must be available.
+
+If you only need the library artifacts, build without tools:
+
+```bash
+cd src
+make static-libs shared-libs
 ```
 
 Useful regression tests for the current migration line, from the repository

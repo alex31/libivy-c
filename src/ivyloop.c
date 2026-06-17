@@ -127,6 +127,21 @@ IvyChannelNormalizeState(IvyChannelState *state)
   return state ? state : &default_channel_state;
 }
 
+static int
+IvyChannelIsValidSelectFd(IVY_HANDLE fd)
+{
+#ifdef WIN32
+  return fd != INVALID_SOCKET;
+#elif defined(FD_SETSIZE)
+  if (fd < 0)
+    return 0;
+  return fd < FD_SETSIZE;
+#else
+  (void)fd;
+  return 1;
+#endif
+}
+
 IvyChannelState *
 IvyChannelGetDefaultState(void)
 {
@@ -173,6 +188,26 @@ IvyChannelGetTimerState(IvyChannelState *state)
   return state->timer_state;
 }
 
+static void
+IvyWakeupClose(IvyChannelState *state)
+{
+#ifdef WIN32
+  if (state->wakeup_socket[0] != INVALID_SOCKET)
+    closesocket(state->wakeup_socket[0]);
+  if (state->wakeup_socket[1] != INVALID_SOCKET)
+    closesocket(state->wakeup_socket[1]);
+  state->wakeup_socket[0] = INVALID_SOCKET;
+  state->wakeup_socket[1] = INVALID_SOCKET;
+#else
+  if (state->wakeup_pipe[0] >= 0)
+    close(state->wakeup_pipe[0]);
+  if (state->wakeup_pipe[1] >= 0)
+    close(state->wakeup_pipe[1]);
+  state->wakeup_pipe[0] = -1;
+  state->wakeup_pipe[1] = -1;
+#endif
+}
+
 static void IvyChannelDrainControlFor(IvyChannelState *state);
 static void IvyChannelDeleteFor(IvyChannelState *state, Channel channel);
 
@@ -197,17 +232,7 @@ IvyChannelStateDestroy(IvyChannelState *state)
   }
   state->control_tail = NULL;
 
-#ifdef WIN32
-  if (state->wakeup_socket[0] != INVALID_SOCKET)
-    closesocket(state->wakeup_socket[0]);
-  if (state->wakeup_socket[1] != INVALID_SOCKET)
-    closesocket(state->wakeup_socket[1]);
-#else
-  if (state->wakeup_pipe[0] >= 0)
-    close(state->wakeup_pipe[0]);
-  if (state->wakeup_pipe[1] >= 0)
-    close(state->wakeup_pipe[1]);
-#endif
+  IvyWakeupClose(state);
 
   if (state->control_mutex_initialized)
     IvyMutexDestroy(&state->control_mutex);
@@ -298,15 +323,18 @@ cleanup:
   return ok ? 0 : -1;
 }
 
-static void
+static int
 IvyWakeupRegister(IvyChannelState *state)
 {
   if (state->wakeup_socket[0] == INVALID_SOCKET)
-    return;
+    return -1;
+  if (!IvyChannelIsValidSelectFd(state->wakeup_socket[0]))
+    return -1;
 
   if (state->wakeup_socket[0] >= state->highestFd)
     state->highestFd = state->wakeup_socket[0] + 1;
   FD_SET(state->wakeup_socket[0], &state->open_fds);
+  return 0;
 }
 
 static int
@@ -356,15 +384,18 @@ IvyWakeupInit(IvyChannelState *state)
   return 0;
 }
 
-static void
+static int
 IvyWakeupRegister(IvyChannelState *state)
 {
   if (state->wakeup_pipe[0] < 0)
-    return;
+    return -1;
+  if (!IvyChannelIsValidSelectFd(state->wakeup_pipe[0]))
+    return -1;
 
   if (state->wakeup_pipe[0] >= state->highestFd)
     state->highestFd = state->wakeup_pipe[0] + 1;
   FD_SET(state->wakeup_pipe[0], &state->open_fds);
+  return 0;
 }
 
 static int
@@ -593,6 +624,8 @@ Channel IvyChannelAddFor (IvyChannelState *state, IVY_HANDLE fd, void *data,
   Channel channel;
 
   state = IvyChannelNormalizeState(state);
+  if (!IvyChannelIsValidSelectFd(fd))
+    return NULL;
 
   IVY_LIST_ADD_START (state->channels_list, channel)
     channel->owner = state;
@@ -626,6 +659,8 @@ static void IvyChannelAddWritableEventDirect(IvyChannelState *state, Channel cha
 {
   state = IvyChannelNormalizeState(state ? state : (channel ? channel->owner : NULL));
   if (!channel)
+    return;
+  if (!IvyChannelIsValidSelectFd(channel->fd))
     return;
 
   if (channel->fd >= state->highestFd)
@@ -764,7 +799,10 @@ int IvyChannelInitFor (IvyChannelState *state)
     return -1;
   if (IvyWakeupInit(state) != 0)
     return -1;
-  IvyWakeupRegister(state);
+  if (IvyWakeupRegister(state) != 0) {
+    IvyWakeupClose(state);
+    return -1;
+  }
   state->channel_initialized = 1;
   return 0;
 }

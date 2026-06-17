@@ -395,20 +395,29 @@ static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 		       TCP_NODELAY,     /* name of option */
 		       (char *) &TCP_NO_DELAY_ACTIVATED,  /* the cast is historical */
  		       sizeof(TCP_NO_DELAY_ACTIVATED)) < 0)    /* length of option value */
-	  {
-	    IvyMutexDestroy(&client->send_lock);
-	    client->send_lock_initialized = 0;
-	    free(client->buffer);
-	    close(ns);
-	    free(client);
-	    return;
-	  }
+		  {
+		    IvyMutexDestroy(&client->send_lock);
+		    client->send_lock_initialized = 0;
+		    free(client->buffer);
+		    close(ns);
+		    free(client);
+		    return;
+		  }
 
 
 
 
 	client->channel = IvyChannelAddFor (state->channels, ns, client,  DeleteSocket, HandleSocket,
 					 HandleCongestionWrite);
+	if (!client->channel) {
+	  if (client->send_lock_initialized)
+	    IvyMutexDestroy(&client->send_lock);
+	  client->send_lock_initialized = 0;
+	  free(client->buffer);
+	  close(ns);
+	  free(client);
+	  return;
+	}
 	client->interpretation = server->interpretation;
 	client->ptr = client->buffer;
 	client->handle_delete = server->handle_delete;
@@ -507,6 +516,11 @@ Server SocketServerFor(SocketState *state, int ipv6, unsigned short port,
 	server->interpretation = interpretation;
 	server->port = ntohs(ipv6 ? local.s6.sin6_port : local.s4.sin_port);
 	IVY_LIST_ADD_END (state->servers_list, server );
+	if (!server->channel) {
+	  IVY_LIST_REMOVE (state->servers_list, server);
+	  close(fd);
+	  return NULL;
+	}
 
 	return server;
 }
@@ -947,6 +961,7 @@ Client SocketConnectAddrFor (SocketState *state, int ipv6, struct sockaddr_stora
 
 	if (connect (handle, &remote.sa, addrlen ) < 0){
 		perror ("*** client connect ***");
+		close(handle);
 		return NULL;
 	};
 #ifdef WIN32
@@ -982,8 +997,6 @@ Client SocketConnectAddrFor (SocketState *state, int ipv6, struct sockaddr_stora
 	client->terminator = '\n';
 	client->fd = handle;
 	client->ipv6 = ipv6;
-	client->channel = IvyChannelAddFor (state->channels, handle, client,  DeleteSocket,
-					 HandleSocket, HandleCongestionWrite );
 	client->interpretation = interpretation;
 	client->ptr = client->buffer;
 	client->data = data;
@@ -997,6 +1010,16 @@ Client SocketConnectAddrFor (SocketState *state, int ipv6, struct sockaddr_stora
 		close(handle);
 		free(client);
 		return NULL;
+	}
+	client->channel = IvyChannelAddFor (state->channels, handle, client,  DeleteSocket,
+					 HandleSocket, HandleCongestionWrite );
+	if (!client->channel) {
+	  IvyMutexDestroy(&client->send_lock);
+	  client->send_lock_initialized = 0;
+	  free(client->buffer);
+	  close(handle);
+	  free(client);
+	  return NULL;
 	}
 	strcpy (client->app_uuid, "init by SocketConnectAddr");
 	IVY_LIST_ADD_END(state->clients_list, client );
@@ -1016,6 +1039,22 @@ Client SocketConnectAddr (int ipv6, struct sockaddr_storage * addr, unsigned sho
 				    interpretation, handle_delete, handle_decongestion);
 }
 /* TODO factoriser avec HandleRead !!!! */
+
+static int
+SocketWaitForReplyFdValid(IVY_HANDLE fd)
+{
+#ifdef WIN32
+	return fd != INVALID_SOCKET;
+#elif defined(FD_SETSIZE)
+	if (fd < 0)
+		return 0;
+	return fd < FD_SETSIZE;
+#else
+	(void)fd;
+	return 1;
+#endif
+}
+
 int SocketWaitForReply (Client client, char *buffer, int size, int delai)
 {
 	fd_set rdset;
@@ -1032,7 +1071,10 @@ int SocketWaitForReply (Client client, char *buffer, int size, int delai)
 	ptr = buffer;
 	timeout.tv_sec = delai;
 	timeout.tv_usec = 0;
-   	do {
+	if (!SocketWaitForReplyFdValid(fd))
+		return -1;
+
+	do {
 		/* limitation taille buffer */
 		nb_to_read = size - (ptr - buffer );
 		if (nb_to_read == 0 )
@@ -1111,6 +1153,7 @@ Client SocketBroadcastCreateFor (SocketState *state, int ipv6, unsigned short po
 	if (setsockopt (handle, SOL_SOCKET, SO_REUSEADDR, (char *)&on, sizeof (on)) < 0)
 		{
 			perror ("*** set socket option REUSEADDR ***");
+			close(handle);
 			return NULL;
 		};
 #ifdef SO_REUSEPORT
@@ -1118,6 +1161,7 @@ Client SocketBroadcastCreateFor (SocketState *state, int ipv6, unsigned short po
 	if (setsockopt (handle, SOL_SOCKET, SO_REUSEPORT, (char *)&on, sizeof (on)) < 0)
 		{
 			perror ("*** set socket option REUSEPORT ***");
+			close(handle);
 			return NULL;
 		}
 #endif
@@ -1125,12 +1169,14 @@ Client SocketBroadcastCreateFor (SocketState *state, int ipv6, unsigned short po
 	if (setsockopt (handle, SOL_SOCKET, SO_BROADCAST, (char *)&on, sizeof (on)) < 0)
 		{
 			perror ("*** BROADCAST ***");
+			close(handle);
 			return NULL;
 		};
 
 	if (bind(handle, &local.sa,  addrlen ) < 0)
 		{
 			perror ("*** BIND ***");
+			close(handle);
 			return NULL;
 		};
 
@@ -1147,8 +1193,6 @@ Client SocketBroadcastCreateFor (SocketState *state, int ipv6, unsigned short po
 	client->terminator = '\n';
 	client->fd = handle;
 	client->ipv6 = ipv6;
-	client->channel = IvyChannelAddFor (state->channels, handle, client,  DeleteSocket,
-					 HandleSocket, HandleCongestionWrite);
 	client->interpretation = interpretation;
 	client->ptr = client->buffer;
 	client->data = data;
@@ -1160,6 +1204,16 @@ Client SocketBroadcastCreateFor (SocketState *state, int ipv6, unsigned short po
 		close(handle);
 		free(client);
 		return NULL;
+	}
+	client->channel = IvyChannelAddFor (state->channels, handle, client,  DeleteSocket,
+					 HandleSocket, HandleCongestionWrite);
+	if (!client->channel) {
+	  IvyMutexDestroy(&client->send_lock);
+	  client->send_lock_initialized = 0;
+	  free(client->buffer);
+	  close(handle);
+	  free(client);
+	  return NULL;
 	}
 	strcpy (client->app_uuid, "init by SocketBroadcastCreate");
 	IVY_LIST_ADD_END(state->clients_list, client );
