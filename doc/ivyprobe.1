@@ -90,6 +90,9 @@ will make
 .B ivyprobe
 quit.
 .TP 
+.I Up/Down arrows
+navigate command history during interactive input.
+.TP 
 .I All lines
 that do not start with a dot will be interpreted as messages to be
 broadcasted on the bus.
@@ -123,10 +126,43 @@ if present on the bus.
 will tell you on what host is
 .I appname,
 if present on the bus.
+.TP 
+.I \.history [N]
+prints the last
+.I N
+commands and messages entered (default is 30).
+.TP 
+.I \.history -clear
+clears the interactive history.
+.TP
+.I History file
+history is stored in
+.I $XDG_STATE_HOME/ivyprobe/history
+(or
+.I ~/.local/state/ivyprobe/history
+if
+.I XDG_STATE_HOME
+is not set).
+.TP
+.I !!, !N, !-N and !prefix
+During interactive input:
+.IP
+.B !!
+repeats last line,
+.IP
+.B !-N
+repeats the Nth previous line, !-1 repeats the last line,
+.IP
+.B !N
+repeats the numbered line from history, as shown by .history.
+.IP
+.B !prefix
+repeats the last entry whose line starts with
+.I prefix.
 
 
 .SH "BUGS"
-.B ivyprobe has no prompt for its command line.
+.B ivyprobe has readline-based history and interactive input shortcuts.
 
 .SH "SEE ALSO"
 .PP 

@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #ifdef WIN32
 #include <windows.h>
 #ifdef __MINGW32__
@@ -43,7 +44,14 @@
 #else
 #include <pthread.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
+#include <limits.h>
+#ifdef IVYPROBE_USE_READLINE
+#include <readline/readline.h>
+#include <readline/history.h>
+#endif
 #ifdef __INTERIX
 extern char *optarg;
 extern int optind;
@@ -103,6 +111,14 @@ static pthread_cond_t probe_state_cond = PTHREAD_COND_INITIALIZER;
 #define PROBE_MAX_THREADS 10
 #define PROBE_TIMER_COUNT 5
 #define PROBE_TIMER_PERIOD_MS 1000
+#define PROBE_HISTORY_CAPACITY 256
+#define PROBE_HISTORY_DEFAULT_VIEW 30
+#define PROBE_HISTORY_FILE_NAME "history"
+#define PROBE_HISTORY_DIR_NAME "ivyprobe"
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 #ifndef WIN32
 typedef struct ProbeCommand {
@@ -130,6 +146,20 @@ typedef struct {
 	long tick;
 } ProbeTimerState;
 
+typedef enum {
+	ProbeHistoryCommand,
+	ProbeHistoryMessage
+} ProbeHistoryType;
+
+typedef struct {
+	ProbeHistoryType type;
+	char *line;
+} ProbeHistoryEntry;
+
+static ProbeHistoryEntry probe_history[PROBE_HISTORY_CAPACITY];
+static size_t probe_history_count = 0;
+static size_t probe_history_next = 0;
+
 static ProbeTimerState probe_timer_state;
 
 void DirectCallback(IvyClientPtr app, void *user_data, int id, char *msg);
@@ -139,6 +169,28 @@ void ApplicationCallback(IvyClientPtr app, void *user_data, IvyApplicationEvent 
 void IvyPrintBindCallback(IvyClientPtr app, void *user_data, int id, const char* regexp, IvyBindEvent event);
 static void ExecuteProbeCommand(char *line);
 static void DispatchProbeCommand(char *line);
+static const char *ProbeHistoryPrompt(void);
+static void ProbeAddHistory(const char *line, ProbeHistoryType type);
+static char *ProbeExpandHistoryShortcut(const char *line);
+static void ProbePrintHistory(int limit);
+static void ProbeClearHistory(void);
+static void ProbeProcessInput(char *line);
+static char *ProbeReadLine(void);
+#ifdef IVYPROBE_USE_READLINE
+static char *ProbeCommandCompletionGenerator(const char *text, int state);
+static char **ProbeInputCompletion(const char *text, int start, int end);
+static void ProbeSetupReadline(void);
+static const char *ProbeGetHistoryFilePath(void);
+static void ProbeLoadHistoryFromFile(void);
+static void ProbeSaveHistoryToFile(void);
+static void ProbeClearHistoryFile(void);
+#endif
+#ifndef IVYPROBE_USE_READLINE
+static void ProbeTrimNewline(char *line);
+#endif
+static const ProbeHistoryEntry *ProbeGetHistoryEntryByChronological(size_t ordinal);
+static const ProbeHistoryEntry *ProbeGetHistoryEntryFromEnd(size_t distance);
+static const char *ProbeFindHistoryByPrefix(const char *prefix);
 
 static char *ProbeStrtok(char *str, const char *delim, char **saveptr)
 {
@@ -148,6 +200,403 @@ static char *ProbeStrtok(char *str, const char *delim, char **saveptr)
 #else
 	return strtok_r(str, delim, saveptr);
 #endif
+}
+
+static const char *ProbeHistoryPrompt(void)
+{
+	static char prompt[64];
+
+	if (current_probe_thread == 0)
+		snprintf(prompt, sizeof(prompt), "ivyprobe> ");
+	else
+		snprintf(prompt, sizeof(prompt), "ivyprobe[%d]> ", current_probe_thread);
+	return prompt;
+}
+
+#ifndef IVYPROBE_USE_READLINE
+static void ProbeTrimNewline(char *line)
+{
+	size_t length;
+
+	if (!line)
+		return;
+	length = strlen(line);
+	if (length > 0 && line[length - 1] == '\n')
+		line[length - 1] = '\0';
+}
+#endif
+
+#ifdef IVYPROBE_USE_READLINE
+static const char *const probe_command_completions[] = {
+	".help",
+	".quit",
+	".die",
+	".dieall-yes-i-am-sure",
+	".direct",
+	".ping",
+	".where",
+	".bind",
+	".showbind",
+	".history",
+	".thread",
+	".threads",
+	".who",
+	NULL
+};
+
+static char *ProbeCommandCompletionGenerator(const char *text, int state)
+{
+	static size_t completion_index = 0;
+	size_t text_length;
+	const char *candidate;
+
+	if (!state)
+		completion_index = 0;
+
+	text_length = strlen(text ? text : "");
+	while ((candidate = probe_command_completions[completion_index]) != NULL) {
+		completion_index++;
+		if (!text_length || strncmp(candidate, text, text_length) == 0)
+			return strdup(candidate);
+	}
+	return NULL;
+}
+
+static char **ProbeInputCompletion(const char *text, int start, int end)
+{
+	(void)end;
+
+	if (start != 0 || (text && text[0] != '.'))
+		return NULL;
+
+	return rl_completion_matches(text, ProbeCommandCompletionGenerator);
+}
+
+static void ProbeSetupReadline(void)
+{
+	rl_attempted_completion_function = ProbeInputCompletion;
+	rl_bind_key('\t', rl_complete);
+	(void) rl_variable_bind("show-all-if-ambiguous", "on");
+}
+
+static int ProbeEnsureHistoryDirectory(const char *path)
+{
+	char buffer[PATH_MAX];
+	struct stat st;
+	char *cursor;
+
+	if (!path || !path[0] || snprintf(buffer, sizeof(buffer), "%s", path) >= (int)sizeof(buffer))
+		return -1;
+
+	for (cursor = buffer + 1; *cursor; ++cursor) {
+		if (*cursor != '/')
+			continue;
+
+		*cursor = '\0';
+		if (stat(buffer, &st) == -1) {
+			if (errno != ENOENT || mkdir(buffer, 0700) != 0)
+				return -1;
+		} else if (!S_ISDIR(st.st_mode)) {
+			return -1;
+		}
+		*cursor = '/';
+	}
+
+	if (stat(buffer, &st) == -1) {
+		if (errno != ENOENT || mkdir(buffer, 0700) != 0)
+			return -1;
+	} else if (!S_ISDIR(st.st_mode)) {
+		return -1;
+	}
+
+	return 0;
+}
+
+static const char *ProbeGetHistoryFilePath(void)
+{
+	static char file_path[PATH_MAX];
+	static char dir_path[PATH_MAX];
+	static int initialized = 0;
+	const char *base_path;
+	const char *home_path;
+
+	if (initialized)
+		return file_path[0] ? file_path : NULL;
+	initialized = 1;
+
+	base_path = getenv("XDG_STATE_HOME");
+	if (base_path && base_path[0]) {
+		if (snprintf(dir_path, sizeof(dir_path), "%s/%s", base_path, PROBE_HISTORY_DIR_NAME)
+		    >= (int)sizeof(dir_path))
+			return NULL;
+	} else {
+		home_path = getenv("HOME");
+		if (!home_path || !home_path[0])
+			return NULL;
+		if (snprintf(dir_path, sizeof(dir_path), "%s/.local/state/%s", home_path,
+		             PROBE_HISTORY_DIR_NAME) >= (int)sizeof(dir_path))
+			return NULL;
+	}
+
+	if (ProbeEnsureHistoryDirectory(dir_path) != 0)
+		return NULL;
+
+	if (snprintf(file_path, sizeof(file_path), "%s/%s", dir_path, PROBE_HISTORY_FILE_NAME)
+	    >= (int)sizeof(file_path))
+		return NULL;
+
+	return file_path;
+}
+
+static void ProbeLoadHistoryFromFile(void)
+{
+	const char *history_file = ProbeGetHistoryFilePath();
+	HIST_ENTRY **entries;
+	size_t index;
+
+	if (!history_file)
+		return;
+	if (read_history(history_file) != 0)
+		return;
+
+	entries = history_list();
+	if (!entries)
+		return;
+	for (index = 0; entries[index] != NULL; ++index) {
+		if (!entries[index]->line)
+			continue;
+		ProbeAddHistory(entries[index]->line,
+		              entries[index]->line[0] == '.' ? ProbeHistoryCommand
+		              : ProbeHistoryMessage);
+	}
+}
+
+static void ProbeSaveHistoryToFile(void)
+{
+	const char *history_file = ProbeGetHistoryFilePath();
+
+	if (!history_file)
+		return;
+	if (append_history(1, history_file) == 0)
+		return;
+	(void) write_history(history_file);
+}
+
+static void ProbeClearHistoryFile(void)
+{
+	const char *history_file = ProbeGetHistoryFilePath();
+	FILE *fd;
+
+	if (!history_file)
+		return;
+	fd = fopen(history_file, "w");
+	if (fd)
+		fclose(fd);
+}
+#endif
+
+static void ProbeAddHistory(const char *line, ProbeHistoryType type)
+{
+	size_t index;
+
+	if (!line || !line[0])
+		return;
+
+	if (probe_history_count == PROBE_HISTORY_CAPACITY) {
+		free(probe_history[probe_history_next].line);
+		index = probe_history_next;
+		probe_history_next = (probe_history_next + 1) % PROBE_HISTORY_CAPACITY;
+	} else {
+		index = probe_history_count++;
+	}
+
+	probe_history[index].type = type;
+	probe_history[index].line = strdup(line);
+}
+
+static const ProbeHistoryEntry *ProbeGetHistoryEntryByChronological(size_t ordinal)
+{
+	size_t logical_index;
+	size_t physical_index;
+
+	if (probe_history_count == 0 || ordinal == 0 || ordinal > probe_history_count)
+		return NULL;
+
+	logical_index = ordinal - 1;
+	if (probe_history_count < PROBE_HISTORY_CAPACITY)
+		physical_index = logical_index;
+	else
+		physical_index = (probe_history_next + logical_index) % PROBE_HISTORY_CAPACITY;
+	return &probe_history[physical_index];
+}
+
+static const ProbeHistoryEntry *ProbeGetHistoryEntryFromEnd(size_t distance)
+{
+	if (distance == 0 || distance > probe_history_count)
+		return NULL;
+	return ProbeGetHistoryEntryByChronological(probe_history_count - distance + 1);
+}
+
+static const char *ProbeFindHistoryByPrefix(const char *prefix)
+{
+	size_t distance;
+
+	if (!prefix || !prefix[0])
+		return NULL;
+	for (distance = 1; distance <= probe_history_count; distance++) {
+		const ProbeHistoryEntry *entry = ProbeGetHistoryEntryFromEnd(distance);
+		if (entry && entry->line && strncmp(entry->line, prefix, strlen(prefix)) == 0)
+			return entry->line;
+	}
+	return NULL;
+}
+
+static char *ProbeExpandHistoryShortcut(const char *line)
+{
+	char *endptr = NULL;
+	long offset;
+	const char *expanded = NULL;
+	char *copy = NULL;
+	const char *arg;
+
+	if (!line || !line[0])
+		return strdup("");
+
+	if (line[0] != '!')
+		return strdup(line);
+
+	if (!strcmp(line, "!!")) {
+		const ProbeHistoryEntry *entry = ProbeGetHistoryEntryFromEnd(1);
+		if (entry)
+			return strdup(entry->line ? entry->line : "");
+		printf("No history entry\n");
+		return NULL;
+	}
+
+	if (isdigit((unsigned char)line[1])) {
+		offset = strtol(line + 1, &endptr, 10);
+		if (endptr && *endptr == '\0' && offset > 0) {
+			const ProbeHistoryEntry *entry = ProbeGetHistoryEntryByChronological((size_t)offset);
+			if (entry) {
+				copy = strdup(entry->line ? entry->line : "");
+				return copy;
+			}
+		}
+	} else if (line[1] == '-') {
+		offset = strtol(line + 2, &endptr, 10);
+		if (endptr && *endptr == '\0' && offset > 0) {
+			const ProbeHistoryEntry *entry = ProbeGetHistoryEntryFromEnd((size_t)offset);
+			if (entry) {
+				copy = strdup(entry->line ? entry->line : "");
+				return copy;
+			}
+		}
+	} else {
+		arg = line + 1;
+		expanded = ProbeFindHistoryByPrefix(arg);
+		if (expanded)
+			return strdup(expanded);
+	}
+
+	printf("No history entry for '%s'\n", line);
+	return NULL;
+}
+
+static void ProbePrintHistory(int limit)
+{
+	size_t start;
+	size_t i;
+
+	if (probe_history_count == 0) {
+		printf("No history yet.\n");
+		return;
+	}
+
+	if (limit <= 0)
+		limit = PROBE_HISTORY_DEFAULT_VIEW;
+	if ((size_t)limit > probe_history_count)
+		limit = (int)probe_history_count;
+	start = (probe_history_count > (size_t)limit) ? probe_history_count - (size_t)limit : 0;
+
+	for (i = start; i < probe_history_count; i++) {
+		const ProbeHistoryEntry *entry = ProbeGetHistoryEntryByChronological(i + 1);
+		if (!entry || !entry->line)
+			continue;
+		printf("%3zu [%s] %s\n",
+		       i + 1,
+		       entry->type == ProbeHistoryCommand ? "cmd " : "msg ",
+		       entry->line);
+	}
+}
+
+static void ProbeClearHistory(void)
+{
+	size_t i;
+
+	for (i = 0; i < probe_history_count; i++) {
+		free(probe_history[i].line);
+		probe_history[i].line = NULL;
+	}
+	memset(probe_history, 0, sizeof(probe_history));
+	probe_history_count = 0;
+	probe_history_next = 0;
+#ifdef IVYPROBE_USE_READLINE
+	clear_history();
+	ProbeClearHistoryFile();
+#endif
+}
+
+static char *ProbeReadLine(void)
+{
+#ifndef WIN32
+#ifdef IVYPROBE_USE_READLINE
+	return readline(ProbeHistoryPrompt());
+#else
+	char line_buffer[4096];
+	char *line;
+
+	printf("%s", ProbeHistoryPrompt());
+	fflush(stdout);
+	line = fgets(line_buffer, sizeof(line_buffer), stdin);
+	if (!line) {
+		return NULL;
+	}
+	ProbeTrimNewline(line);
+	return strdup(line);
+#endif
+#else
+	return NULL;
+#endif
+}
+
+static void ProbeProcessInput(char *line)
+{
+	char *processed;
+	int is_command = 0;
+
+	if (!line)
+		return;
+
+	processed = ProbeExpandHistoryShortcut(line);
+	if (!processed) {
+		free(line);
+		return;
+	}
+	if (!processed[0]) {
+		free(processed);
+		free(line);
+		return;
+	}
+	is_command = (processed[0] == '.');
+	ProbeAddHistory(processed, is_command ? ProbeHistoryCommand : ProbeHistoryMessage);
+#ifdef IVYPROBE_USE_READLINE
+	if (processed[0] != '\0')
+		add_history(processed);
+	ProbeSaveHistoryToFile();
+#endif
+	DispatchProbeCommand(processed);
+	free(processed);
+	free(line);
 }
 
 static const char *ProbeBusLabel(const ProbeBus *bus)
@@ -813,18 +1262,38 @@ static void ExecuteProbeCommand(char *line)
 			printf("	.where appname				- on which host is appname\n");
 			printf("	.bind 'regexp'				- add a msg to receive\n");
 			printf("	.showbind					- show bindings \n");
+			printf("	.history [N|-clear]			- show history, N defaults to %d; -clear to reset\n", PROBE_HISTORY_DEFAULT_VIEW);
 			printf("	.thread [0-9|loop]			- select command execution thread, 0 is loop\n");
 			printf("	.threads					- list command threads\n");
-			
-			printf("	.who				- who is on the bus\n");
+			printf("	.who						- who is on the bus\n");
+			printf("	History recall: !! (last), !N (history entry by number), !-N (Nth previous), !prefix (prefix)\n");
 		} else if  (strcmp(cmd, "showbind") == 0) {
-		  if (!fbindcallback) {
-		    ProbeSetBindCallbackAll(IvyPrintBindCallback);
-		    fbindcallback=1;
-		  } else {
-		    ProbeSetBindCallbackAll(NULL);
-		    fbindcallback=0;
-		  }
+			if (!fbindcallback) {
+				ProbeSetBindCallbackAll(IvyPrintBindCallback);
+				fbindcallback=1;
+			} else {
+				ProbeSetBindCallbackAll(NULL);
+				fbindcallback=0;
+			}
+		} else if  (strcmp(cmd, "history") == 0) {
+			char *history_arg;
+			char *endptr = NULL;
+			long requested;
+
+			history_arg = ProbeStrtok(NULL, " \t\n", &saveptr);
+			if (!history_arg) {
+				ProbePrintHistory(PROBE_HISTORY_DEFAULT_VIEW);
+			} else if (strcmp(history_arg, "-clear") == 0) {
+				ProbeClearHistory();
+				printf("History cleared.\n");
+			} else {
+				requested = strtol(history_arg, &endptr, 10);
+				if (endptr && *endptr == '\0' && requested > 0) {
+					ProbePrintHistory((int)requested);
+				} else {
+					printf("usage: .history [N|-clear]\n");
+				}
+			}
 		} else if  (strcmp(cmd, "quit") == 0) {
 			ProbeStopBuses();
 		}
@@ -837,19 +1306,18 @@ static void ExecuteProbeCommand(char *line)
 
 void HandleStdin (Channel channel, IVY_HANDLE fd, void *data)
 {
-	char buf[4096];
 	char *line;
 
 	(void)fd;
 	(void)data;
 
-	line = fgets(buf, 4096, stdin);
-	if  (!line)	{
+	line = ProbeReadLine();
+	if (!line) {
 		IvyChannelRemove (channel);
 		ProbeStopBuses();
 		return;
 	}
-	DispatchProbeCommand(line);
+	ProbeProcessInput(line);
 }
 
 void ApplicationCallback (IvyClientPtr app, void *user_data, IvyApplicationEvent event)
@@ -1135,9 +1603,15 @@ int main(int argc, char *argv[])
 		IvyContextMainLoop(probe_buses[0].ctx);
 #else
 	{
-		char buf[4096];
-		while (probe_running && fgets(buf, sizeof(buf), stdin))
-			DispatchProbeCommand(buf);
+		char *line;
+#ifdef IVYPROBE_USE_READLINE
+		ProbeSetupReadline();
+		stifle_history(PROBE_HISTORY_CAPACITY);
+		ProbeLoadHistoryFromFile();
+#endif
+		while (probe_running && (line = ProbeReadLine())) {
+			ProbeProcessInput(line);
+		}
 	}
 #endif
 
