@@ -18,3 +18,4 @@ debian/*.substvars
 debian/tmp/
 debian/ivy-c/
 debian/ivy-c-dev/
+examples/ivyqt/build/
