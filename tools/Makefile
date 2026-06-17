@@ -30,12 +30,12 @@ ivytestready: ivytestready.o ../src/libivy.a
 	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivytestready.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
 
 ivyprobe_efence: ivyprobe.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) -lefence
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB) $(READLINE_LIBS) -lefence
 
 
 
 ivyprobe_omp: ivyprobe.o ../src/libivy_omp.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o -L. -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB)
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o -L. -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB) $(READLINE_LIBS)
 
 ivythroughput_omp: ivythroughput.o ../src/libivy_omp.a
 	$(CXX)  $(CFLAGS) $(EXTRAINC) -o $@ ivythroughput.o -L. -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB)

@@ -129,6 +129,7 @@ typedef struct ProbeCommand {
 typedef struct {
 	int id;
 	int started;
+	int stopping;
 	pthread_t thread;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -169,6 +170,9 @@ void ApplicationCallback(IvyClientPtr app, void *user_data, IvyApplicationEvent 
 void IvyPrintBindCallback(IvyClientPtr app, void *user_data, int id, const char* regexp, IvyBindEvent event);
 static void ExecuteProbeCommand(char *line);
 static void DispatchProbeCommand(char *line);
+#ifndef WIN32
+static void ProbeStopWorkers(void);
+#endif
 static const char *ProbeHistoryPrompt(void);
 static void ProbeAddHistory(const char *line, ProbeHistoryType type);
 static char *ProbeExpandHistoryShortcut(const char *line);
@@ -275,8 +279,10 @@ static char **ProbeInputCompletion(const char *text, int start, int end)
 static void ProbeSetupReadline(void)
 {
 	rl_attempted_completion_function = ProbeInputCompletion;
-	rl_bind_key('\t', rl_complete);
+	rl_bind_key('\t', rl_menu_complete);
+	rl_bind_keyseq("\033[Z", rl_backward_menu_complete);
 	(void) rl_variable_bind("show-all-if-ambiguous", "on");
+	(void) rl_variable_bind("menu-complete-display-prefix", "on");
 }
 
 static int ProbeEnsureHistoryDirectory(const char *path)
@@ -462,6 +468,8 @@ static char *ProbeExpandHistoryShortcut(const char *line)
 	if (!line || !line[0])
 		return strdup("");
 
+	if (line[0] == '\\' && line[1] == '!')
+		return strdup(line + 1);
 	if (line[0] != '!')
 		return strdup(line);
 
@@ -910,8 +918,12 @@ static void *ProbeWorkerMain(void *data)
 		ProbeCommand *command;
 
 		pthread_mutex_lock(&worker->mutex);
-		while (worker->head == NULL)
+		while (worker->head == NULL && !worker->stopping)
 			pthread_cond_wait(&worker->cond, &worker->mutex);
+		if (worker->stopping) {
+			pthread_mutex_unlock(&worker->mutex);
+			break;
+		}
 
 		command = worker->head;
 		worker->head = command->next;
@@ -939,6 +951,7 @@ static int ProbeEnsureWorker(int id)
 		return 1;
 
 	worker->id = id;
+	worker->stopping = 0;
 	if (pthread_mutex_init(&worker->mutex, NULL) != 0)
 		return 0;
 	if (pthread_cond_init(&worker->cond, NULL) != 0) {
@@ -950,7 +963,6 @@ static int ProbeEnsureWorker(int id)
 		pthread_mutex_destroy(&worker->mutex);
 		return 0;
 	}
-	pthread_detach(worker->thread);
 	worker->started = 1;
 	return 1;
 }
@@ -974,6 +986,12 @@ static int ProbeQueueWorkerCommand(int id, const char *line)
 
 	worker = &probe_workers[id];
 	pthread_mutex_lock(&worker->mutex);
+	if (worker->stopping) {
+		pthread_mutex_unlock(&worker->mutex);
+		free(command->line);
+		free(command);
+		return 0;
+	}
 	if (worker->tail)
 		worker->tail->next = command;
 	else
@@ -983,6 +1001,49 @@ static int ProbeQueueWorkerCommand(int id, const char *line)
 	pthread_cond_signal(&worker->cond);
 	pthread_mutex_unlock(&worker->mutex);
 	return 1;
+}
+
+static void ProbeFreeQueuedCommands(ProbeWorker *worker)
+{
+	ProbeCommand *command = worker->head;
+
+	while (command) {
+		ProbeCommand *next = command->next;
+		free(command->line);
+		free(command);
+		command = next;
+	}
+	worker->head = NULL;
+	worker->tail = NULL;
+	worker->queue_size = 0;
+}
+
+static void ProbeStopWorkers(void)
+{
+	int id;
+
+	for (id = 1; id < PROBE_MAX_THREADS; id++) {
+		ProbeWorker *worker = &probe_workers[id];
+
+		if (!worker->started)
+			continue;
+		pthread_mutex_lock(&worker->mutex);
+		worker->stopping = 1;
+		ProbeFreeQueuedCommands(worker);
+		pthread_cond_broadcast(&worker->cond);
+		pthread_mutex_unlock(&worker->mutex);
+	}
+
+	for (id = 1; id < PROBE_MAX_THREADS; id++) {
+		ProbeWorker *worker = &probe_workers[id];
+
+		if (!worker->started)
+			continue;
+		pthread_join(worker->thread, NULL);
+		pthread_cond_destroy(&worker->cond);
+		pthread_mutex_destroy(&worker->mutex);
+		memset(worker, 0, sizeof(*worker));
+	}
 }
 #endif
 
@@ -1266,7 +1327,7 @@ static void ExecuteProbeCommand(char *line)
 			printf("	.thread [0-9|loop]			- select command execution thread, 0 is loop\n");
 			printf("	.threads					- list command threads\n");
 			printf("	.who						- who is on the bus\n");
-			printf("	History recall: !! (last), !N (history entry by number), !-N (Nth previous), !prefix (prefix)\n");
+			printf("	History recall: !! (last), !N (history entry by number), !-N (Nth previous), !prefix (prefix); use \\!prefix to send !prefix\n");
 		} else if  (strcmp(cmd, "showbind") == 0) {
 			if (!fbindcallback) {
 				ProbeSetBindCallbackAll(IvyPrintBindCallback);
@@ -1579,6 +1640,9 @@ int main(int argc, char *argv[])
 	if (!ProbeStartBuses()) {
 		ProbeStopBuses();
 		ProbeJoinBuses();
+#ifndef WIN32
+		ProbeStopWorkers();
+#endif
 		ProbeDestroyBuses();
 		exit(1);
 	}
@@ -1589,6 +1653,9 @@ int main(int argc, char *argv[])
 		if (!ProbeStartTimerTest()) {
 			ProbeStopBuses();
 			ProbeJoinBuses();
+#ifndef WIN32
+			ProbeStopWorkers();
+#endif
 			ProbeDestroyBuses();
 			exit(1);
 		}
@@ -1630,6 +1697,9 @@ int main(int argc, char *argv[])
 
 	ProbeStopBuses();
 	ProbeJoinBuses();
+#ifndef WIN32
+	ProbeStopWorkers();
+#endif
 	ProbeDestroyBuses();
 	return 0;
 }
