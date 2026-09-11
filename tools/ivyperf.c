@@ -14,6 +14,7 @@
  */
 
 #include "version.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,9 +43,14 @@ extern int optind;
 
 const char *mymessages[] = { "IvyPerf", "ping", "pong" };
 static double origin = 0;
-int nbMsgReceive=0;
-int nbMsgEmit=0;
-long nbMsg = 10;
+long nbMsgReceive=0;
+long nbMsgEmit=0;
+long nbMsg = 0;
+static IvyContext *perf_ctx = NULL;
+static int loop_sender = 0;
+static long send_period = 200;
+static TimerId send_timer = 0;
+static int send_timer_running = 0;
 
 
 double minRoundTrip=1e12;
@@ -63,18 +69,77 @@ static double currentTime()
 #endif
         return  current;
 }
-TimerId send_timer;
+
+static void TimerCall(TimerId id, void *user_data, unsigned long delta);
+
+static void ResetRoundTripStats(void)
+{
+	nbMsgReceive = 0;
+	nbMsgEmit = 0;
+	minRoundTrip = 1e12;
+	maxRoundTrip = 0;
+	averageRoundTrip = 0;
+}
+
+static void StartSenderTimer(IvyContext *ctx)
+{
+	send_timer = IvyContextTimerRepeatAfter(ctx, TIMER_LOOP, send_period,
+					       TimerCall, ctx);
+	send_timer_running = 1;
+}
+
+static void StopSenderTimer(void)
+{
+	if (!send_timer_running)
+		return;
+
+	TimerRemove(send_timer);
+	send_timer_running = 0;
+	send_timer = 0;
+}
+
+static void PrintUsage(const char *program)
+{
+	fprintf(stderr,
+		"usage: %s [-l] [-b bus] [period_ms [message_count]]\n"
+		"       no period/count runs as a passive responder\n"
+		"       message_count defaults to 10 when period_ms is supplied\n"
+		"       -l repeats sender batches instead of exiting\n",
+		program);
+}
+
+static int ParsePositiveLong(const char *value, long *result)
+{
+	char *end = NULL;
+	long parsed;
+
+	if (!value || !value[0] || !result)
+		return 0;
+
+	errno = 0;
+	parsed = strtol(value, &end, 10);
+	if (errno != 0 || end == value || *end != '\0' || parsed <= 0)
+		return 0;
+
+	*result = parsed;
+	return 1;
+}
 
 
 void Reply (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
-	IvySendMsg ("pong ts=%s tr=%f", *argv, currentTime()- origin);
+	IvyContext *ctx = (IvyContext *)user_data;
+	IvyContextSendMsg (ctx, "pong ts=%s tr=%f", *argv, currentTime()- origin);
 }
 void Pong (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
 	double current;
 	double ts;
 	double roundtrip3;
+
+	if ( nbMsg <= 0 )
+		return;
+
 	nbMsgReceive++;
 	
 	current = currentTime() - origin ;
@@ -86,26 +151,32 @@ void Pong (IvyClientPtr app, void *user_data, int argc, char *argv[])
 	
 	if ( nbMsg == nbMsgReceive )
 	{
-		printf("roundtrip[%d] min %f av %f max %f ms\n", nbMsgReceive, minRoundTrip, averageRoundTrip, maxRoundTrip );
-		//IvyStop();
+		printf("roundtrip[%ld] min %f av %f max %f ms\n", nbMsgReceive, minRoundTrip, averageRoundTrip, maxRoundTrip );
+		fflush(stdout);
+		if ( loop_sender ) {
+			ResetRoundTripStats();
+			StartSenderTimer(perf_ctx);
+		} else {
+			IvyContextStop(perf_ctx);
+		}
 	}
 
 }
 
-void TimerCall(TimerId id, void *user_data, unsigned long delta)
+static void TimerCall(TimerId id, void *user_data, unsigned long delta)
 {
-	int count = IvySendMsg ("ping ts=%f", currentTime() - origin );
+	IvyContext *ctx = (IvyContext *)user_data;
+	int count = IvyContextSendMsg (ctx, "ping ts=%f", currentTime() - origin );
 	if ( count ) nbMsgEmit++;
 	if ( nbMsg == nbMsgEmit )
 		{
-		TimerRemove(send_timer);
-		//IvyStop();
+		StopSenderTimer();
 		}
 }
 
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event ) 
 {
-	const char *app_name = IvyGetApplicationName( app );
+	const char *app_name = IvyContextGetApplicationName( perf_ctx, app );
 	switch ( event )
 	{
 	case IvyAddBind:
@@ -125,32 +196,74 @@ void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyB
 }
 int main(int argc, char *argv[])
 {
-	long time=200;
 	int c;
+	int sender_mode = 0;
 	const char * bus = NULL;
-	while ((c = getopt(argc, argv, "b:")) != EOF)
+	while ((c = getopt(argc, argv, "b:lh")) != EOF)
 			switch (c) {
 			case 'b':
 				bus = optarg;
 				break;
+			case 'l':
+				loop_sender = 1;
+				break;
+			case 'h':
+				PrintUsage(argv[0]);
+				return 0;
+			default:
+				PrintUsage(argv[0]);
+				return 1;
 	}
 	/* Mainloop management */
-	if ( optind < argc ) time = atol( argv[optind++] );
-	if ( optind < argc ) nbMsg = atol( argv[optind] );
+	if ( optind < argc ) {
+		sender_mode = 1;
+		if (!ParsePositiveLong(argv[optind++], &send_period)) {
+			PrintUsage(argv[0]);
+			return 1;
+		}
+		nbMsg = 10;
+		if ( optind < argc &&
+		     !ParsePositiveLong(argv[optind++], &nbMsg)) {
+			PrintUsage(argv[0]);
+			return 1;
+		}
+	}
+	if ( optind < argc || send_period <= 0 ||
+	     (sender_mode && nbMsg <= 0) ) {
+		PrintUsage(argv[0]);
+		return 1;
+	}
 
-	IvyInit ("IvyPerf", "IvyPerf ready", NULL,NULL,NULL,NULL);
+	perf_ctx = IvyContextCreate ("IvyPerf", "IvyPerf ready", NULL,NULL,NULL,NULL);
+	if (perf_ctx == NULL) {
+		fprintf(stderr, "IvyContextCreate failed: %d\n", IvyGetLastError());
+		return 1;
+	}
 	IvySetFilter( sizeof( mymessages )/ sizeof( char *),mymessages );
-	IvySetBindCallback( binCB, 0 ),
-	IvyBindMsg (Reply, NULL, "^ping ts=(.*)");
-	IvyBindMsg (Pong, NULL, "^pong ts=(.*) tr=(.*)");
+	IvyContextSetBindCallback( perf_ctx, binCB, 0 );
+	IvyContextBindMsg (perf_ctx, Reply, perf_ctx, "^ping ts=(.*)");
+	IvyContextBindMsg (perf_ctx, Pong, NULL, "^pong ts=(.*) tr=(.*)");
 	  
 	origin = currentTime();
-	IvyStart (bus);
+	if (IvyContextStart (perf_ctx, bus) != IVY_OK) {
+		fprintf(stderr, "IvyContextStart failed: %d\n", IvyGetLastError());
+		IvyContextDestroy(perf_ctx);
+		return 1;
+	}
 
-	if ( nbMsg )
-		send_timer = TimerRepeatAfter (TIMER_LOOP, time, TimerCall, (void*)nbMsg);
+	if ( nbMsg > 0 ) {
+		printf("sender: %ld pings every %ld ms%s, first report after about %.1f s\n",
+		       nbMsg, send_period, loop_sender ? " in a loop" : "",
+		       ((double)nbMsg * (double)send_period) / MILLISEC);
+		fflush(stdout);
+		StartSenderTimer(perf_ctx);
+	} else {
+		printf("responder: waiting for pings\n");
+		fflush(stdout);
+	}
 	
 
-	IvyMainLoop ();
+	IvyContextMainLoop (perf_ctx);
+	IvyContextDestroy(perf_ctx);
 	return 0;
 }

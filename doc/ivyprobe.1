@@ -19,7 +19,7 @@
 ivyprobe \- an Ivy agent for monitoring exchanges on a bus
 
 .SH "SYNOPSIS"
-.B ivyprobe [\-b bus] [regexps]
+.B ivyprobe [\-b bus]... [\-t] [regexps]
 
 .SH "DESCRIPTION"
 .B 
@@ -31,7 +31,9 @@ text interface. This is mainly useful for testing and debugging Ivy applications
 .SH "OPTIONS"
 .TP 6
 .B \-b bus
-defines the Ivy bus to which to connect to. The syntax of bus addresses is
+defines an Ivy bus to which to connect to. This option can be repeated. If the
+IVYBUS environment variable is set, ivyprobe also connects to that bus. The
+syntax of bus addresses is
 .I [network[,network]][:port],
 where
 .I port
@@ -45,6 +47,15 @@ and the default network is
 .I 127,
 ie. loopback on the
 local host.
+
+.TP
+.B \-t
+starts the timer test. ivyprobe creates one application timer and emits
+.I TEST TIMER 1
+through
+.I TEST TIMER 5
+on every configured bus. In multi-bus mode this is a single timer stream
+broadcast to all buses, not one independent timer per bus.
 
 .TP 
 .B regexps
@@ -79,6 +90,9 @@ will make
 .B ivyprobe
 quit.
 .TP 
+.I Up/Down arrows
+navigate command history during interactive input.
+.TP 
 .I All lines
 that do not start with a dot will be interpreted as messages to be
 broadcasted on the bus.
@@ -112,10 +126,50 @@ if present on the bus.
 will tell you on what host is
 .I appname,
 if present on the bus.
+.TP 
+.I \.history [N]
+prints the last
+.I N
+commands and messages entered (default is 30).
+.TP 
+.I \.history -clear
+clears the interactive history.
+.TP
+.I History file
+history is stored in
+.I $XDG_STATE_HOME/ivyprobe/history
+(or
+.I ~/.local/state/ivyprobe/history
+if
+.I XDG_STATE_HOME
+is not set).
+.TP
+.I !!, !N, !-N and !prefix
+During interactive input:
+.IP
+.B !!
+repeats last line,
+.IP
+.B !-N
+repeats the Nth previous line, !-1 repeats the last line,
+.IP
+.B !N
+repeats the numbered line from history, as shown by .history.
+.IP
+.B !prefix
+repeats the last entry whose line starts with
+.I prefix.
+.IP
+.B \e!prefix
+sends a literal message starting with
+.I !prefix.
+.TP
+.I Command completion
+During interactive input, Tab cycles forward through command completions and Shift-Tab cycles backward.
 
 
 .SH "BUGS"
-.B ivyprobe has no prompt for its command line.
+.B ivyprobe has readline-based history and interactive input shortcuts.
 
 .SH "SEE ALSO"
 .PP 

@@ -59,6 +59,8 @@ OMPLIB = $(OPENMP_LDFLAGS) -lomp
 
 EXTRALIB = -L../src
 EXTRAINC = -I../src
+READLINE_LIBS = -lreadline -lhistory
+IVYPROBE_FEATURES = -DIVYPROBE_USE_READLINE
 
 .SUFFIXES: .c .o .cpp
 
@@ -72,7 +74,7 @@ all: $(TARGETS)
 omp: $(OMP_TARGET)
 
 ivyprobe: ivyprobe.o ../src/libivy.a
-	$(CC) $(LDFLAGS) $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o ../src/libivy.a $(PCRELIB)
+	$(CC) $(LDFLAGS) $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o ../src/libivy.a $(PCRELIB) $(READLINE_LIBS)
 
 ivythroughput: ivythroughput.o ../src/libivy.a
 	$(CXX) $(LDFLAGS) $(CXXFLAGS) $(EXTRAINC) -o $@ ivythroughput.o ../src/libivy.a $(PCRELIB)
@@ -87,7 +89,7 @@ ivythroughput_omp: ivythroughput.o ../src/libivy_omp.a
 	$(OMPCXX) $(LDFLAGS) $(OMP_CXXFLAGS) $(EXTRAINC) -o $@ ivythroughput.o ../src/libivy_omp.a $(PCRELIB) $(OMPLIB)
 
 ivyprobe.o: ivyprobe.c
-	$(CC) $(CFLAGS) $(EXTRAINC) $(REGEXP) $(PCREINC) -c ivyprobe.c -o $@
+	$(CC) $(CFLAGS) $(EXTRAINC) $(REGEXP) $(PCREINC) $(IVYPROBE_FEATURES) -c ivyprobe.c -o $@
 
 ivyperf: ivyperf.o ../src/libivy.a
 	$(CC) $(LDFLAGS) $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o ../src/libivy.a $(PCRELIB)

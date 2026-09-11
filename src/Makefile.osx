@@ -17,7 +17,7 @@
 
 # change this in version.h too !!!!
 MAJOR=3
-MINOR=16
+MINOR=17
 
 LIB=/lib
 
@@ -98,7 +98,7 @@ GLIBLIB = `pkg-config --libs glib-2.0`
 
 OBJ = ivyloop.o timer.o ivysocket.o ivy.o ivybuffer.o ivyfifo.o ivybind.o intervalRegexp.o param.o
 OMPOBJ = ivyloop.o timer.o ivysocket_omp.o ivy_omp.o ivybuffer.o ivyfifo.o ivybind.o intervalRegexp.o param.o
-GLIBOBJ = ivyglibloop.o ivysocket.o ivy.o ivybuffer.o ivyfifo.o ivybind.o intervalRegexp.o param.o
+GLIBOBJ = ivyglibloop.o ivyglibtimer.o ivysocket.o ivy.o ivybuffer.o ivyfifo.o ivybind.o intervalRegexp.o param.o
 
 TOOLS_DIR = ../tools
 
@@ -127,8 +127,11 @@ ivy_omp.o: ivy.c
 ivysocket_omp.o: ivysocket.c
 	$(OMPCC) -c $(OMPCFLAGS) -o ivysocket_omp.o ivysocket.c
 
-ivyglibloop.o: ivyglibloop.c ivyglibloop.h
+ivyglibloop.o: ivyglibloop.c ivyglibloop.h ivyglibtimer.h ivychannel.h ivyloop.h timer.h
 	$(CC) -c $(CFLAGS) $(GLIBINC) ivyglibloop.c
+
+ivyglibtimer.o: ivyglibtimer.c ivyglibtimer.h timer.h
+	$(CC) -c $(CFLAGS) $(GLIBINC) ivyglibtimer.c
 
 libivy.a: $(OBJ)
 	rm -f $@

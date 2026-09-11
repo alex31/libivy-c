@@ -67,8 +67,7 @@ void IvyChannelInit(void)
   Tcl_FindExecutable(NULL);
 	/* pour eviter les plantages quand les autres applis font core-dump */
 #ifndef WIN32
-	signal( SIGPIPE, SIG_IGN);
-#endif
+	/* signal( SIGPIPE, SIG_IGN); removed: managed locally by sockets */#endif
 #ifdef WIN32
 	error = WSAStartup (0x0101, &WsaData);
 	  if (error == SOCKET_ERROR) {

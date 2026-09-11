@@ -65,15 +65,24 @@ int make_message(IvyBuffer* buffer, const char *fmt, va_list ap)
 		return n;
 	}
     /* Else try again with more space. */
-    if (n > -1)    /* glibc 2.1 */
-        buffer->size = buffer->offset + n+1; /* precisely what is needed */
-    else           /* glibc 2.0 */
-        buffer->size *= 2;  /* twice the old size */
-    if ((buffer->data = (char *) realloc (buffer->data, buffer->size)) == NULL)
+    {
+      int new_size;
+      char *new_data;
+
+      if (n > -1)    /* glibc 2.1 */
+        new_size = buffer->offset + n+1; /* precisely what is needed */
+      else           /* glibc 2.0 */
+        new_size = buffer->size * 2;  /* twice the old size */
+
+      new_data = (char *) realloc (buffer->data, new_size);
+      if (new_data == NULL)
 		{
        		perror(" Ivy make message REALLOC error: " );
 		return -1;
 		}
+      buffer->data = new_data;
+      buffer->size = new_size;
+    }
     }
 }
 int make_message_var(IvyBuffer* buffer, const char *fmt, ... )
@@ -85,4 +94,3 @@ int make_message_var(IvyBuffer* buffer, const char *fmt, ... )
 	va_end (ap );
 	return len;
 }
-

@@ -1,10 +1,13 @@
-TARGETS = ivyprobe #ivythroughput ivytestready ivyperf ivyglibprobe ivyxtprobe #ivyprobe_efence 
+TARGETS = ivyprobe ivythroughput ivytestready ivyperf ivytranslater #ivyglibprobe ivyxtprobe #ivyprobe_efence
 OMP_TARGET= ivyprobe_omp ivythroughput_omp 
 
 PCRELIB = `pcre2-config --libs8`
 OMPLIB = -lgomp -lpthread
+THREADLIB ?= -pthread
 EXTRALIB= -L../src
 EXTRAINC=-I../src
+READLINE_LIBS ?= -lreadline -lhistory
+IVYPROBE_FEATURES ?= -DIVYPROBE_USE_READLINE
 
 .SUFFIXES: .c .o
 
@@ -18,30 +21,33 @@ all: $(TARGETS)
 omp: $(OMP_TARGET)
 
 ivyprobe: ivyprobe.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB)  
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB) $(READLINE_LIBS)
 
 ivythroughput: ivythroughput.o ../src/libivy.a
-	$(CXX)  $(CFLAGS) $(EXTRAINC) -o $@ ivythroughput.o $(EXTRALIB) -livy $(PCRELIB)
+	$(CXX)  $(CFLAGS) $(EXTRAINC) -o $@ ivythroughput.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
 
 ivytestready: ivytestready.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivytestready.o $(EXTRALIB) -livy $(PCRELIB)
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivytestready.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
 
 ivyprobe_efence: ivyprobe.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) -lefence
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o  $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB) $(READLINE_LIBS) -lefence
 
 
 
 ivyprobe_omp: ivyprobe.o ../src/libivy_omp.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o -L. -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB)
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyprobe.o -L. -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB) $(READLINE_LIBS)
 
 ivythroughput_omp: ivythroughput.o ../src/libivy_omp.a
 	$(CXX)  $(CFLAGS) $(EXTRAINC) -o $@ ivythroughput.o -L. -livy_omp $(PCRELIB) $(EXTRALIB) $(OMPLIB)
 
 ivyprobe.o : ivyprobe.c 
-	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) -c ivyprobe.c -o $@
+	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) $(IVYPROBE_FEATURES) -c ivyprobe.c -o $@
 
 ivyperf: ivyperf.o ../src/libivy.a
-	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o -L. -livy $(PCRELIB) $(EXTRALIB)
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivyperf.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
+
+ivytranslater: ivytranslater.o ../src/libivy.a
+	$(CC)  $(CFLAGS) $(EXTRAINC) -o $@ ivytranslater.o $(EXTRALIB) -livy $(PCRELIB) $(THREADLIB)
 
 ivyxtprobe.o : ivyprobe.c
 	$(CC)  $(CFLAGS) $(EXTRAINC) $(REGEXP) -DXTMAINLOOP -c ivyprobe.c -o $@ $(XTINC)
@@ -63,7 +69,7 @@ ivyglutprobe: ivyglutprobe.o ../src/libglutivy.a
 
 installbins: $(TARGETS)
 	test -d $(DESTDIR)$(PREFIX)/bin || mkdir -p $(DESTDIR)$(PREFIX)/bin
-	install -m755 ivyprobe $(DESTDIR)$(PREFIX)/bin
+	install -m755 $(TARGETS) $(DESTDIR)$(PREFIX)/bin
 
 installbins_omp:  $(OMP_TARGET)
 	test -d $(DESTDIR)$(PREFIX)/bin || mkdir -p $(DESTDIR)$(PREFIX)/bin

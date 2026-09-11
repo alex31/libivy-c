@@ -1,5 +1,11 @@
-
 Construction de ivy-c :
 
-  - Il faut installer au préalable le paquetage utils-c-dev qui
-  fourni list.h.
+  - Il faut installer au prealable le paquetage utils-c-dev qui
+    fournit list.h.
+
+  - Pour construire les binaires outils de la source Debian (ivyprobe, etc.),
+    installer aussi la bibliotheque de developpement readline/history.
+    Sur Debian/Ubuntu, cela correspond a `libreadline-dev`.
+
+  - Avec `make` cote src, si vous ne construisez que la bibliotheque
+    (`make static-libs shared-libs`), readline n'est pas necessaire.

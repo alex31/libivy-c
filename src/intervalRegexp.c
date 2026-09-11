@@ -1,4 +1,6 @@
 #include <sys/types.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +22,7 @@
 #define MININT( a , b ) ((a) < (b) ? (a) : (b))
 
 #define Perr(...) (perr ( __PRETTY_FUNCTION__, __VA_ARGS__))
-#define CHECK_AND_RETURN(a)   if (strlen (locBuf) <= buflen) {	\
+#define CHECK_AND_RETURN(a)   if (strlen (locBuf) < buflen) {	\
 			    strcpy (a, locBuf); \
 			    return success; \
 			 } else { \
@@ -29,11 +31,15 @@
 #define EndLocBuf (&(locBuf[strlen(locBuf)]))
 #ifdef WIN32
 #define snprintf _snprintf
+#define vsnprintf _vsnprintf
 #endif
-#define AddLocBuf(...) snprintf (EndLocBuf, sizeof (locBuf)-strlen(locBuf), __VA_ARGS__)
+#define AddLocBuf(...) do {						\
+    if (appendFormat (locBuf, sizeof (locBuf), __VA_ARGS__) == fail)	\
+      return fail;							\
+  } while (0)
 
 typedef struct  {
-  int max;
+  long max;
   int rank;
 } NextMax ;
 
@@ -51,7 +57,9 @@ static bool	genPostRank (char *postRank, size_t buflen, int rank);
 static bool	substr (char *substring, size_t buflen, const char* expr, size_t pos, size_t len);
 static char*	reverse (char *string);
 static char*	longtoa (char *string, size_t buflen, long n);
-static NextMax	nextMax (const char *min, const char *max);
+static bool	nextMax (NextMax *out, const char *min, const char *max);
+static bool	parseDecimalLong (const char *string, long *value);
+static bool	appendFormat (char *buffer, size_t buflen, const char *fmt, ...);
 static bool	perr (const char* func, const char *fmt, ...);
 
 
@@ -77,7 +85,7 @@ int regexpGen (char *regexp, size_t buflen, long min, long max, int flottant)
   }
 
   if (min > max) {
-    int nmin = max;
+    long nmin = max;
     max = min;
     min = nmin;
   }
@@ -85,10 +93,13 @@ int regexpGen (char *regexp, size_t buflen, long min, long max, int flottant)
   if (min == max) {
     AddLocBuf ("%ld%s", min, decimalPart);
   } else if  (min < 0) {
+    if (min == LONG_MIN) {
+      return Perr ("min == LONG_MIN");
+    }
     if  (max < 0) {
       /*      reg = '\-(?:' .  strictPosRegexpGen (-max, -min, decimalPart, boundDecimalPart). ')'; */
       AddLocBuf ("\\-(?:");
-      if (strictPosRegexpGen (EndLocBuf, sizeof (locBuf)-strlen(locBuf), -min, -max, decimalPart, 
+      if (strictPosRegexpGen (EndLocBuf, sizeof (locBuf)-strlen(locBuf), -max, -min, decimalPart,
 			      boundDecimalPart) == fail) return fail;
       AddLocBuf (")");
     } else if  (max == 0) {
@@ -143,19 +154,21 @@ static bool strictPosRegexpGen (char *regexp, size_t buflen, long min, long max,
   char		locBuf[maxSubReg*digitRegSize] = "" ;
   size_t	regIndex = 0,i;
   char		maxAsString[32], minAsString[32];
-  NextMax	nMax;
+  NextMax	nMax = {0,0};
 
 
   if ((min <= 0) || (max <= 0)) return Perr ("min or max <= 0");
   if (min == max) {
-    snprintf (EndLocBuf, sizeof (locBuf)-strlen(locBuf), "%ld", max);
+    AddLocBuf ("%ld", max);
   } else {
       
     max--;
   
     do {
-      nMax = nextMax (longtoa (minAsString, sizeof (minAsString), min), 
-		      longtoa (maxAsString, sizeof (maxAsString), max));
+      if (nextMax (&nMax,
+		   longtoa (minAsString, sizeof (minAsString), min),
+		   longtoa (maxAsString, sizeof (maxAsString), max)) == fail)
+	return fail;
       if (genAtRank (regList[regIndex++], digitRegSize, minAsString, 
 		     longtoa (maxAsString, sizeof (maxAsString), 
 			   nMax.max), nMax.rank) == fail) return fail;
@@ -165,15 +178,16 @@ static bool strictPosRegexpGen (char *regexp, size_t buflen, long min, long max,
 
     locBuf[0] = 0;
     for (i=0; i<regIndex; i++) {
-      snprintf (EndLocBuf, sizeof (locBuf)-strlen(locBuf), "(?:%s%s)|", regList[i], decimalPart);
+      AddLocBuf ("(?:%s%s)|", regList[i], decimalPart);
     }
     
     if (locBuf[strlen(locBuf)-1] == '|') {
       locBuf[strlen(locBuf)-1] = 0;
     }
     max++;
-    snprintf (EndLocBuf, sizeof (locBuf)-strlen(locBuf), "|(?:%s%s)",  
-	     longtoa (maxAsString, sizeof (maxAsString), max), boundDecimalPart);
+    AddLocBuf ("|(?:%s%s)",
+	       longtoa (maxAsString, sizeof (maxAsString), max),
+	       boundDecimalPart);
   }
 
   CHECK_AND_RETURN (regexp);
@@ -187,29 +201,38 @@ static bool strictPosRegexpGen (char *regexp, size_t buflen, long min, long max,
 #                | | | | |  __/  >  <   \ |_   | |  | | | (_| |  >  <
 #                |_| |_|  \___| /_/\_\   \__|  |_|  |_|  \__,_| /_/\_\
 */
-static NextMax nextMax (const char *min, const char *max)
+static bool nextMax (NextMax *out, const char *min, const char *max)
 {
   NextMax nextMaxi ={0,0};
   char revMin[32], revMax[32];
   size_t nbDigitsMin, nbDigitsMax;
   size_t rankRev=0, rankForw, rank=0;
   size_t i;
-  int currMax; 
+  long currMax;
+  long parsedMin;
 
   nbDigitsMin = strlen (min);
   nbDigitsMax = strlen (max);
 
-  for (i=nbDigitsMin-1; i >= 0; i--) {
-    revMin[nbDigitsMin-i-1]= min[i];
+  if (out == NULL) return Perr ("out == NULL");
+  if ((nbDigitsMin == 0) || (nbDigitsMax == 0)) return Perr ("empty bound");
+  if (nbDigitsMin > nbDigitsMax) return Perr ("min has more digits than max");
+  if (nbDigitsMax >= sizeof (revMin)) return Perr ("bound too large");
+  if (parseDecimalLong (min, &parsedMin) == fail) return fail;
+  if (parseDecimalLong (max, &currMax) == fail) return fail;
+  if (parsedMin > currMax) return Perr ("min > max");
+
+  for (i=0; i<nbDigitsMin; i++) {
+    revMin[i]= min[nbDigitsMin-i-1];
     /*    printf ("DBG> nextMaxi  revMin[%d]= %c\n", nbDigitsMin-i-1, min[i]); */
   }
-  for (i=nbDigitsMax-nbDigitsMin; i >= 0; i--) {
-    revMin[nbDigitsMax-i]= '0';
+  for (i=nbDigitsMin; i<nbDigitsMax; i++) {
+    revMin[i]= '0';
     /* printf ("DBG> nextMaxi  revMin[%d]= %c\n", nbDigitsMax-i, '0'); */
   }
 
-  for (i=nbDigitsMax-1; i >= 0; i--) {
-    revMax[nbDigitsMax-i-1]= max[i];
+  for (i=0; i<nbDigitsMax; i++) {
+    revMax[i]= max[nbDigitsMax-i-1];
   }
   revMin[nbDigitsMax] = revMax[nbDigitsMax] = 0;
   rankForw = nbDigitsMax -1;
@@ -217,9 +240,10 @@ static NextMax nextMax (const char *min, const char *max)
   /*  printf ("DBG> nextMaxi rev(%s)=%s rev(%s)=%s rankForw=%d\n", min, revMin, max, revMax, rankForw); */
 
   /*  en partant des unitées (digit de poids faible), premier digit de min != 0 */
-  while ((revMin[rankRev] == '0') && (rankRev < nbDigitsMax)) rankRev++; 
+  while ((rankRev < nbDigitsMax) && (revMin[rankRev] == '0')) rankRev++;
+  if (rankRev == nbDigitsMax) return Perr ("min is zero");
   /*  en partant du digit de poids fort, premier digit de max != du même digit de revMin */
-  while ((revMin[rankForw] == revMax[rankForw]) && rankForw > 0) rankForw--;
+  while ((rankForw > 0) && (revMin[rankForw] == revMax[rankForw])) rankForw--;
 
   if (rankForw <= rankRev) {
     rank = rankForw;
@@ -230,14 +254,14 @@ static NextMax nextMax (const char *min, const char *max)
     for (i=0; i<=rankRev; i++) revMin[i] = '9';
   }
 
-  nextMaxi.max = atoi (reverse (revMin));
+  if (parseDecimalLong (reverse (revMin), &nextMaxi.max) == fail) return fail;
   nextMaxi.rank = rank+1;
   
-  currMax = atoi (max);
   if (nextMaxi.max > currMax) nextMaxi.max = currMax;
 
   /*  printf ("DBG> nextMaxi ('%s', '%s') = %d@%d\n", min, max, nextMaxi.max, nextMaxi.rank); */
-  return (nextMaxi);
+  *out = nextMaxi;
+  return (success);
 }
 
 
@@ -364,8 +388,16 @@ static bool substr (char *substring, size_t buflen, const char* expr, size_t pos
 {
   char locBuf [512];
   size_t i, j=0;
+  size_t exprLen;
 
-  len = MAXINT (0, MININT (len, strlen (expr) - pos));
+  exprLen = strlen (expr);
+  if (pos >= exprLen) {
+    len = 0;
+  } else if (len > exprLen - pos) {
+    len = exprLen - pos;
+  }
+  if (len >= sizeof (locBuf)) return Perr ("substring too large");
+
   for (i=pos; i<(pos+len); i++) {
     locBuf[j++]= expr[i];
   }
@@ -385,20 +417,16 @@ static bool substr (char *substring, size_t buflen, const char* expr, size_t pos
 */
 static char* reverse (char *string)
 {
-  char *locBuf ;
-  int i;
   size_t len = strlen (string);
+  size_t i;
 
-  locBuf = (char *) malloc (len+1);
-  for (i=len-1; i >= 0; i--) {
-    locBuf[len-i-1]= string[i];
-    /*printf ("DBG> reverse  locBuf[%d]= %c\n",len- i-1, string[i]); */
+  for (i=0; i<(len/2); i++) {
+    char tmp = string[i];
+    string[i] = string[len-i-1];
+    string[len-i-1] = tmp;
   }
-  locBuf [len] = 0;
 
   /*  printf ("DBG> reverse '%s' = '%s'\n", string, locBuf); */
-  strcpy (string, locBuf);
-  free (locBuf);
   return (string);
 }
 
@@ -406,6 +434,59 @@ static char* longtoa (char *string, size_t buflen, long n)
 {
   snprintf (string, buflen, "%ld", n);
   return (string);
+}
+
+static bool appendFormat (char *buffer, size_t buflen, const char *fmt, ...)
+{
+  va_list args;
+  size_t used;
+  int written;
+
+  if ((buffer == NULL) || (fmt == NULL) || (buflen == 0)) {
+    return Perr ("invalid appendFormat argument");
+  }
+
+  used = strlen (buffer);
+  if (used >= buflen) {
+    return Perr ("appendFormat buffer already full");
+  }
+
+  va_start (args, fmt);
+  written = vsnprintf (&buffer[used], buflen - used, fmt, args);
+  va_end (args);
+
+  if ((written < 0) || ((size_t) written >= buflen - used)) {
+    buffer[buflen - 1] = '\0';
+    return Perr ("appendFormat truncation");
+  }
+
+  return success;
+}
+
+static bool parseDecimalLong (const char *string, long *value)
+{
+  char *endptr;
+  long parsed;
+  size_t i;
+
+  if ((string == NULL) || (string[0] == '\0') || (value == NULL)) {
+    return Perr ("invalid parseDecimalLong argument");
+  }
+
+  for (i=0; string[i] != '\0'; i++) {
+    if ((string[i] < '0') || (string[i] > '9')) {
+      return Perr ("invalid decimal digit in '%s'", string);
+    }
+  }
+
+  errno = 0;
+  parsed = strtol (string, &endptr, 10);
+  if ((errno == ERANGE) || (*endptr != '\0')) {
+    return Perr ("invalid decimal value '%s'", string);
+  }
+
+  *value = parsed;
+  return success;
 }
 
 
@@ -422,7 +503,7 @@ static bool perr (const char* func, const char *fmt, ...)
   char buffer[2048];
   va_list args;
   va_start( args, fmt );     
-  vsprintf( buffer, fmt, args );
+  vsnprintf( buffer, sizeof(buffer), fmt, args );
   va_end( args );
 
   fprintf (stderr, "Erreur %s @ %s\n", buffer, func);

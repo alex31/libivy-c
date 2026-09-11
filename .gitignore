@@ -8,6 +8,7 @@ tools/ivyprobe
 tools/ivythroughput
 tools/ivyperf
 tools/ivytestready
+tools/ivytranslater
 tools/*_omp
 debian/.debhelper/
 debian/debhelper-build-stamp
@@ -17,3 +18,4 @@ debian/*.substvars
 debian/tmp/
 debian/ivy-c/
 debian/ivy-c-dev/
+examples/ivyqt/build/

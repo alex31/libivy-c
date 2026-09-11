@@ -5,8 +5,39 @@ EXPORTS
 IvyDefaultApplicationCallback
 IvyDefaultBindCallback
 
+IvyContextCreate
+IvyContextStart
+IvyContextStop
+IvyContextDestroy
+IvyContextMainLoop
+IvyContextIdle
+IvyContextSetBindCallback
+IvyContextSetPongCallback
+IvyContextBindDirectMsg
+IvyContextBindMsg
+IvyContextChangeMsg
+IvyContextUnbindMsg
+IvyContextSendError
+IvyContextSendMsg
+IvyContextSendDirectMsg
+IvyContextSendDieMsg
+IvyContextSendPing
+IvyContextTimerRepeatAfter
+IvyContextGetApplicationName
+IvyContextGetApplicationHost
+IvyContextGetApplication
+IvyContextGetApplicationList
+IvyContextGetApplicationListBuffer
+IvyContextGetApplicationMessages
+IvyContextGetApplicationMessagesBuffer
+IvyContextGetState
+IvyGetLastError
+
 IvySetFilter
+IvyAddFilter
+IvyRemoveFilter
 IvyInit
+IvyTerminate
 IvyStart
 IvyStop
 
@@ -15,9 +46,13 @@ IvyGetApplicationName
 IvyGetApplicationHost
 IvyGetApplication
 IvyGetApplicationList
+IvyGetApplicationListBuffer
 IvyGetApplicationMessages
+IvyGetApplicationMessagesBuffer
 IvySetBindCallback
+IvySetPongCallback
 IvyBindMsg
+IvyChangeMsg
 IvyUnbindMsg
 IvySendError
 IvySendDieMsg
@@ -26,6 +61,7 @@ IvySendMsg
 
 IvyBindDirectMsg
 IvySendDirectMsg
+IvySendPing
 
 IvySetBeforeSelectHook
 IvySetAfterSelectHook

@@ -42,31 +42,32 @@ const char * me = "A";
 const char * other = "B";
 char ready_message[1000] = "A ready";
 char ready_bind[1000] = "^B ready";
+static IvyContext *ready_ctx = NULL;
 
 void Ready (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
-	const char *name = IvyGetApplicationName( app );
-	int count = IvySendMsg ("are you there %s",name);
+	const char *name = IvyContextGetApplicationName( ready_ctx, app );
+	int count = IvyContextSendMsg (ready_ctx, "are you there %s",name);
 	printf("Application %s received '%s' from %s sent question 'are you there %s'= %d\n", me, ready_bind, name, name, count);
 }
 
 void Question (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
-	const char *name = IvyGetApplicationName( app );
-	int count = IvySendMsg ("yes i am %s",me);
+	const char *name = IvyContextGetApplicationName( ready_ctx, app );
+	int count = IvyContextSendMsg (ready_ctx, "yes i am %s",me);
 	printf("Application %s Reply to %s are you there = %d\n", me, name, count);
 	
 }
 void Reply (IvyClientPtr app, void *user_data, int argc, char *argv[])
 {
-	const char *name = IvyGetApplicationName( app );
+	const char *name = IvyContextGetApplicationName( ready_ctx, app );
 	printf("Application %s Reply to our question! %s\n", name, argv[0]);
 	
 }
 
 void binCB( IvyClientPtr app, void *user_data, int id, const char* regexp,  IvyBindEvent event ) 
 {
-	const char *app_name = IvyGetApplicationName( app );
+	const char *app_name = IvyContextGetApplicationName( ready_ctx, app );
 	switch ( event )
 	{
 	case IvyAddBind:
@@ -101,24 +102,33 @@ int main(int argc, char *argv[])
 	 strcpy( ready_bind, "^A ready");
 	}
 
-	IvyInit (me, ready_message, NULL,NULL,NULL,NULL);
-	IvySetBindCallback( binCB, 0 );
+	ready_ctx = IvyContextCreate (me, ready_message, NULL,NULL,NULL,NULL);
+	if (ready_ctx == NULL) {
+		fprintf(stderr, "IvyContextCreate failed: %d\n", IvyGetLastError());
+		return 1;
+	}
+	IvyContextSetBindCallback( ready_ctx, binCB, 0 );
 
 #if defined(__GNUC__) && __GNUC_PREREQ(4,7)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-security"
 #endif
-	IvyBindMsg (Ready, NULL, ready_bind);
+	IvyContextBindMsg (ready_ctx, Ready, NULL, ready_bind);
 #if defined(__GNUC__) && __GNUC_PREREQ(4,7)
 #pragma GCC diagnostic pop
 #endif
 
-	IvyBindMsg (Question, NULL, "^are you there %s",me);
-	IvyBindMsg (Reply, NULL, "^(yes i am %s)",other);
+	IvyContextBindMsg (ready_ctx, Question, NULL, "^are you there %s",me);
+	IvyContextBindMsg (ready_ctx, Reply, NULL, "^(yes i am %s)",other);
 	 
-	IvyStart (0);
+	if (IvyContextStart (ready_ctx, NULL) != IVY_OK) {
+		fprintf(stderr, "IvyContextStart failed: %d\n", IvyGetLastError());
+		IvyContextDestroy(ready_ctx);
+		return 1;
+	}
 
 	
-	IvyMainLoop ();
+	IvyContextMainLoop (ready_ctx);
+	IvyContextDestroy(ready_ctx);
 	return 0;
 }

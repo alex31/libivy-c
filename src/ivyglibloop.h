@@ -21,7 +21,12 @@
 extern "C" {
 #endif
 
-/* Nothnig special */
+/* The contextual APIs are declared in ivy.h, ivychannel.h, ivyloop.h and
+ * timer.h. New contexts attach to the creating thread's thread-default
+ * GMainContext (or the global default). Legacy wrappers use the global default.
+ * An external GLib/GTK loop can drive these sources directly. IvyChannelStopFor
+ * only stops the selected Ivy state; it does not quit the application's loop.
+ */
 #ifdef __cplusplus
 }
 #endif

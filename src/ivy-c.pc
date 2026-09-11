@@ -1,0 +1,11 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libivy
+Description: A software bus
+Version: 3.17
+Libs: -L${libdir} -livy
+Libs.private: -lpcre2-8 -pthread
+Cflags: -I${includedir}

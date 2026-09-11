@@ -16,10 +16,6 @@
 
 
 
-#ifdef OPENMP
-#include <omp.h>
-#endif
-
 #ifdef WIN32
 #include <Ws2tcpip.h>
 #include <windows.h>
@@ -57,8 +53,16 @@ typedef long ssize_t;
 #include "ivyloop.h"
 #include "ivybuffer.h"
 #include "ivyfifo.h"
+#include "ivythread.h"
 #include "ivydebug.h"
 
+void IvySocketDisableSigpipe(int fd)
+{
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+	int set = 1;
+	setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, (void *)&set, sizeof(int));
+#endif
+}
 
 union sockaddr_46 {
   struct sockaddr_in  s4;
@@ -69,6 +73,7 @@ union sockaddr_46 {
 
 struct _server {
 	Server next;
+	SocketState *state;
 	IVY_HANDLE fd;
 	Channel channel;
 	unsigned short port;
@@ -81,6 +86,7 @@ struct _server {
 
 struct _client {
 	Client next;
+	SocketState *state;
 	IVY_HANDLE fd;
 	Channel channel;
 	unsigned short port;
@@ -91,25 +97,52 @@ struct _client {
 	SocketInterpretation interpretation;
 	void (*handle_delete)(Client client, const void *data);
 	void (*handle_decongestion)(Client client, const void *data);
-	char terminator;	/* character delimiter of the message */ 
+	char terminator;	/* character delimiter of the message */
 	/* Buffer de reception */
 	long buffer_size;
 	char *buffer;		/* dynamicaly reallocated */
 	char *ptr;
 	/* Buffer d'emission */
         IvyFifoBuffer *ifb;             /* le buffer circulaire en cas de congestion */
+	IvyMutex send_lock;
+	int send_lock_initialized;
   	/* user data */
 	const void *data;
-#ifdef OPENMP
-	omp_lock_t fdLock;
-#endif
+	const void *owner_data;
 };
- 
 
-static Server servers_list = NULL;
-static Client clients_list = NULL;
 
-static int debug_send = 0;
+struct _socket_state {
+	Server servers_list;
+	Client clients_list;
+	IvyChannelState *channels;
+	const void *owner_data;
+	int debug_send;
+};
+
+static SocketState default_socket_state = {
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	0
+};
+
+#ifdef IVY_TESTING
+static int ivy_testing_socket_server_fail_step;
+
+void IvyTestingSocketServerFailStep(int step)
+{
+	ivy_testing_socket_server_fail_step = step;
+}
+
+static int IvyTestingSocketServerShouldFail(int step)
+{
+	return ivy_testing_socket_server_fail_step == step;
+}
+#else
+#define IvyTestingSocketServerShouldFail(step) 0
+#endif
 
 /*#ifdef WIN32
 WSADATA	WsaData;
@@ -118,41 +151,111 @@ WSADATA	WsaData;
 
 static SendState BufferizedSocketSendRaw (const Client client, const char *buffer, const int len );
 
+static SocketState *SocketNormalizeState(SocketState *state)
+{
+	if (!state)
+		state = &default_socket_state;
+	if (!state->channels)
+		state->channels = IvyChannelGetDefaultState();
+	return state;
+}
+
+SocketState *SocketGetDefaultState(void)
+{
+	return SocketNormalizeState(&default_socket_state);
+}
+
+SocketState *SocketStateCreate(IvyChannelState *channels, const void *owner_data)
+{
+	SocketState *state = (SocketState *)calloc(1, sizeof(*state));
+	if (!state)
+		return NULL;
+	state->channels = channels ? channels : IvyChannelGetDefaultState();
+	state->owner_data = owner_data;
+	return state;
+}
+
+static void DeleteSocket(void *data);
+static void DeleteServerSocket(void *data);
+
+void SocketStateDestroy(SocketState *state)
+{
+	if (!state || state == &default_socket_state)
+		return;
+
+	while (state->clients_list)
+		DeleteSocket(state->clients_list);
+	while (state->servers_list)
+		DeleteServerSocket(state->servers_list);
+	free(state);
+}
+
+static int InitClientSendLock(Client client)
+{
+	if (IvyMutexInit(&client->send_lock) != 0)
+		return 0;
+	client->send_lock_initialized = 1;
+	return 1;
+}
+
+
+int SocketInitFor(SocketState *state)
+{
+	state = SocketNormalizeState(state);
+	if ( getenv( "IVY_DEBUG_SEND" )) state->debug_send = 1;
+	return IvyChannelInitFor(state->channels);
+}
 
 void SocketInit()
 {
-	if ( getenv( "IVY_DEBUG_SEND" )) debug_send = 1;
-	IvyChannelInit();
+	(void)SocketInitFor(SocketGetDefaultState());
 }
 
 static void DeleteSocket(void *data)
 {
 	Client client = (Client )data;
+	SocketState *state;
+	if (!client)
+		return;
+	state = SocketNormalizeState(client->state);
 	if (client->handle_delete )
 		(*client->handle_delete) (client, client->data );
 	shutdown (client->fd, 2 );
 	close (client->fd );
-#ifdef OPENMP
-	omp_destroy_lock (&(client->fdLock));
-#endif
-	if (client->ifb != NULL) {
+	if (client->send_lock_initialized) {
+	  IvyMutexLock (&client->send_lock);
+	  if (client->ifb != NULL) {
+	    IvyFifoDelete (client->ifb);
+	    client->ifb = NULL;
+	  }
+	  IvyMutexUnlock (&client->send_lock);
+	  IvyMutexDestroy (&client->send_lock);
+	  client->send_lock_initialized = 0;
+	} else if (client->ifb != NULL) {
 	  IvyFifoDelete (client->ifb);
 	  client->ifb = NULL;
 	}
-	IVY_LIST_REMOVE (clients_list, client );
+	free (client->buffer);
+	client->buffer = NULL;
+	client->ptr = NULL;
+	IVY_LIST_REMOVE (state->clients_list, client );
 }
 
 
 static void DeleteServerSocket(void *data)
 {
         Server server = (Server )data;
+	SocketState *state;
+	if (!server)
+		return;
+	state = SocketNormalizeState(server->state);
 #ifdef BUGGY_END
         if (server->handle_delete )
                 (*server->handle_delete) (server, NULL );
 #endif
         shutdown (server->fd, 2 );
         close (server->fd );
-        IVY_LIST_REMOVE (servers_list, server);
+        IVY_LIST_REMOVE (state->servers_list, server);
 }
 
 
@@ -165,7 +268,7 @@ static void HandleSocket (Channel channel, IVY_HANDLE fd, void *data)
 	long nb;
 	long nb_occuped;
 	long len;
-	
+
 	/* limitation taille buffer */
 	nb_occuped = client->ptr - client->buffer;
 	nb_to_read = client->buffer_size - nb_occuped;
@@ -179,7 +282,7 @@ static void HandleSocket (Channel channel, IVY_HANDLE fd, void *data)
 		}
 		fprintf(stderr, "Buffer Limit reached realloc new size %ld\n", client->buffer_size );
 		nb_to_read = client->buffer_size - nb_occuped;
-		client->ptr = client->buffer + nb_occuped; 
+		client->ptr = client->buffer + nb_occuped;
 	}
 	client->from_len = sizeof (client->from );
 	nb = recvfrom (fd, client->ptr, nb_to_read, 0, (struct sockaddr*)&(client->from), &(client->from_len));
@@ -219,23 +322,35 @@ static void HandleSocket (Channel channel, IVY_HANDLE fd, void *data)
 static void HandleCongestionWrite (Channel channel, IVY_HANDLE fd, void *data)
 {
   Client client = (Client)data;
-  
-  if (IvyFifoSendSocket (client->ifb, fd) == 0) {
+  int decongested = 0;
+
+  if (!client)
+    return;
+
+  IvyMutexLock (&client->send_lock);
+
+  if (client->ifb == NULL) {
+    IvyChannelClearWritableEvent (channel);
+  } else if (IvyFifoSendSocket (client->ifb, fd) == 0) {
     // Not congestionned anymore
     IvyChannelClearWritableEvent (channel);
     //    printf ("DBG> Socket *DE*congestionnee\n");
     IvyFifoDelete (client->ifb);
     client->ifb = NULL;
-    if (client->handle_decongestion )
-      (*client->handle_decongestion) (client, client->data );
-
+    decongested = 1;
   }
+
+  IvyMutexUnlock (&client->send_lock);
+
+  if (decongested && client->handle_decongestion )
+    (*client->handle_decongestion) (client, client->data );
 }
 
 
 static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 {
 	Server server = (Server ) data;
+	SocketState *state;
 	Client client;
 	IVY_HANDLE ns;
 	socklen_t addrlen;
@@ -246,17 +361,20 @@ static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 	long   socketFlag;
 #endif
 	TRACE( "Accepting Connection...\n", );
+	state = SocketNormalizeState(server->state);
 	addrlen = sizeof (remote );
 	if ((ns = accept (fd, (struct sockaddr*)&remote, &addrlen)) <0)
 		{
 		perror ("*** accept ***");
 		return;
-		};
+		}
+	IvySocketDisableSigpipe(ns);
 
 	TRACE( "Accepting Connection ret\n", );
 
-	IVY_LIST_ADD_START (clients_list, client );
-	
+	IVY_LIST_ADD_START (state->clients_list, client );
+
+	client->state = state;
 	client->buffer_size = IVY_BUFFER_SIZE;
 	client->buffer = (char *) malloc( client->buffer_size );
 	if (!client->buffer )
@@ -270,6 +388,13 @@ static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 	client->from_len = addrlen;
 	client->fd = ns;
 	client->ifb = NULL;
+	if (!InitClientSendLock(client)) {
+	  fprintf(stderr, "HandleSocket Send Lock Init Error\n");
+	  free(client->buffer);
+	  close(ns);
+	  free(client);
+	  return;
+	}
 	strcpy (client->app_uuid, "init by HandleServer");
 
 #ifdef WIN32
@@ -286,34 +411,40 @@ static void HandleServer(Channel channel, IVY_HANDLE fd, void *data)
 		       TCP_NODELAY,     /* name of option */
 		       (char *) &TCP_NO_DELAY_ACTIVATED,  /* the cast is historical */
  		       sizeof(TCP_NO_DELAY_ACTIVATED)) < 0)    /* length of option value */
-	  {
-#ifdef WIN32
-	    fprintf(stderr," setsockopt %d\n",WSAGetLastError());
-#endif
-	    perror ("*** set socket option  TCP_NODELAY***");
-	    exit(0);
-	  } 
+		  {
+		    IvyMutexDestroy(&client->send_lock);
+		    client->send_lock_initialized = 0;
+		    free(client->buffer);
+		    close(ns);
+		    free(client);
+		    return;
+		  }
 
 
 
 
-	client->channel = IvyChannelAdd (ns, client,  DeleteSocket, HandleSocket,
+	client->channel = IvyChannelAddFor (state->channels, ns, client,  DeleteSocket, HandleSocket,
 					 HandleCongestionWrite);
+	if (!client->channel) {
+	  if (client->send_lock_initialized)
+	    IvyMutexDestroy(&client->send_lock);
+	  client->send_lock_initialized = 0;
+	  free(client->buffer);
+	  close(ns);
+	  free(client);
+	  return;
+	}
 	client->interpretation = server->interpretation;
 	client->ptr = client->buffer;
 	client->handle_delete = server->handle_delete;
 	client->handle_decongestion = server->handle_decongestion;
+	client->owner_data = state->owner_data;
 	client->data = (*server->create) (client );
-#ifdef OPENMP
-	omp_init_lock (&(client->fdLock));
-#endif
+	IVY_LIST_ADD_END (state->clients_list, client );
 
-
-	IVY_LIST_ADD_END (clients_list, client );
-	
 }
 
-Server SocketServer(int ipv6, unsigned short port, 
+Server SocketServerFor(SocketState *state, int ipv6, unsigned short port,
 	void*(*create)(Client client),
 	void(*handle_delete)(Client client, const void *data),
         void(*handle_decongestion)(Client client, const void *data),
@@ -325,69 +456,74 @@ Server SocketServer(int ipv6, unsigned short port,
 	union sockaddr_46 local;
 	socklen_t addrlen;
 
-	if ((fd = socket (ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)) < 0){
-		perror ("***open socket ***");
-		exit(0);
-		};
+	state = SocketNormalizeState(state);
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_SOCKET))
+		return NULL;
+	if ((fd = socket (ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)) < 0)
+		return NULL;
+	IvySocketDisableSigpipe(fd);
 
-	
-	if (setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,(char*)&one,sizeof(one)) < 0)
+
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_REUSEADDR) ||
+	    setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,(char*)&one,sizeof(one)) < 0)
 	  {
-#ifdef WIN32
-	    fprintf(stderr," setsockopt %d\n",WSAGetLastError());
-#endif
-	    perror ("*** set socket option SO_REUSEADDR ***");
-	    exit(0);
-	  } 
+	    close(fd);
+	    return NULL;
+	  }
 
 #ifdef SO_REUSEPORT
 
-	if (setsockopt (fd, SOL_SOCKET, SO_REUSEPORT, (char *)&one, sizeof (one)) < 0)
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_REUSEPORT) ||
+	    setsockopt (fd, SOL_SOCKET, SO_REUSEPORT, (char *)&one, sizeof (one)) < 0)
 	  {
-	    perror ("*** set socket option REUSEPORT ***");
-	    exit(0);
+	    close(fd);
+	    return NULL;
 	  }
 #endif
-	
-	memset( &local,0,sizeof(local) ); 
-	if ( ipv6 ) 
-	{ 
+
+	memset( &local,0,sizeof(local) );
+	if ( ipv6 )
+	{
 		struct sockaddr_in6*  local6= &local.s6;
-		local6->sin6_family =  AF_INET6; 
-		local6->sin6_addr = in6addr_any; 
-		local6->sin6_port = htons (port); 
-		addrlen = sizeof(struct sockaddr_in6); 
-	} 
-	else 
-	{ 
+		local6->sin6_family =  AF_INET6;
+		local6->sin6_addr = in6addr_any;
+		local6->sin6_port = htons (port);
+		addrlen = sizeof(struct sockaddr_in6);
+	}
+	else
+	{
 		struct sockaddr_in*  local4= &local.s4;
-		local4->sin_family =  AF_INET; 
-		local4->sin_addr.s_addr = INADDR_ANY; 
-		local4->sin_port = htons (port); 
+		local4->sin_family =  AF_INET;
+		local4->sin_addr.s_addr = INADDR_ANY;
+		local4->sin_port = htons (port);
 		addrlen = sizeof(struct sockaddr_in);
 	}
 
-	if (bind(fd, &local.sa, addrlen) < 0)
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_BIND) ||
+	    bind(fd, &local.sa, addrlen) < 0)
 		{
-		perror ("*** bind ***");
-		exit(0);
+		close(fd);
+		return NULL;
 		}
 
-	if (getsockname(fd, &local.sa, &addrlen) < 0)
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_GETSOCKNAME) ||
+	    getsockname(fd, &local.sa, &addrlen) < 0)
 		{
-		perror ("***get socket name ***");
-		exit(0);
-		} 
-	
-	if (listen (fd, 128) < 0){
-		perror ("*** listen ***");
-		exit(0);
-		};
-	
+		close(fd);
+		return NULL;
+		}
 
-	IVY_LIST_ADD_START (servers_list, server );
+	if (IvyTestingSocketServerShouldFail(IVY_TEST_SOCKET_SERVER_FAIL_LISTEN) ||
+	    listen (fd, 128) < 0){
+		close(fd);
+		return NULL;
+		};
+
+
+	IVY_LIST_ADD_START (state->servers_list, server );
+	server->state = state;
 	server->fd = fd;
-	server->channel = IvyChannelAdd (fd, server, DeleteServerSocket, 
+	server->channel = IvyChannelAddFor (state->channels, fd, server, DeleteServerSocket,
 					 HandleServer, NULL);
 	server->ipv6 = ipv6;
 	server->create = create;
@@ -395,9 +531,24 @@ Server SocketServer(int ipv6, unsigned short port,
 	server->handle_decongestion = handle_decongestion;
 	server->interpretation = interpretation;
 	server->port = ntohs(ipv6 ? local.s6.sin6_port : local.s4.sin_port);
-	IVY_LIST_ADD_END (servers_list, server );
-	
+	IVY_LIST_ADD_END (state->servers_list, server );
+	if (!server->channel) {
+	  IVY_LIST_REMOVE (state->servers_list, server);
+	  close(fd);
+	  return NULL;
+	}
+
 	return server;
+}
+
+Server SocketServer(int ipv6, unsigned short port,
+	void*(*create)(Client client),
+	void(*handle_delete)(Client client, const void *data),
+        void(*handle_decongestion)(Client client, const void *data),
+	void(*interpretation) (Client client, const void *data, char *ligne))
+{
+	return SocketServerFor(SocketGetDefaultState(), ipv6, port, create,
+			       handle_delete, handle_decongestion, interpretation);
 }
 
 unsigned short SocketServerGetPort (Server server )
@@ -417,19 +568,19 @@ const char *SocketGetPeerHost (Client client )
 	int err;
 	struct sockaddr_storage name;
 	socklen_t len = sizeof(name);
-	static char host[NI_MAXHOST];
-	static char serv[NI_MAXSERV];
-	
+	static IVY_TLS char host[NI_MAXHOST];
+	static IVY_TLS char serv[NI_MAXSERV];
+
 	if (!client)
 		return "undefined";
-	
+
 	err = getpeername (client->fd, (struct sockaddr *)&name, &len );
 	if (err < 0 ) return "can't get peer";
 
 	err = getnameinfo((struct sockaddr*)&name, len, host, sizeof( host), serv, sizeof( serv ), NI_NOFQDN  );
-		
-	
-	if (err != 0 ) 
+
+
+	if (err != 0 )
 	{
 #ifdef WIN32
 		DWORD dwError = WSAGetLastError();
@@ -466,13 +617,13 @@ unsigned short int SocketGetLocalPort ( Client client )
 	{
 		struct sockaddr_in6*  local6= &name.s6;
 		port = ntohs(local6->sin6_port);
-	} 
-	else 
-	{ 
+	}
+	else
+	{
 		struct sockaddr_in*  local4= &name.s4;
 		port = ntohs(local4->sin_port);
 	}
-	
+
 	return port;
 }
 unsigned short int SocketGetRemotePort ( Client client )
@@ -480,8 +631,8 @@ unsigned short int SocketGetRemotePort ( Client client )
 	if (!client)
 		return 0;
 	if ( client->from.ss_family == AF_INET6 )
-		return ((struct sockaddr_in6*)(&client->from ))->sin6_port;
-	return ((struct sockaddr_in*)(&client->from ))->sin_port;
+		return ntohs(((struct sockaddr_in6*)(&client->from ))->sin6_port);
+	return ntohs(((struct sockaddr_in*)(&client->from ))->sin_port);
 }
 
 struct sockaddr_storage * SocketGetRemoteAddr (Client client )
@@ -492,9 +643,9 @@ struct sockaddr_storage * SocketGetRemoteAddr (Client client )
 void SocketGetRemoteHost (Client client, const char **hostptr, unsigned short *port )
 {
 	int err;
-	static char host[NI_MAXHOST];
-	static char serv[NI_MAXSERV];
-	
+	static IVY_TLS char host[NI_MAXHOST];
+	static IVY_TLS char serv[NI_MAXSERV];
+
 	if (!client)
 		return;
 	if( client->from_len == 0 )
@@ -506,7 +657,7 @@ void SocketGetRemoteHost (Client client, const char **hostptr, unsigned short *p
 	}
 	err = getnameinfo((struct sockaddr*)&client->from, client->from_len, host, sizeof( host), serv, sizeof( serv ), NI_NOFQDN  );
 
-	
+
 	if (err != 0 )
 	{
 #ifdef WIN32
@@ -525,7 +676,7 @@ void SocketGetRemoteHost (Client client, const char **hostptr, unsigned short *p
 #endif
 		*hostptr = "unknown";
 	}
-	else 
+	else
 	{
 	/* extract hostname and port from last message received */
 
@@ -541,7 +692,7 @@ void SocketGetRemoteHost (Client client, const char **hostptr, unsigned short *p
 	}
 	*hostptr = host;
 	}
-	
+
 }
 
 void SocketClose (Client client )
@@ -553,20 +704,16 @@ void SocketClose (Client client )
 SendState SocketSendRaw (const Client client, const char *buffer, const int len )
 {
   SendState state;
-  
-  if (!client)
+
+  if (!client || !buffer || len < 0)
     return SendParamError;
-  
-#ifdef OPENMP
-  omp_set_lock (&(client->fdLock));
-#endif
-  
+
+  IvyMutexLock (&client->send_lock);
+
   state = BufferizedSocketSendRaw (client, buffer, len);
 
-#ifdef OPENMP
-  omp_unset_lock (&(client->fdLock));
-#endif
-  
+  IvyMutexUnlock (&client->send_lock);
+
   return state;
 }
 
@@ -577,33 +724,37 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
   SendState state;
 
   if (client->ifb != NULL) {
-    // Socket en congestion : on rajoute juste le flux dans le buffer, 
+    // Socket en congestion : on rajoute juste le flux dans le buffer,
     // quand la socket sera dispo en ecriture, le select appellera la callback
     // pour vider ce buffer
     IvyFifoWrite (client->ifb, buffer, len);
     state = IvyFifoIsFull (client->ifb) ? SendStateFifoFull : SendStillCongestion;
   } else {
     // on tente d'ecrire direct dans la socket
-    reallySent =  send (client->fd, buffer, len, 0);
-    if (reallySent == len) 
+    reallySent =  send (client->fd, buffer, len, IVY_MSG_NOSIGNAL);
+    if (reallySent == len)
 	{
       state = SendOk; // PAS CONGESTIONNEE
-    } else if (reallySent == -1) 
+    } else if (reallySent == -1)
 	{
 #ifdef WIN32
 	if ( WSAGetLastError() == WSAEWOULDBLOCK) {
 #else
-      if (errno == EWOULDBLOCK) {
+      if (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR) {
 #endif
 	// Aucun octet n'a été envoyé, mais le send ne rend pas 0
 	// car 0 peut être une longueur passée au send, donc dans ce cas
 	// send renvoie -1 et met errno a EWOULDBLOCK
 	client->ifb = IvyFifoNew ();
-	IvyFifoWrite (client->ifb, buffer, len);
-	// on ajoute un fdset pour que le select appelle une callback pour vider
-	// le buffer quand la socket sera ?? nouveau libre
-	IvyChannelAddWritableEvent (client->channel);
-	state = SendStateChangeToCongestion;
+	if (client->ifb == NULL) {
+	  state = SendError;
+	} else {
+	  IvyFifoWrite (client->ifb, buffer, len);
+	  // on ajoute un fdset pour que le select appelle une callback pour vider
+	  // le buffer quand la socket sera ?? nouveau libre
+	  IvyChannelAddWritableEvent (client->channel);
+	  state = SendStateChangeToCongestion;
+	}
       } else {
 	state = SendError; // ERREUR
       }
@@ -611,11 +762,15 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
       // socket congestionnée
       // on initialise une fifo pour accumuler les données
       client->ifb = IvyFifoNew ();
-      IvyFifoWrite (client->ifb, &(buffer[reallySent]), len-reallySent);
-      // on ajoute un fdset pour que le select appelle une callback pour vider
-      // le buffer quand la socket sera à nouveau libre
-      IvyChannelAddWritableEvent (client->channel);
-      state = SendStateChangeToCongestion;
+      if (client->ifb == NULL) {
+	state = SendError;
+      } else {
+	IvyFifoWrite (client->ifb, &(buffer[reallySent]), len-reallySent);
+	// on ajoute un fdset pour que le select appelle une callback pour vider
+	// le buffer quand la socket sera à nouveau libre
+	IvyChannelAddWritableEvent (client->channel);
+	state = SendStateChangeToCongestion;
+      }
     }
   }
 
@@ -660,19 +815,18 @@ static SendState BufferizedSocketSendRaw (const Client client, const char *buffe
 SendState SocketSendRawWithId( const Client client, const char *id, const char *buffer, const int len )
 {
   SendState s1, s2;
-  
-#ifdef OPENMP
-  omp_set_lock (&(client->fdLock));
-#endif
-  
+
+  if (!client || !id || !buffer || len < 0)
+    return SendParamError;
+
+  IvyMutexLock (&client->send_lock);
+
   s1 = BufferizedSocketSendRaw (client, id, strlen (id));
 
   s2 = BufferizedSocketSendRaw (client, buffer, len);
-  
-#ifdef OPENMP
-  omp_unset_lock (&(client->fdLock));
-#endif
-  
+
+  IvyMutexUnlock (&client->send_lock);
+
   if (s1 == SendStateChangeToCongestion) {
     // si le passage en congestion s'est fait sur l'envoi de l'id
     s2 = s1;
@@ -692,18 +846,20 @@ void SocketSetData (Client client, const void *data )
 SendState SocketSend (Client client, const char *fmt, ... )
 {
   SendState state;
-  static IvyBuffer buffer = {NULL, 0, 0 }; /* Use static mem to eliminate multiple call to malloc /free */
-#ifdef OPENMP
-#pragma omp threadprivate (buffer)
-#endif
+  IvyBuffer buffer = {NULL, 0, 0 };
 
   va_list ap;
   int len;
   va_start (ap, fmt );
   buffer.offset = 0;
   len = make_message (&buffer, fmt, ap );
-  state = SocketSendRaw (client, buffer.data, len );
   va_end (ap );
+  if (len < 0) {
+    free(buffer.data);
+    return SendError;
+  }
+  state = SocketSendRaw (client, buffer.data, len );
+  free(buffer.data);
   return state;
 }
 
@@ -712,31 +868,54 @@ const void *SocketGetData (Client client )
 	return client ? client->data : 0;
 }
 
-void SocketBroadcast ( char *fmt, ... )
+const void *SocketGetOwnerData (Client client )
+{
+	return client ? client->owner_data : 0;
+}
+
+static void SocketBroadcastV(SocketState *state, char *fmt, va_list ap)
 {
 	Client client;
-	static IvyBuffer buffer = {NULL, 0, 0 }; /* Use static mem to eliminate 
-						    multiple call to malloc /free */
-#ifdef OPENMP
-#pragma omp threadprivate (buffer)
-#endif
-	va_list ap;
+	IvyBuffer buffer = {NULL, 0, 0 };
 	int len;
-	
-	va_start (ap, fmt );
+
+	state = SocketNormalizeState(state);
+	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
-	va_end (ap );
-	IVY_LIST_EACH (clients_list, client )
+	if (len < 0) {
+		free(buffer.data);
+		return;
+	}
+	IVY_LIST_EACH (state->clients_list, client )
 		{
 		SocketSendRaw (client, buffer.data, len );
 		}
+	free(buffer.data);
+}
+
+void SocketBroadcastFor ( SocketState *state, char *fmt, ... )
+{
+	va_list ap;
+
+	va_start (ap, fmt );
+	SocketBroadcastV(state, fmt, ap);
+	va_end (ap );
+}
+
+void SocketBroadcast ( char *fmt, ... )
+{
+	va_list ap;
+
+	va_start (ap, fmt );
+	SocketBroadcastV(SocketGetDefaultState(), fmt, ap);
+	va_end (ap );
 }
 
 /*
 Ouverture d'un canal TCP/IP en mode client
 */
-//Client SocketConnect (int ipv6, char * host, unsigned short port, 
-//			void *data, 
+//Client SocketConnect (int ipv6, char * host, unsigned short port,
+//			void *data,
 //			SocketInterpretation interpretation,
 //		        void (*handle_delete)(Client client, const void *data),
 //		        void(*handle_decongestion)(Client client, const void *data)
@@ -748,12 +927,12 @@ Ouverture d'un canal TCP/IP en mode client
 //		fprintf(stderr, "Erreur %s Calculateur inconnu !\n",host);
 //		 return NULL;
 //	}
-//	return SocketConnectAddr (ipv6, rhost->h_addr, port, data, 
+//	return SocketConnectAddr (ipv6, rhost->h_addr, port, data,
 //				  interpretation, handle_delete, handle_decongestion);
 //}
 
-Client SocketConnectAddr (int ipv6, struct sockaddr_storage * addr, unsigned short port, 
-			  void *data, 
+Client SocketConnectAddrFor (SocketState *state, int ipv6, struct sockaddr_storage * addr, unsigned short port,
+			  void *data,
 			  SocketInterpretation interpretation,
 			  void (*handle_delete)(Client client, const void *data),
 		          void(*handle_decongestion)(Client client, const void *data)
@@ -769,12 +948,14 @@ Client SocketConnectAddr (int ipv6, struct sockaddr_storage * addr, unsigned sho
 	long   socketFlag;
 #endif
 
+	state = SocketNormalizeState(state);
 	if ((handle = socket ( ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)) < 0){
 		perror ("*** client socket ***");
 		return NULL;
-	};
-	memset( &remote,0,sizeof(remote) ); 
-	
+	}
+	IvySocketDisableSigpipe(handle);
+	memset( &remote,0,sizeof(remote) );
+
 	if ( ipv6 )
 	{
 		struct sockaddr_in6* remote6= &remote.s6;
@@ -796,6 +977,7 @@ Client SocketConnectAddr (int ipv6, struct sockaddr_storage * addr, unsigned sho
 
 	if (connect (handle, &remote.sa, addrlen ) < 0){
 		perror ("*** client connect ***");
+		close(handle);
 		return NULL;
 	};
 #ifdef WIN32
@@ -813,16 +995,14 @@ Client SocketConnectAddr (int ipv6, struct sockaddr_storage * addr, unsigned sho
 		       (char *) &TCP_NO_DELAY_ACTIVATED,  /* the cast is historical */
  		       sizeof(TCP_NO_DELAY_ACTIVATED)) < 0)    /* length of option value */
 	  {
-#ifdef WIN32
-	    fprintf(stderr," setsockopt %d\n",WSAGetLastError());
-#endif
-	    perror ("*** set socket option  TCP_NODELAY***");
-	    exit(0);
-	  } 
+	    close(handle);
+	    return NULL;
+	  }
 
 
-	IVY_LIST_ADD_START(clients_list, client );
-	
+	IVY_LIST_ADD_START(state->clients_list, client );
+
+	client->state = state;
 	client->buffer_size = IVY_BUFFER_SIZE;
 	client->buffer = (char *) malloc( client->buffer_size );
 	if (!client->buffer )
@@ -830,29 +1010,67 @@ Client SocketConnectAddr (int ipv6, struct sockaddr_storage * addr, unsigned sho
 		fprintf(stderr,"HandleSocket Buffer Memory Alloc Error\n");
 		exit(0);
 		}
-		client->terminator = '\n';
+	client->terminator = '\n';
 	client->fd = handle;
 	client->ipv6 = ipv6;
-	client->channel = IvyChannelAdd (handle, client,  DeleteSocket, 
-					 HandleSocket, HandleCongestionWrite );
 	client->interpretation = interpretation;
 	client->ptr = client->buffer;
 	client->data = data;
+	client->owner_data = state->owner_data;
 	client->handle_delete = handle_delete;
 	client->handle_decongestion = handle_decongestion;
 	client->ifb = NULL;
+	if (!InitClientSendLock(client)) {
+		fprintf(stderr, "SocketConnectAddr Send Lock Init Error\n");
+		free(client->buffer);
+		close(handle);
+		free(client);
+		return NULL;
+	}
+	client->channel = IvyChannelAddFor (state->channels, handle, client,  DeleteSocket,
+					 HandleSocket, HandleCongestionWrite );
+	if (!client->channel) {
+	  IvyMutexDestroy(&client->send_lock);
+	  client->send_lock_initialized = 0;
+	  free(client->buffer);
+	  close(handle);
+	  free(client);
+	  return NULL;
+	}
 	strcpy (client->app_uuid, "init by SocketConnectAddr");
+	IVY_LIST_ADD_END(state->clients_list, client );
 
-
-#ifdef OPENMP
-	omp_init_lock (&(client->fdLock));
-#endif
-	IVY_LIST_ADD_END(clients_list, client );
-	
 
 	return client;
 }
+
+Client SocketConnectAddr (int ipv6, struct sockaddr_storage * addr, unsigned short port,
+			  void *data,
+			  SocketInterpretation interpretation,
+			  void (*handle_delete)(Client client, const void *data),
+		          void(*handle_decongestion)(Client client, const void *data)
+			  )
+{
+	return SocketConnectAddrFor(SocketGetDefaultState(), ipv6, addr, port, data,
+				    interpretation, handle_delete, handle_decongestion);
+}
 /* TODO factoriser avec HandleRead !!!! */
+
+static int
+SocketWaitForReplyFdValid(IVY_HANDLE fd)
+{
+#ifdef WIN32
+	return fd != INVALID_SOCKET;
+#elif defined(FD_SETSIZE)
+	if (fd < 0)
+		return 0;
+	return fd < FD_SETSIZE;
+#else
+	(void)fd;
+	return 1;
+#endif
+}
+
 int SocketWaitForReply (Client client, char *buffer, int size, int delai)
 {
 	fd_set rdset;
@@ -869,7 +1087,10 @@ int SocketWaitForReply (Client client, char *buffer, int size, int delai)
 	ptr = buffer;
 	timeout.tv_sec = delai;
 	timeout.tv_usec = 0;
-   	do {
+	if (!SocketWaitForReplyFdValid(fd))
+		return -1;
+
+	do {
 		/* limitation taille buffer */
 		nb_to_read = size - (ptr - buffer );
 		if (nb_to_read == 0 )
@@ -908,8 +1129,8 @@ int SocketWaitForReply (Client client, char *buffer, int size, int delai)
 
 /* Socket UDP */
 
-Client SocketBroadcastCreate (int ipv6, unsigned short port, 
-				void *data, 
+Client SocketBroadcastCreateFor (SocketState *state, int ipv6, unsigned short port,
+				void *data,
 				SocketInterpretation interpretation
 			)
 {
@@ -919,33 +1140,36 @@ Client SocketBroadcastCreate (int ipv6, unsigned short port,
 	union sockaddr_46 local;
 	socklen_t addrlen;
 
-	memset( &local,0,sizeof(local) ); 
-	if ( ipv6 ) 
-	{ 
+	state = SocketNormalizeState(state);
+	memset( &local,0,sizeof(local) );
+	if ( ipv6 )
+	{
 		struct sockaddr_in6*  local6= &local.s6;
-		local6->sin6_family =  AF_INET6; 
-		local6->sin6_addr = in6addr_any; 
-		local6->sin6_port = htons (port); 
+		local6->sin6_family =  AF_INET6;
+		local6->sin6_addr = in6addr_any;
+		local6->sin6_port = htons (port);
 		addrlen = sizeof( struct sockaddr_in6 );
-	} 
-	else 
-	{ 
+	}
+	else
+	{
 		struct sockaddr_in*  local4= &local.s4;
-		local4->sin_family =  AF_INET; 
-		local4->sin_addr.s_addr = INADDR_ANY; 
-		local4->sin_port = htons (port); 
+		local4->sin_family =  AF_INET;
+		local4->sin_addr.s_addr = INADDR_ANY;
+		local4->sin_port = htons (port);
 		addrlen = sizeof( struct sockaddr_in );
 	}
-	
+
 	if ((handle = socket ( ipv6 ? AF_INET6 : AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0){
 		perror ("*** dgram socket ***");
 		return NULL;
-	};
+	}
+	IvySocketDisableSigpipe(handle);
 
 	/* wee need to used multiple client on the same host */
 	if (setsockopt (handle, SOL_SOCKET, SO_REUSEADDR, (char *)&on, sizeof (on)) < 0)
 		{
 			perror ("*** set socket option REUSEADDR ***");
+			close(handle);
 			return NULL;
 		};
 #ifdef SO_REUSEPORT
@@ -953,6 +1177,7 @@ Client SocketBroadcastCreate (int ipv6, unsigned short port,
 	if (setsockopt (handle, SOL_SOCKET, SO_REUSEPORT, (char *)&on, sizeof (on)) < 0)
 		{
 			perror ("*** set socket option REUSEPORT ***");
+			close(handle);
 			return NULL;
 		}
 #endif
@@ -960,17 +1185,20 @@ Client SocketBroadcastCreate (int ipv6, unsigned short port,
 	if (setsockopt (handle, SOL_SOCKET, SO_BROADCAST, (char *)&on, sizeof (on)) < 0)
 		{
 			perror ("*** BROADCAST ***");
+			close(handle);
 			return NULL;
 		};
 
 	if (bind(handle, &local.sa,  addrlen ) < 0)
 		{
 			perror ("*** BIND ***");
+			close(handle);
 			return NULL;
 		};
 
-	IVY_LIST_ADD_START(clients_list, client );
-	
+	IVY_LIST_ADD_START(state->clients_list, client );
+
+	client->state = state;
 	client->buffer_size = IVY_BUFFER_SIZE;
 	client->buffer = (char *) malloc( client->buffer_size );
 	if (!client->buffer )
@@ -981,29 +1209,47 @@ Client SocketBroadcastCreate (int ipv6, unsigned short port,
 	client->terminator = '\n';
 	client->fd = handle;
 	client->ipv6 = ipv6;
-	client->channel = IvyChannelAdd (handle, client,  DeleteSocket, 
-					 HandleSocket, HandleCongestionWrite);
 	client->interpretation = interpretation;
 	client->ptr = client->buffer;
 	client->data = data;
+	client->owner_data = state->owner_data;
 	client->ifb = NULL;
+	if (!InitClientSendLock(client)) {
+		fprintf(stderr, "SocketBroadcastCreate Send Lock Init Error\n");
+		free(client->buffer);
+		close(handle);
+		free(client);
+		return NULL;
+	}
+	client->channel = IvyChannelAddFor (state->channels, handle, client,  DeleteSocket,
+					 HandleSocket, HandleCongestionWrite);
+	if (!client->channel) {
+	  IvyMutexDestroy(&client->send_lock);
+	  client->send_lock_initialized = 0;
+	  free(client->buffer);
+	  close(handle);
+	  free(client);
+	  return NULL;
+	}
 	strcpy (client->app_uuid, "init by SocketBroadcastCreate");
+	IVY_LIST_ADD_END(state->clients_list, client );
 
-#ifdef OPENMP
-	omp_init_lock (&(client->fdLock));
-#endif
-	IVY_LIST_ADD_END(clients_list, client );
-	
 	return client;
+}
+
+Client SocketBroadcastCreate (int ipv6, unsigned short port,
+				void *data,
+				SocketInterpretation interpretation
+			)
+{
+	return SocketBroadcastCreateFor(SocketGetDefaultState(), ipv6, port, data,
+					interpretation);
 }
 /* TODO unifier les deux fonctions */
 void SocketSendBroadcast (Client client, unsigned long host, unsigned short port, const char *fmt, ... )
 {
 	struct sockaddr_in remote;
-	static IvyBuffer buffer = { NULL, 0, 0 }; /* Use satic mem to eliminate multiple call to malloc /free */
-#ifdef OPENMP
-#pragma omp threadprivate (buffer)
-#endif
+	IvyBuffer buffer = { NULL, 0, 0 };
 	va_list ap;
 	int err,len;
 
@@ -1014,27 +1260,29 @@ void SocketSendBroadcast (Client client, unsigned long host, unsigned short port
 	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
 	va_end (ap );
+	if (len < 0) {
+		free(buffer.data);
+		return;
+	}
 	/* Send UDP packet to the dest */
 	memset( &remote,0,sizeof(remote) );
 	remote.sin_family = AF_INET;
 	remote.sin_addr.s_addr = htonl (host );
 	remote.sin_port = htons(port);
-	err = sendto (client->fd, 
+	err = sendto (client->fd,
 			buffer.data, len,0,
 			(struct sockaddr *)&remote,sizeof(remote));
 	if (err != len) {
 		perror ("*** send ***");
-	}	
-	
+	}
+	free(buffer.data);
+
 }
 
 void SocketSendBroadcast6 (Client client, struct in6_addr* host, unsigned short port, const char *fmt, ... )
 {
 	struct sockaddr_in6 remote;
-	static IvyBuffer buffer = { NULL, 0, 0 }; /* Use satic mem to eliminate multiple call to malloc /free */
-#ifdef OPENMP
-#pragma omp threadprivate (buffer)
-#endif
+	IvyBuffer buffer = { NULL, 0, 0 };
 	va_list ap;
 	int err,len;
 
@@ -1045,18 +1293,23 @@ void SocketSendBroadcast6 (Client client, struct in6_addr* host, unsigned short 
 	buffer.offset = 0;
 	len = make_message (&buffer, fmt, ap );
 	va_end (ap );
+	if (len < 0) {
+		free(buffer.data);
+		return;
+	}
 	/* Send UDP packet to the dest */
 	memset( &remote,0,sizeof(remote) );
 	remote.sin6_family = AF_INET6;
 	remote.sin6_addr = *host;
 	remote.sin6_port = htons(port);
-	err = sendto (client->fd, 
+	err = sendto (client->fd,
 			buffer.data, len,0,
 			(struct sockaddr *)&remote,sizeof(remote));
 	if (err != len) {
 		perror ("*** send ***");
-	}	
-	
+	}
+	free(buffer.data);
+
 }
 
 
@@ -1066,25 +1319,25 @@ int SocketAddMember(Client client, unsigned long host )
 {
 	struct ip_mreq imr;
 /*
-Multicast datagrams with initial TTL 0 are restricted to the same host. 
-Multicast datagrams with initial TTL 1 are restricted to the same subnet. 
-Multicast datagrams with initial TTL 32 are restricted to the same site. 
-Multicast datagrams with initial TTL 64 are restricted to the same region. 
-Multicast datagrams with initial TTL 128 are restricted to the same continent. 
-Multicast datagrams with initial TTL 255 are unrestricted in scope. 
+Multicast datagrams with initial TTL 0 are restricted to the same host.
+Multicast datagrams with initial TTL 1 are restricted to the same subnet.
+Multicast datagrams with initial TTL 32 are restricted to the same site.
+Multicast datagrams with initial TTL 64 are restricted to the same region.
+Multicast datagrams with initial TTL 128 are restricted to the same continent.
+Multicast datagrams with initial TTL 255 are unrestricted in scope.
 */
 	unsigned char ttl = 64 ; /* Arbitrary TTL value. */
 	/* wee need to broadcast */
 
 	imr.imr_multiaddr.s_addr = htonl( host );
-	imr.imr_interface.s_addr = INADDR_ANY; 
+	imr.imr_interface.s_addr = INADDR_ANY;
 	if(setsockopt(client->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&imr,sizeof(imr)) == -1 )
 		{
       	perror("setsockopt() Cannot join group");
       	fprintf(stderr, "Does your kernel support IP multicast extensions ?\n");
       	return 0;
     		}
-				
+
   	if(setsockopt(client->fd, IPPROTO_IP, IP_MULTICAST_TTL, (char *)&ttl, sizeof(ttl)) < 0 )
 		{
       	perror("setsockopt() Cannot set TTL");
@@ -1099,12 +1352,12 @@ int SocketAddMember6(Client client, struct in6_addr* host )
 {
 	struct ipv6_mreq imr;
 /*
-Multicast datagrams with initial TTL 0 are restricted to the same host. 
-Multicast datagrams with initial TTL 1 are restricted to the same subnet. 
-Multicast datagrams with initial TTL 32 are restricted to the same site. 
-Multicast datagrams with initial TTL 64 are restricted to the same region. 
-Multicast datagrams with initial TTL 128 are restricted to the same continent. 
-Multicast datagrams with initial TTL 255 are unrestricted in scope. 
+Multicast datagrams with initial TTL 0 are restricted to the same host.
+Multicast datagrams with initial TTL 1 are restricted to the same subnet.
+Multicast datagrams with initial TTL 32 are restricted to the same site.
+Multicast datagrams with initial TTL 64 are restricted to the same region.
+Multicast datagrams with initial TTL 128 are restricted to the same continent.
+Multicast datagrams with initial TTL 255 are unrestricted in scope.
 */
 	//unsigned char ttl = 64 ; /* Arbitrary TTL value. */
 	/* wee need to broadcast */
@@ -1117,7 +1370,7 @@ Multicast datagrams with initial TTL 255 are unrestricted in scope.
       	fprintf(stderr, "Does your kernel support IP multicast extensions ?\n");
       	return 0;
     		}
-				
+
   	/*
 	if(setsockopt(client->fd, IPPROTO_IPV6, IPV6_MULTICAST_TTL, (char *)&ttl, sizeof(ttl)) < 0 )
 		{
@@ -1145,5 +1398,3 @@ extern int  SocketCmpUuid (const Client c1, const Client c2)
 {
   return strncmp (c1->app_uuid, c2->app_uuid, sizeof (c1->app_uuid));
 }
-
-
