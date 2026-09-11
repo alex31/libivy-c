@@ -2,7 +2,7 @@ src/*.o
 src/build/*
 src/*.a
 src/*.so*
-src/libivy.pc
+src/*.pc
 tools/*.o
 tools/ivyprobe
 tools/ivythroughput

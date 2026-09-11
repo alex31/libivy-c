@@ -375,7 +375,7 @@ installpkgconf: pkgconf
 # remove with:
 #		sudo dpkg -r libivy
 deb_destdir_version = build/deb/libivy_$(MAJOR).$(MINOR).$(MINOR2)
-deb_prefix = /usr/local
+deb_prefix = /usr
 deb_destdir= $(shell pwd)/$(deb_destdir_version)
 deb:	
 	make installlibs installbins installliblinks includes installpkgconf DESTDIR=$(deb_destdir) PREFIX=$(deb_prefix)
