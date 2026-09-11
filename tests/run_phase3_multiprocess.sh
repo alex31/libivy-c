@@ -14,7 +14,6 @@ cd "$repo_dir/tools"
 	-b "$bus" \
 	-t tp \
 	-n 3 \
-	-R 0 \
 	-M 3 \
 	-m "$repo_dir/tests/phase3_verify_messages.ivy" \
 	-d 5

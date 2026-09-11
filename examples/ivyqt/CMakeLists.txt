@@ -10,7 +10,7 @@ set(CMAKE_AUTORCC OFF)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(IVY REQUIRED IMPORTED_TARGET libivy)
+pkg_check_modules(IVY REQUIRED IMPORTED_TARGET ivy-c)
 find_package(Threads REQUIRED)
 
 add_executable(qtdemo

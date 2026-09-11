@@ -94,7 +94,32 @@ root:
 ./tests/run_phase10_tools.sh
 ./tests/run_phase11_runtime_errors.sh
 ./tests/run_phase11_interval_regexp.sh
+./tests/run_glib_backend.sh
 ```
+
+GLib/GTK applications can link against `libglibivy` (pkg-config: `ivy-glib`).
+This backend requires GLib 2.36 or newer and implements the contextual channel,
+loop, and timer APIs with GLib sources. Each `IvyContext` uses the thread-default
+`GMainContext` in effect when it is created, falling back to GLib's global
+default context. An application's `g_main_loop_run()` or GTK main loop drives
+all Ivy contexts attached to that main context, including their timers.
+
+For separate event-loop threads, create a `GMainContext` for each thread and
+push it with `g_main_context_push_thread_default()` while creating its Ivy
+contexts, then pop it before handing the loop to that thread. A main context
+has one loop owner at a time. `IvyContextMainLoop()` and `IvyContextIdle()` also
+drive the associated GLib main context; idle processes one nonblocking
+iteration, including due timers. The before/after-select hooks apply to these
+Ivy entry points and bracket polling, with callbacks dispatched after the
+after-select hook.
+
+Worker threads can post controls, change writable watches, create contextual
+timers, and request a stop while the loop is running. Stopping an Ivy context
+disables its I/O and timers without quitting the application's GLib loop or
+stopping other Ivy contexts. Join an Ivy-owned loop thread before destroying
+its context. As with the existing timer API, a timer ID must not be used after
+it expires or its removal has been dispatched. Legacy Ivy and timer wrappers
+share sources on GLib's global default main context.
 
 Optional OpenMP build:
 
