@@ -177,6 +177,82 @@ first exception and requests a stop. After servicing/joining the loop, call
 `rethrow_callback_exception()` to rethrow and clear it. `state()` and
 `native_handle()` are also available for lifecycle inspection.
 
+Subscriptions use one overloaded `bind` name, with the callback first:
+
+```cpp
+auto messages = bus.bind(on_message, R"(^TRACK ([0-9]{2}) 100%$)");
+auto filtered = bus.bind(on_message, R"(^TRACK {} ([0-9]{{2}})$)", aircraft_id);
+auto direct = bus.bind(on_direct);
+```
+
+`MessageCallback` is a `std::move_only_function` taking
+`(IvyClientPtr, std::span<const std::string_view>)`; `DirectCallback` takes
+`(IvyClientPtr, int, std::string_view)`. Captures and direct-message text are
+borrowed views valid only for the callback invocation. Callback exceptions
+follow the same stop-and-rethrow mechanism as application/die callbacks.
+
+Without formatting arguments, the regexp is passed unchanged, including braces
+and percent signs. With one or more arguments, the header's template uses
+`std::format_string` and `std::format`: double literal regexp braces as `{{` and
+`}}`. Formatting inserts values as supplied, without escaping regexp syntax.
+The format is checked at compile time.
+
+The regexp overloads return `std::expected<ivy::Subscription, std::error_code>`;
+the direct overload returns `std::expected<ivy::DirectSubscription, std::error_code>`.
+The compiler selects the type from the arguments, with no variant to inspect.
+Check the result and keep it (or move its token value) alive. Both token types
+are non-copyable and movable; their destructors unregister the callback.
+`subscription.unbind()` performs explicit, idempotent cancellation and returns
+an expected result. `subscription.is_bound()` becomes false after cancellation,
+Bus stop/destruction, or replacement of the context's single direct callback.
+An old direct token cannot cancel its replacement. Tokens can outlive the Bus
+without keeping its context alive. Do not concurrently move/destroy a token
+while accessing that same token from another thread.
+
+Only `Subscription` provides `change()`, which retains the same native handle,
+callback and captured state while replacing the regexp. `DirectSubscription`
+provides only `unbind()` and `is_bound()` because a direct registration has no
+regexp. Change follows the same raw/formatted distinction as bind:
+
+```cpp
+if (messages) {
+    auto result = messages->change(R"(^NEW_TRACK ([0-9]{2}) 100%$)");
+    if (!result) {
+        std::cerr << result.error().message() << '\n';
+        return 1;
+    }
+}
+// With arguments, use {{ and }} for literal regexp braces.
+if (filtered) {
+    auto result = filtered->change(R"(^NEW_TRACK {} ([0-9]{{2}})$)", aircraft_id);
+    if (!result) {
+        std::cerr << result.error().message() << '\n';
+        return 1;
+    }
+}
+```
+
+Both change overloads return `std::expected<void, std::error_code>`. An inactive
+token returns `IVY_ESTATE`, and a stopped bus returns `IVY_ESTOPPED`. Input,
+formatting and allocation errors use the same conventions as bind. A failed
+native change leaves the old regexp in place. Peer updates are asynchronous;
+messages already in flight may still reflect the old regexp.
+
+Unbinding can be done inside the callback or from another thread. A callback
+already selected by the C++ relay may finish after unbind returns; its captures
+remain alive until it returns. Small C user-data relay records are retained
+until context destruction because C may have copied their addresses before
+unregistration. User captures are released on cancellation/replacement once
+in-flight callbacks finish, and on Bus destruction even if tokens survive.
+The C handle is pinned during change, allowing concurrent or reentrant unbind
+without freeing a handle still in use. Cancellation disables the callback
+immediately and defers native removal until all changes finish; a successful
+native change overtaken by cancellation reports `IVY_ESTATE`.
+
+Empty callables and embedded NUL bytes in regexps return `IVY_EINVAL`; stopped
+buses return `IVY_ESTOPPED`, and moved-from buses return `IVY_ESTATE`. Allocation
+failures return `IVY_ENOMEM`. The formatted overload maps `std::format_error` to
+`IVY_EINVAL`; other exceptions from user-defined formatters propagate to the caller.
 Run `./tests/cpp/run.sh` for the wrapper tests, including a temporary
 installation and consumers linked against the static and shared libraries.
 `examples/cpp/lifecycle.cpp` demonstrates the available wrapper API and exits
