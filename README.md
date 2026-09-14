@@ -165,7 +165,7 @@ The event-loop interface will be designed separately. For now,
 `native_handle()` provides borrowed access for C interoperation. Drive the
 loop through the contextual C API, and stop and join any external loop thread
 before destroying the bus or replacing it by move assignment. Do not destroy
-the native context, replace the wrapper's application/die callbacks, or destroy
+the native context, replace the wrapper's application/die/transport callbacks, or destroy
 the bus from an Ivy callback. A rejected C destruction terminates the process
 to avoid freeing callback storage that C can still use. Moving or destroying
 the bus must not race with operations on that object.
@@ -291,10 +291,80 @@ The anchoring policy has its own status, `IVY_EUNANCHORED`: the required leading
 Syntax errors remain `IVY_EINVAL`. The C++ error message for `IVY_EUNANCHORED` is
 "regexp must start with '^' and be anchored".
 
-Run `./tests/cpp/run.sh` for the wrapper tests, including a temporary
-installation and consumers linked against the static and shared libraries.
-`examples/cpp/lifecycle.cpp` demonstrates the available wrapper API and exits
-when another Ivy application sends a die request.
+### Sending messages
+
+After `start()` succeeds, `send()` accepts either raw text or a compile-time
+checked `std::format` string followed by its arguments:
+
+```cpp
+auto plain = bus.send("100% ready, {} stays literal");
+auto formatted = bus.send("TRACK {} {:.2f}", 42, 1.25);
+// Both return std::expected<std::size_t, std::error_code>.
+if (!formatted)
+    std::cerr << formatted.error().message() << '\n';
+
+auto direct = bus.send(peer, 7, "reload");
+auto direct_formatted = bus.send(peer, 7, "TRACK {}", 42);
+// Direct sends return std::expected<void, std::error_code>.
+```
+
+The raw overload accepts `std::string_view`, including views that are not
+NUL-terminated. It preserves `%` and braces. Only overloads with formatting
+arguments interpret braces. Input views are consumed during the call. Messages
+containing NUL, newline or Ivy argument separators return `IVY_EINVAL`;
+UTF-8 text is accepted. A direct peer must belong to this bus and remain valid
+according to Ivy's borrowed-peer rules. Sends before start or on a moved-from
+bus return `IVY_ESTATE`; sends after stop return `IVY_ESTOPPED`.
+
+The successful count is the number of frames accepted locally, with zero a
+valid success. Any failure produces an error, even if other frames succeeded.
+Use `send_report()` **instead of** `send()` when the partial counts matter;
+this method sends the message once and returns `ivy::SendReport`:
+
+```cpp
+auto report = bus.send_report("TRACK {} {:.2f}", 42, 1.25);
+if (report.error)
+    std::cerr << report.error.message() << ": " << report.accepted
+              << " accepted, " << report.failed << " failed\n";
+```
+
+It supports the same raw and formatted overloads. The report holds `matched`,
+`accepted`, `failed`, the Ivy `error`, and an optional OS `system_error` as
+`std::error_code`. It retains the C API's partial-send and local-acceptance
+semantics. Allocation failures map to `IVY_ENOMEM`; `std::format_error` and
+unrepresentable lengths map to `IVY_EINVAL`. Other exceptions thrown by custom
+formatters propagate to the caller. The raw overloads are `noexcept`.
+
+An optional `std::move_only_function` receives transport failures:
+
+```cpp
+auto configured = bus.set_transport_error_callback(
+    [name = std::string("sender")]
+    (IvyClientPtr peer, std::error_code error, int system_error) {
+        std::cerr << name << ": " << error.message()
+                  << " (OS " << system_error << ")\n";
+    });
+```
+
+The setter returns `std::expected<void, std::error_code>`; an empty callable
+disables notification. It may be called before start or from the callback.
+Replacing it keeps an invocation already in progress and its captures alive
+until it returns. Callback exceptions use the same stop-and-rethrow policy as
+the other wrapper callbacks. The C transport callback's threading and
+connection-level semantics apply.
+
+`examples/cpp/lifecycle.cpp` demonstrates subscriptions and sending. It runs until
+another Ivy application sends a die request. Run the wrapper tests with:
+
+```sh
+./tests/cpp/run.sh
+```
+
+The tests exercise both static linking and shared linking from a temporary
+installation, including the shared library names and dependency on `libivy.so.3`.
+They also check compilation rejection, PCRE2 anchoring, format arguments that
+introduce alternatives, Ivy interval expansion, unanchored message delivery,
+raw/formatted/direct sends, reports, and transport callback ownership/errors.
 
 ## Installation
 

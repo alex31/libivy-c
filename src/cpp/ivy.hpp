@@ -82,6 +82,17 @@ struct RuntimeRegexp { std::string_view text; };
 
 class Bus;
 
+/** Detailed outcome of one send. Accepted includes frames queued locally.
+ * An error can accompany nonzero accepted; no delivery acknowledgement is implied.
+ */
+struct SendReport {
+    std::size_t matched = 0;
+    std::size_t accepted = 0;
+    std::size_t failed = 0;
+    std::error_code error;
+    std::error_code system_error;
+};
+
 /**
  * A scoped regexp subscription. Destruction unsubscribes.
  * A subscription can outlive its Bus; it then becomes inactive. Moving the
@@ -199,6 +210,8 @@ public:
     using DirectCallback = std::move_only_function<void(IvyClientPtr, int, std::string_view)>;
     using BindResult = std::expected<Subscription, std::error_code>;
     using DirectBindResult = std::expected<DirectSubscription, std::error_code>;
+    using SendResult = std::expected<std::size_t, std::error_code>;
+    using TransportCallback = std::move_only_function<void(IvyClientPtr, std::error_code, int)>;
 
     /**
      * Strings are copied during construction; the views need not outlive it.
@@ -232,6 +245,66 @@ public:
     [[nodiscard]] std::expected<void, std::error_code> start(std::string_view bus) noexcept;
     /// Request a stop. Idempotent, including on a moved-from object.
     void stop();
+
+    /** Send text unchanged. Requires a running context; zero matches is success.
+     * NUL, newline and the Ivy argument separators are rejected with IVY_EINVAL.
+     * On partial failure, send returns an error; use send_report when counts matter.
+     */
+    [[nodiscard]] SendResult send(std::string_view message) noexcept;
+    /// Sends once and returns all counts and errors, including partial failures.
+    [[nodiscard]] SendReport send_report(std::string_view message) noexcept;
+    /// Send to one connected peer owned by this Bus.
+    [[nodiscard]] std::expected<void, std::error_code>
+    send(IvyClientPtr peer, int id, std::string_view message) noexcept;
+
+    template<class... Args> requires (sizeof...(Args) > 0)
+    [[nodiscard]] SendResult send(std::format_string<Args...> format, Args&&... args) {
+        try {
+            return send(std::format(format, std::forward<Args>(args)...));
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(make_error_code(IVY_ENOMEM));
+        } catch (const std::format_error&) {
+            return std::unexpected(make_error_code(IVY_EINVAL));
+        } catch (const std::length_error&) {
+            return std::unexpected(make_error_code(IVY_EINVAL));
+        }
+    }
+
+    template<class... Args> requires (sizeof...(Args) > 0)
+    [[nodiscard]] SendReport send_report(std::format_string<Args...> format, Args&&... args) {
+        SendReport report;
+        try {
+            return send_report(std::format(format, std::forward<Args>(args)...));
+        } catch (const std::bad_alloc&) {
+            report.error = make_error_code(IVY_ENOMEM);
+        } catch (const std::format_error&) {
+            report.error = make_error_code(IVY_EINVAL);
+        } catch (const std::length_error&) {
+            report.error = make_error_code(IVY_EINVAL);
+        }
+        return report;
+    }
+
+    template<class... Args> requires (sizeof...(Args) > 0)
+    [[nodiscard]] std::expected<void, std::error_code>
+    send(IvyClientPtr peer, int id, std::format_string<Args...> format, Args&&... args) {
+        try {
+            return send(peer, id, std::format(format, std::forward<Args>(args)...));
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(make_error_code(IVY_ENOMEM));
+        } catch (const std::format_error&) {
+            return std::unexpected(make_error_code(IVY_EINVAL));
+        } catch (const std::length_error&) {
+            return std::unexpected(make_error_code(IVY_EINVAL));
+        }
+    }
+
+    /** Optional loop-thread error notification: peer, Ivy error, errno/WSA code.
+     * A peer may be null during setup. An empty callable disables notification.
+     * Replacing a callback lets an invocation already in progress finish safely.
+     */
+    [[nodiscard]] std::expected<void, std::error_code>
+    set_transport_error_callback(TransportCallback callback) noexcept;
 
     /**
      * Subscribe at the start of a message. A constant regexp must start with ^.

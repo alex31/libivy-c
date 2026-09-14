@@ -55,6 +55,18 @@ bool stopped(IvyContext* context) noexcept {
     return state == IVY_CTX_STOPPING || state == IVY_CTX_STOPPED || state == IVY_CTX_DESTROYED;
 }
 
+IvyStatus send_state(IvyContext* context) noexcept {
+    if (!context) return IVY_ESTATE;
+    const auto state = IvyContextGetState(context);
+    if (state == IVY_CTX_STOPPING || state == IVY_CTX_STOPPED) return IVY_ESTOPPED;
+    return state == IVY_CTX_RUNNING ? IVY_OK : IVY_ESTATE;
+}
+
+bool valid_message(std::string_view message) noexcept {
+    return message.size() < static_cast<std::size_t>(INT_MAX) &&
+        message.find_first_of(std::string_view("\0\n\002\003", 4)) == std::string_view::npos;
+}
+
 } // namespace
 
 std::error_code make_error_code(IvyStatus status) noexcept {
@@ -86,6 +98,7 @@ struct Bus::Impl {
     IvyContext* context = nullptr;
     std::mutex exception_mutex;
     std::exception_ptr callback_exception;
+    std::shared_ptr<TransportCallback> transport_callback;
     std::mutex subscriptions_mutex;
     // C may have copied a user_data pointer before unbind/replacement. These
     // small relay objects stay alive until the C context has been destroyed.
@@ -134,6 +147,20 @@ struct Bus::Impl {
         }
     }
 
+    static void on_transport(IvyClientPtr app, void* data, IvyStatus status, int system_error) noexcept {
+        auto& self = *static_cast<Impl*>(data);
+        std::shared_ptr<TransportCallback> callback;
+        {
+            std::lock_guard lock(self.exception_mutex);
+            callback = self.transport_callback;
+        }
+        if (!callback) return;
+        try {
+            (*callback)(app, make_error_code(status), system_error);
+        } catch (...) {
+            self.save_callback_exception();
+        }
+    }
 };
 
 void Subscription::State::on_message(IvyClientPtr app, void* data, int argc, char** argv) noexcept {
@@ -327,6 +354,8 @@ Bus::Bus(std::string_view application_name, std::optional<std::string_view> read
         impl_->die_callback ? Impl::on_die : nullptr, impl_.get());
     if (!impl_->context)
         throw std::system_error(make_error_code(IvyGetLastError()), "IvyContextCreate");
+    check_status(IvyContextSetTransportErrorCallback(impl_->context, Impl::on_transport, impl_.get()),
+                 "IvyContextSetTransportErrorCallback");
 }
 
 Bus::~Bus() = default;
@@ -357,6 +386,63 @@ std::expected<void, std::error_code> Bus::start(std::string_view bus) noexcept {
 void Bus::stop() {
     if (impl_)
         check_status(IvyContextStop(impl_->context), "IvyContextStop");
+}
+
+SendReport Bus::send_report(std::string_view message) noexcept {
+    SendReport result;
+    const auto owner = impl_;
+    const auto state = send_state(owner ? owner->context : nullptr);
+    if (state != IVY_OK || !valid_message(message)) {
+        result.error = make_error_code(state != IVY_OK ? state : IVY_EINVAL);
+        return result;
+    }
+    IvySendReport report{};
+    const int status = IvyContextSendMsgEx(owner->context, &report, "%.*s",
+        static_cast<int>(message.size()), message.empty() ? "" : message.data());
+    result.matched = report.matched;
+    result.accepted = report.accepted;
+    result.failed = report.failed;
+    result.error = make_error_code(static_cast<IvyStatus>(status));
+    if (report.system_error)
+        result.system_error = {report.system_error, std::system_category()};
+    return result;
+}
+
+Bus::SendResult Bus::send(std::string_view message) noexcept {
+    const auto result = send_report(message);
+    if (result.error) return std::unexpected(result.error);
+    return result.accepted;
+}
+
+std::expected<void, std::error_code> Bus::send(IvyClientPtr peer, int id, std::string_view message) noexcept {
+    const auto owner = impl_;
+    const auto state = send_state(owner ? owner->context : nullptr);
+    if (state != IVY_OK) return status_result(state);
+    if (!peer || !valid_message(message)) return status_result(IVY_EINVAL);
+    try {
+        std::string text(message);
+        return status_result(IvyContextSendDirectMsg(owner->context, peer, id, text.data()));
+    } catch (const std::bad_alloc&) {
+        return status_result(IVY_ENOMEM);
+    } catch (const std::length_error&) {
+        return status_result(IVY_EINVAL);
+    }
+}
+
+std::expected<void, std::error_code> Bus::set_transport_error_callback(TransportCallback callback) noexcept {
+    const auto owner = impl_;
+    if (!owner) return status_result(IVY_ESTATE);
+    if (stopped(owner->context)) return status_result(IVY_ESTOPPED);
+    try {
+        auto replacement = callback ? std::make_shared<TransportCallback>(std::move(callback)) : nullptr;
+        {
+            std::lock_guard lock(owner->exception_mutex);
+            owner->transport_callback.swap(replacement);
+        }
+        return {};
+    } catch (const std::bad_alloc&) {
+        return status_result(IVY_ENOMEM);
+    }
 }
 
 Bus::BindResult Bus::bind(MessageCallback callback, AnchoredRegexp regexp) noexcept {

@@ -50,11 +50,24 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+        if (auto configured = bus.set_transport_error_callback(
+                [](IvyClientPtr, std::error_code error, int system_error) {
+                    std::cerr << "Transport: " << error.message()
+                              << " (OS " << system_error << ")\n";
+                }); !configured) {
+            std::cerr << configured.error().message() << '\n';
+            return 1;
+        }
+
         const auto started = argc > 1 ? bus.start(argv[1]) : bus.start();
         if (!started) {
             std::cerr << "Unable to start Ivy: " << started.error().message() << '\n';
             return 1;
         }
+
+        // Zero accepted frames is normal if no matching peers are known yet.
+        if (auto sent = bus.send("HELLO {}", "from C++23"); !sent)
+            std::cerr << "Unable to send: " << sent.error().message() << '\n';
 
         // The loop API will be designed separately. A received die request
         // stops this C loop; the bus is destroyed after the loop returns.

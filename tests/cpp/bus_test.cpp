@@ -31,6 +31,8 @@ struct IvyContext {
     std::vector<MsgRcvPtr> bindings{};
     MsgDirectCallback direct = nullptr;
     void* direct_data = nullptr;
+    IvyTransportErrorCallback transport = nullptr;
+    void* transport_data = nullptr;
 };
 
 struct _clnt_lst_dict {};
@@ -52,6 +54,11 @@ static std::move_only_function<void()> during_change;
 static int unbind_count = 0;
 static int live_contexts = 0;
 static int destroyed_contexts = 0;
+static IvyStatus send_error = IVY_OK;
+static IvySendReport next_send_report{};
+static std::string sent_message;
+static IvyClientPtr sent_peer;
+static int sent_id;
 
 extern "C" {
 IvyContext* IvyContextCreate(const char* name, const char* ready,
@@ -96,11 +103,30 @@ int IvyContextDestroy(IvyContext* ctx) {
 IvyContextState IvyContextGetState(const IvyContext* ctx) { return ctx->state; }
 IvyStatus IvyGetLastError() { return last_error; }
 
+int IvyContextSetTransportErrorCallback(IvyContext* ctx, IvyTransportErrorCallback callback, void* data) {
+    ctx->transport = callback;
+    ctx->transport_data = data;
+    return IVY_OK;
+}
 
+int IvyContextSendMsgEx(IvyContext*, IvySendReport* report, const char* format, ...) {
+    assert(std::strcmp(format, "%.*s") == 0);
+    va_list args;
+    va_start(args, format);
+    const int length = va_arg(args, int);
+    const char* text = va_arg(args, const char*);
+    sent_message.assign(text, static_cast<std::size_t>(length));
+    va_end(args);
+    *report = next_send_report;
+    return send_error;
+}
 
-
-
-
+int IvyContextSendDirectMsg(IvyContext*, IvyClientPtr peer, int id, char* text) {
+    sent_peer = peer;
+    sent_id = id;
+    sent_message = text;
+    return send_error;
+}
 
 int IvyValidateAnchoredRegexp(const char* regexp) {
     ++validations;
@@ -661,7 +687,70 @@ void anchoring_boundary() {
 template<class T>
 concept HasChange = requires(T& subscription) { subscription.change("^regexp"); };
 
+void sending_and_transport_callback() {
+    ivy::Bus bus("send");
+    _clnt_lst_dict peer;
+    auto before_start = bus.send("text");
+    assert(!before_start && before_start.error() == ivy::make_error_code(IVY_ESTATE));
+    assert(bus.start());
+    next_send_report = {3, 3, 0, 0};
+    auto sent = bus.send("100% é UTF-8 {} unchanged");
+    assert(sent && *sent == 3 && sent_message == "100% é UTF-8 {} unchanged");
+    assert(bus.send("TRACK {} {:.2f}", 42, 1.25));
+    assert(sent_message == "TRACK 42 1.25");
+    const std::string with_suffix = "message-suffix";
+    assert(bus.send(std::string_view(with_suffix).substr(0, 7)));
+    assert(sent_message == "message");
+    assert(bus.send(&peer, 7, "DIRECT {}", 42));
+    assert(sent_peer == &peer && sent_id == 7 && sent_message == "DIRECT 42");
+    for (char invalid : {'\0', '\n', '\002', '\003'}) {
+        std::string message = "text";
+        message.push_back(invalid);
+        assert(!bus.send(message));
+        assert(!bus.send(&peer, 7, message));
+    }
+    assert(!bus.send("{:{}d}", 1, -1));
+    const auto invalid_format = bus.send_report("{:{}d}", 1, -1);
+    assert(invalid_format.error == ivy::make_error_code(IVY_EINVAL));
+    assert(!invalid_format.matched && !invalid_format.accepted && !invalid_format.failed);
+    assert(!bus.send(nullptr, 7, "direct"));
+    next_send_report = {};
+    sent = bus.send("");
+    assert(sent && *sent == 0);
 
+    send_error = IVY_EIO;
+    next_send_report = {3, 2, 1, EPIPE};
+    assert(!bus.send("partial"));
+    const auto report = bus.send_report("partial {}", 42);
+    assert(sent_message == "partial 42");
+    assert(report.matched == 3 && report.accepted == 2 && report.failed == 1);
+    assert(report.error == ivy::make_error_code(IVY_EIO));
+    assert(report.system_error.value() == EPIPE);
+    send_error = IVY_EFIFOFULL;
+    auto direct_error = bus.send(&peer, 7, "full");
+    assert(!direct_error && direct_error.error() == ivy::make_error_code(IVY_EFIFOFULL));
+    send_error = IVY_OK;
+    next_send_report = {};
+
+    int notifications = 0;
+    assert(bus.set_transport_error_callback(
+        [value = std::make_unique<int>(42), &notifications, &bus]
+        (IvyClientPtr, std::error_code error, int system_error) {
+            assert(*value == 42 && error == ivy::make_error_code(IVY_EIO) && system_error == EPIPE);
+            assert(bus.set_transport_error_callback({}));
+            ++notifications;
+        }));
+    auto* context = bus.native_handle();
+    context->transport(&peer, context->transport_data, IVY_EIO, EPIPE);
+    context->transport(&peer, context->transport_data, IVY_EIO, EPIPE);
+    assert(notifications == 1);
+    assert(bus.set_transport_error_callback([](IvyClientPtr, std::error_code, int) { throw 99; }));
+    context->transport(&peer, context->transport_data, IVY_EIO, EPIPE);
+    assert(bus.state() == IVY_CTX_STOPPED);
+    try { bus.rethrow_callback_exception(); assert(false); } catch (int value) { assert(value == 99); }
+    assert(!bus.send("stopped"));
+    assert(!bus.set_transport_error_callback({}));
+}
 
 int main() {
     static_assert(HasChange<ivy::Subscription>);
@@ -707,6 +796,7 @@ int main() {
     change_and_unbind();
     direct_token_lifetimes();
     anchoring_boundary();
+    sending_and_transport_callback();
     assert(live_contexts == 0);
     std::cout << "C++ bus boundary tests passed\n";
 }

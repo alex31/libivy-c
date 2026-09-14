@@ -222,41 +222,44 @@ int main(int argc, char** argv) {
             }
 
         assert(message_a.is_bound() && message_b.is_bound());
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "prefix NEEDLE 42") == 1);
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "RANGE 2") == 1);
+        const auto no_match = peer_a.send_report("NO_MATCH");
+        assert(!no_match.error && no_match.matched == 0 && no_match.accepted == 0);
+        assert(!peer_a.send(receiver_b, 99, "wrong context"));
+        assert(peer_a.send("prefix NEEDLE 42").value() == 1);
+        assert(peer_a.send("RANGE 2").value() == 1);
         wait_for([&] { return anywhere_count == 1 && interval_count == 1; }, "anchoring modes timed out");
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "CPP 42 100%") == 1);
-        assert(IvyContextSendMsg(peer_b.native_handle(), "CPP %d %d 100%%", 23, 17) == 1);
+        assert(peer_a.send("CPP 42 100%").value() == 1);
+        assert(peer_b.send("CPP {} {} 100%", 23, 17).value() == 1);
         wait_for([&] { return messages_a == 1 && messages_b == 1; }, "message callbacks timed out");
         require_start(message_a.change(R"(^UPDATED ([0-9]{2}) 100%$)"), "change regexp");
         wait_for([&] {
             return advertises(peer_a.native_handle(), receiver_a, R"(^UPDATED ([0-9]{2}) 100%$)") &&
                 !advertises(peer_a.native_handle(), receiver_a, R"(^CPP ([0-9]{2}) 100%$)");
         }, "changed regexp advertisement timed out");
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "CPP 42 100%") == 0);
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "UPDATED 42 100%") == 1);
+        assert(peer_a.send("CPP 42 100%").value() == 0);
+        assert(peer_a.send("UPDATED 42 100%").value() == 1);
         wait_for([&] { return messages_a == 2; }, "callback after change timed out");
         require_start(message_a.change(R"(^UPDATED {} ([0-9]{{2}}) 100%$)", 77), "formatted change");
         wait_for([&] {
             return advertises(peer_a.native_handle(), receiver_a, R"(^UPDATED 77 ([0-9]{2}) 100%$)");
         }, "formatted change advertisement timed out");
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "UPDATED 77 42 100%") == 1);
+        assert(peer_a.send("UPDATED 77 42 100%").value() == 1);
         wait_for([&] { return messages_a == 3; }, "callback after formatted change timed out");
         auto rejected = message_a.change("^UPDATED|UNANCHORED");
         assert(!rejected && rejected.error() == ivy::make_error_code(IVY_EUNANCHORED));
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "UPDATED 77 42 100%") == 1);
+        assert(peer_a.send("UPDATED 77 42 100%").value() == 1);
         wait_for([&] { return messages_a == 4; }, "failed validation changed the subscription");
         require_start(anywhere.change_unanchored(R"(UPDATED_NEEDLE ([0-9]{{2}}) {}$)", "tail"),
                       "unanchored formatted change");
         wait_for([&] {
             return advertises(peer_a.native_handle(), receiver_a, R"(UPDATED_NEEDLE ([0-9]{2}) tail$)");
         }, "unanchored change advertisement timed out");
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "prefix UPDATED_NEEDLE 42 tail") == 1);
+        assert(peer_a.send("prefix UPDATED_NEEDLE 42 tail").value() == 1);
         wait_for([&] { return anywhere_count == 2; }, "unanchored change callback timed out");
         char text_a[] = "direct-a";
         char text_b[] = "direct-b";
-        assert(IvyContextSendDirectMsg(peer_a.native_handle(), receiver_a, 101, text_a) == IVY_OK);
-        assert(IvyContextSendDirectMsg(peer_b.native_handle(), receiver_b, 102, text_b) == IVY_OK);
+        assert(peer_a.send(receiver_a, 101, text_a).has_value());
+        assert(peer_b.send(receiver_b, 102, text_b).has_value());
         wait_for([&] { return direct_a == 1 && direct_b == 1; }, "direct callbacks timed out");
 
         std::atomic<int> replacement_count{0};
@@ -268,19 +271,19 @@ int main(int argc, char** argv) {
             }));
         assert(!direct_subscription_a.is_bound());
         assert(direct_subscription_a.unbind());
-        assert(IvyContextSendDirectMsg(peer_a.native_handle(), receiver_a, 103, text_a) == IVY_OK);
+        assert(peer_a.send(receiver_a, 103, text_a).has_value());
         wait_for([&] { return replacement_count == 1; }, "replacement direct callback timed out");
         assert(direct_a == 1);
 
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "ONCE") == 1);
+        assert(peer_a.send("ONCE").value() == 1);
         wait_for([&] { return once_count == 1; }, "self-unbind callback timed out");
         assert(!once);
         assert(message_a.unbind());
         wait_for([&] {
             return !advertises(peer_a.native_handle(), receiver_a, R"(^UPDATED 77 ([0-9]{2}) 100%$)");
         }, "unsubscribe advertisement timed out");
-        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "UPDATED 77 42 100%") == 0);
-        assert(IvyContextSendMsg(peer_b.native_handle(), "CPP %d %d 100%%", 23, 17) == 1);
+        assert(peer_a.send("UPDATED 77 42 100%").value() == 0);
+        assert(peer_b.send("CPP {} {} 100%", 23, 17).value() == 1);
         wait_for([&] { return messages_b == 2; }, "other bus stopped receiving after unbind");
         assert(messages_a == 4 && unexpected == 0);
 

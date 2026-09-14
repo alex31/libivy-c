@@ -9,6 +9,12 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     auto message = [](IvyClientPtr, std::span<const std::string_view>) {};
     int id = 42;
 #if IVY_COMPILE_CASE == 0
+    (void)bus.send(dynamic);
+    (void)bus.send("100% {} unchanged");
+    (void)bus.send("TRACK {} {:02d}", dynamic, id);
+    (void)bus.send_report("TRACK {}", id);
+    (void)bus.send(IvyClientPtr{}, id, dynamic);
+    (void)bus.send(IvyClientPtr{}, id, "DIRECT {}", dynamic);
     (void)bus.bind(message, R"(^TRACK ([0-9]{2}) 100%$)");
     (void)bus.bind(message, R"(^TRACK {} ([0-9]{{2}})$)", id);
     constexpr std::string_view constant = "^CONSTANT (.*)";
@@ -40,5 +46,11 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.bind(message, "^TRACK\0hidden");
 #elif IVY_COMPILE_CASE == 9
     (void)subscription.change("^TRACK\0hidden");
+#elif IVY_COMPILE_CASE == 10
+    (void)bus.send("TRACK {:d}", "wrong type");
+#elif IVY_COMPILE_CASE == 11
+    (void)bus.send(IvyClientPtr{}, id, "DIRECT {:d}", "wrong type");
+#elif IVY_COMPILE_CASE == 12
+    (void)bus.send_report("TRACK {:d}", "wrong type");
 #endif
 }
