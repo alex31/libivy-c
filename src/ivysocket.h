@@ -61,7 +61,7 @@ typedef struct _socket_state SocketState;
 
 typedef enum {SendOk, SendStillCongestion, SendStateChangeToCongestion,
 	      SendStateChangeToDecongestion, SendStateFifoFull, SendError,
-	      SendParamError} SendState;
+	      SendParamError, SendNoMemory} SendState;
 
 /* General Init */
 extern SocketState *SocketStateCreate(IvyChannelState *channels, const void *owner_data);
@@ -72,6 +72,8 @@ extern void SocketInit();
 
 /* Forward def */
 typedef struct _client *Client;
+typedef void (*SocketTransportError)(Client client, void *data, SendState state, int system_error);
+extern void SocketStateSetTransportErrorCallback(SocketState *state, SocketTransportError callback, void *data);
 typedef void (*SocketInterpretation) (Client client, const void *data, char *ligne);
 
 /* Server Part */
@@ -108,6 +110,9 @@ extern void SocketClose( Client client );
 extern SendState SocketSend( Client client, const char *fmt, ... );
 extern SendState SocketSendRaw( const Client client, const char *buffer, const int len );
 extern SendState SocketSendRawWithId( const Client client, const char *id, const char *buffer, const int len );
+extern SendState SocketSendRawEx(Client client, const char *buffer, int len, int *system_error);
+extern SendState SocketSendRawWithIdEx(Client client, const char *id, const char *buffer,
+	int len, int *system_error);
 extern const char *SocketGetPeerHost( Client client );
 extern void SocketSetData( Client client, const void *data );
 extern const void *SocketGetData( Client client );

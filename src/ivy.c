@@ -964,6 +964,10 @@ static IvyStatus IvyStatusFromSendState(SendState state)
     return IVY_EIO;
   case SendParamError:
     return IVY_EINVAL;
+  case SendNoMemory:
+    return IVY_ENOMEM;
+  case SendStateFifoFull:
+    return IVY_EFIFOFULL;
   default:
     return IVY_OK;
   }

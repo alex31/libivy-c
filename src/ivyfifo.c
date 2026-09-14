@@ -9,6 +9,8 @@
 #endif
 #include <stdio.h> // DEBUG, pour printf
 #include "ivyfifo.h"
+#include "ivy.h"
+#include <limits.h>
 #include "ivysocket.h"
 #include "param.h"
 
@@ -17,7 +19,7 @@
 #define 	MIN(a, b)   ((a) > (b) ? (b) : (a))
 
 
-static void IvyFifoRealloc(IvyFifoBuffer *f, unsigned int neededSize);
+static int IvyFifoRealloc(IvyFifoBuffer *f, unsigned int neededSize);
 
 static unsigned int IvyFifoGenericRead(IvyFifoBuffer *f, const unsigned int buf_size, 
 				       void (*func)(void*, void*, int), void* dest);
@@ -91,49 +93,69 @@ unsigned int IvyFifoRead (IvyFifoBuffer *f, char *buf, unsigned int buf_size)
   return IvyFifoGenericRead(f, buf_size, NULL, buf);
 }
 
-void IvyFifoRealloc (IvyFifoBuffer *f, unsigned int new_size) 
+static int IvyFifoRealloc(IvyFifoBuffer *f, unsigned int needed)
 {
-  unsigned int old_size= IvyFifoSize (f);
-  unsigned int alignedNewSize = ((new_size/IVY_FIFO_ALLOC_SIZE) +1) * IVY_FIFO_ALLOC_SIZE;
-  if (alignedNewSize > IVY_FIFO_MAX_ALLOC_SIZE) {
+  unsigned int capacity;
+  unsigned int length = IvyFifoLength(f);
+  unsigned int first;
+  char *buffer;
+
+  /* One byte remains unused to distinguish a full ring from an empty one. */
+  if (needed >= IVY_FIFO_MAX_ALLOC_SIZE) {
     f->full = 1;
-  } else if (old_size < alignedNewSize) {
-    int len= IvyFifoLength(f);
-    IvyFifoBuffer f2;
-    
-    f2.wptr = f2.rptr =
-      f2.buffer = (char *) malloc(alignedNewSize);
-    if (f2.buffer == NULL) {
-      f->full = 1;
-      return;
-    }
-    f2.end = f2.buffer + alignedNewSize;
-    f2.full = 0;
-    
-    IvyFifoRead(f, f2.buffer, len);
-    f2.wptr += len;
-    free(f->buffer);
-    *f= f2;
+    return IVY_EFIFOFULL;
   }
+  capacity = ((needed / IVY_FIFO_ALLOC_SIZE) + 1) * IVY_FIFO_ALLOC_SIZE;
+  if (capacity <= IvyFifoSize(f))
+    return IVY_OK;
+  buffer = (char *)malloc(capacity);
+  if (!buffer) {
+    f->full = 1;
+    return IVY_ENOMEM;
+  }
+  first = MIN(length, (unsigned int)(f->end - f->rptr));
+  memcpy(buffer, f->rptr, first);
+  memcpy(buffer + first, f->buffer, length - first);
+  free(f->buffer);
+  f->buffer = f->rptr = buffer;
+  f->wptr = buffer + length;
+  f->end = buffer + capacity;
+  f->full = 0;
+  return IVY_OK;
 }
 
-void IvyFifoWrite (IvyFifoBuffer *f, const char *buf, unsigned int size)
+int IvyFifoWriteChecked(IvyFifoBuffer *f, const char *buf, unsigned int size)
 {
-  if (size >= IvyFifoAvail (f)) {
-    IvyFifoRealloc(f, size + IvyFifoLength (f));
+  unsigned int length;
+  int status;
+  if (!f || !f->buffer || (!buf && size))
+    return IVY_EINVAL;
+  length = IvyFifoLength(f);
+  if (size > UINT_MAX - length) {
+    f->full = 1;
+    return IVY_EFIFOFULL;
   }
-  if (f->full) {
-    return ;
+  if (size >= IvyFifoAvail(f)) {
+    status = IvyFifoRealloc(f, size + length);
+    if (status != IVY_OK)
+      return status;
   }
-  do {
-    unsigned int len = MIN((unsigned int)(f->end - f->wptr), size);
-    memcpy(f->wptr, buf, len);
-    f->wptr += len;
-    if (f->wptr >= f->end)
+  while (size) {
+    unsigned int n = MIN((unsigned int)(f->end - f->wptr), size);
+    memcpy(f->wptr, buf, n);
+    f->wptr += n;
+    if (f->wptr == f->end)
       f->wptr = f->buffer;
-    buf += len;
-    size -= len;
-  } while (size > 0);
+    buf += n;
+    size -= n;
+  }
+  f->full = 0;
+  return IVY_OK;
+}
+
+void IvyFifoWrite(IvyFifoBuffer *f, const char *buf, unsigned int size)
+{
+  (void)IvyFifoWriteChecked(f, buf, size);
 }
 
 
@@ -157,41 +179,48 @@ unsigned int IvyFifoGenericRead (IvyFifoBuffer *f, const unsigned int buf_size, 
 }
 
 
-unsigned int IvyFifoSendSocket (IvyFifoBuffer *f, const int fd)
+int IvyFifoFlush(IvyFifoBuffer *f, int fd, unsigned int *remaining, int *system_error)
 {
-  unsigned int maxLen;
+  int status = IVY_OK;
+  *system_error = 0;
+  while (IvyFifoLength(f)) {
+    unsigned int count = MIN((unsigned int)(f->end - f->rptr), IvyFifoLength(f));
 #ifdef WIN32
-  int realLen;
-#else
-  ssize_t realLen;
-#endif
-  
-  do {
-    maxLen = MIN ((unsigned int)(f->end - f->rptr), IvyFifoLength(f));
-    if (maxLen == 0)
-      break;
-#ifdef WIN32
-    realLen = send (fd, f->rptr, maxLen, IVY_MSG_NOSIGNAL);
-    if (realLen == SOCKET_ERROR)
-      break;
-#else
-	realLen = send (fd, f->rptr, maxLen, MSG_DONTWAIT | IVY_MSG_NOSIGNAL);
-    if (realLen < 0) {
-      if (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR)
+    int sent = send(fd, f->rptr, count, IVY_MSG_NOSIGNAL);
+    if (sent == SOCKET_ERROR) {
+      int error = WSAGetLastError();
+      if (error == WSAEWOULDBLOCK || error == WSAEINTR)
         break;
-      return IvyFifoLength(f);
-    }
+#else
+    ssize_t sent = send(fd, f->rptr, count, MSG_DONTWAIT | IVY_MSG_NOSIGNAL);
+    if (sent < 0) {
+      int error = errno;
+      if (error == EWOULDBLOCK || error == EAGAIN || error == EINTR)
+        break;
 #endif
-    if (realLen == 0)
+      *system_error = error;
+      status = IVY_EIO;
       break;
-    IvyFifoDrain(f, (int)realLen);
-    //    printf ("DBG> maxLen=%d realLen=%d IvyFifoLength=%d\n",
-    //    maxLen, realLen, IvyFifoLength(f));
-  } while (IvyFifoLength(f) && (maxLen == (unsigned int)realLen));
-
-  return (IvyFifoLength(f));
+    }
+    if (sent == 0) {
+      status = IVY_EIO;
+      break;
+    }
+    IvyFifoDrain(f, (int)sent);
+    if ((unsigned int)sent < count)
+      break;
+  }
+  *remaining = IvyFifoLength(f);
+  return status;
 }
 
+unsigned int IvyFifoSendSocket(IvyFifoBuffer *f, const int fd)
+{
+  unsigned int remaining;
+  int system_error;
+  (void)IvyFifoFlush(f, fd, &remaining, &system_error);
+  return remaining;
+}
 
 
 void IvyFifoDrain (IvyFifoBuffer *f, int size)

@@ -160,7 +160,8 @@ typedef enum {
 	IVY_EINVAL = -3, /**< Invalid argument or invalid handle for this context. */
 	IVY_ENOMEM = -4, /**< Allocation failed or caller buffer was too small. */
 	IVY_EIO = -5,    /**< Socket or transport I/O failure. */
-	IVY_EUNANCHORED = -6 /**< Regexp does not satisfy the required start anchoring. */
+	IVY_EUNANCHORED = -6, /**< Regexp does not satisfy the required start anchoring. */
+	IVY_EFIFOFULL = -7 /**< A complete outgoing frame could not fit in the FIFO. */
 } IvyStatus;
 
 /**

@@ -52,6 +52,7 @@ struct _channel {
   IVY_HANDLE fd;
   void *data;
   int tobedeleted;
+  int writable_requested;
   ChannelHandleDelete handle_delete;
   ChannelHandleRead handle_read;
   ChannelHandleWrite handle_write;
@@ -655,79 +656,39 @@ Channel IvyChannelAdd (IVY_HANDLE fd, void *data,
 			  handle_delete, handle_read, handle_write);
 }
 
-static void IvyChannelAddWritableEventDirect(IvyChannelState *state, Channel channel)
+static void IvyChannelSetWritable(IvyChannelState *state, Channel channel, int enabled)
 {
-  state = IvyChannelNormalizeState(state ? state : (channel ? channel->owner : NULL));
-  if (!channel)
-    return;
-  if (!IvyChannelIsValidSelectFd(channel->fd))
-    return;
-
-  if (channel->fd >= state->highestFd)
-    state->highestFd = channel->fd+1 ;
-
-  FD_SET (channel->fd, &state->wrdy_fds);
+  if (!channel) return;
+  state = IvyChannelNormalizeState(state ? state : channel->owner);
+  if (IvyControlInit(state) != 0) return;
+  IvyMutexLock(&state->control_mutex);
+  channel->writable_requested = enabled;
+  IvyMutexUnlock(&state->control_mutex);
+  IvyChannelWakeFor(state);
 }
 
-static void IvyChannelClearWritableEventDirect(IvyChannelState *state, Channel channel)
+/* Only the loop mutates fd_sets. No queued callback retains a channel pointer
+ * after deletion, and requesting writable interest cannot fail allocation. */
+static void IvyChannelApplyWritable(IvyChannelState *state)
 {
-  state = IvyChannelNormalizeState(state ? state : (channel ? channel->owner : NULL));
-  if (!channel)
-    return;
-  FD_CLR (channel->fd, &state->wrdy_fds);
-}
-
-static void IvyChannelAddWritableEventControl(void *data)
-{
-  Channel channel = (Channel)data;
-  IvyChannelAddWritableEventDirect(channel ? channel->owner : NULL, channel);
-}
-
-static void IvyChannelClearWritableEventControl(void *data)
-{
-  Channel channel = (Channel)data;
-  IvyChannelClearWritableEventDirect(channel ? channel->owner : NULL, channel);
+  Channel channel;
+  IvyMutexLock(&state->control_mutex);
+  FD_ZERO(&state->wrdy_fds);
+  IVY_LIST_EACH(state->channels_list, channel) {
+    if (!channel->tobedeleted && channel->writable_requested)
+      FD_SET(channel->fd, &state->wrdy_fds);
+  }
+  IvyMutexUnlock(&state->control_mutex);
 }
 
 void IvyChannelAddWritableEventFor(IvyChannelState *state, Channel channel)
-{
-  state = IvyChannelNormalizeState(state ? state : (channel ? channel->owner : NULL));
-  if (!channel)
-    return;
-
-  if (IvyChannelLoopIsActiveFor(state) && !IvyChannelIsLoopThreadFor(state)) {
-    if (IvyChannelPostControlFor(state, IvyChannelAddWritableEventControl, channel) == 0)
-      return;
-  }
-
-  IvyChannelAddWritableEventDirect(state, channel);
-  IvyChannelWakeFor(state);
-}
-
+{ IvyChannelSetWritable(state, channel, 1); }
 void IvyChannelAddWritableEvent(Channel channel)
-{
-  IvyChannelAddWritableEventFor(channel ? channel->owner : IvyChannelGetDefaultState(), channel);
-}
-
+{ IvyChannelSetWritable(NULL, channel, 1); }
 void IvyChannelClearWritableEventFor(IvyChannelState *state, Channel channel)
-{
-  state = IvyChannelNormalizeState(state ? state : (channel ? channel->owner : NULL));
-  if (!channel)
-    return;
-
-  if (IvyChannelLoopIsActiveFor(state) && !IvyChannelIsLoopThreadFor(state)) {
-    if (IvyChannelPostControlFor(state, IvyChannelClearWritableEventControl, channel) == 0)
-      return;
-  }
-
-  IvyChannelClearWritableEventDirect(state, channel);
-  IvyChannelWakeFor(state);
-}
-
+{ IvyChannelSetWritable(state, channel, 0); }
 void IvyChannelClearWritableEvent(Channel channel)
-{
-  IvyChannelClearWritableEventFor(channel ? channel->owner : IvyChannelGetDefaultState(), channel);
-}
+{ IvyChannelSetWritable(NULL, channel, 0); }
 
 static void
 IvyChannelHandleWrite (IvyChannelState *state, fd_set *current)
@@ -843,6 +804,7 @@ void IvyMainLoopFor(IvyChannelState *state)
 
     if (state->BeforeSelect)
       (*state->BeforeSelect)(state->BeforeSelectData);
+    IvyChannelApplyWritable(state);
     rdset = state->open_fds;
     wrset = state->wrdy_fds;
     exset = state->open_fds;
@@ -893,6 +855,7 @@ void IvyIdleFor(IvyChannelState *state)
     return;
   ChannelDefferedDeleteFor(state);
   IvyChannelDrainControlFor(state);
+  IvyChannelApplyWritable(state);
   rdset = state->open_fds;
   wrset = state->wrdy_fds;
   exset = state->open_fds;

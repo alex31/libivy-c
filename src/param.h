@@ -39,7 +39,9 @@
   could be very slow, so if memory footprint is not a problem, 
   keep this limit high
  */
+#ifndef IVY_FIFO_ALLOC_SIZE
 #define IVY_FIFO_ALLOC_SIZE 262144
+#endif
 
 
 /*
@@ -48,7 +50,9 @@
   fifo buffer. This is the maximum size for the fifo, after that, messages
   will not be sent
  */
+#ifndef IVY_FIFO_MAX_ALLOC_SIZE
 #define IVY_FIFO_MAX_ALLOC_SIZE  (32 * 1048576)
+#endif
 
 /*
   maximum number of arguments which can be catched by a regexp

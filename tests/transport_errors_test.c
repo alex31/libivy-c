@@ -16,6 +16,44 @@
 #include <glib.h>
 #endif
 
+enum { NORMAL, BLOCKED, BROKEN, PARTIAL_NO_MEMORY };
+static atomic_int fault_fd = -1, fault_mode, arming, send_calls;
+static _Thread_local int fail_malloc;
+void *__real_malloc(size_t size);
+ssize_t __real_send(int fd, const void *buffer, size_t length, int flags);
+
+void *__wrap_malloc(size_t size)
+{
+    if (fail_malloc) { fail_malloc = 0; errno = ENOMEM; return NULL; }
+    return __real_malloc(size);
+}
+
+static int contains(const char *buffer, size_t length, const char *word)
+{
+    size_t n = strlen(word), i;
+    for (i = 0; i + n <= length; ++i)
+        if (memcmp(buffer + i, word, n) == 0) return 1;
+    return 0;
+}
+
+ssize_t __wrap_send(int fd, const void *buffer, size_t length, int flags)
+{
+    if (atomic_load(&arming) && contains(buffer, length, "ARM_TRANSPORT"))
+        atomic_store(&fault_fd, fd);
+    if (fd == atomic_load(&fault_fd)) {
+        int mode = atomic_load(&fault_mode);
+        if (mode != NORMAL) atomic_fetch_add(&send_calls, 1);
+        if (mode == BLOCKED) { errno = EAGAIN; return -1; }
+        if (mode == BROKEN) { errno = EPIPE; return -1; }
+        if (mode == PARTIAL_NO_MEMORY && length > 1) {
+            ssize_t result = __real_send(fd, buffer, 1, flags);
+            if (result == 1) fail_malloc = 1;
+            return result;
+        }
+    }
+    return __real_send(fd, buffer, length, flags);
+}
+
 static void pause_briefly(void)
 {
     struct timespec delay = {0, 1000000};
@@ -85,6 +123,9 @@ static void fixture_start(Fixture *f, int port)
     char bus[64];
     int i;
     memset(f, 0, sizeof(*f));
+    atomic_store(&fault_fd, -1);
+    atomic_store(&fault_mode, NORMAL);
+    atomic_store(&send_calls, 0);
     snprintf(bus, sizeof(bus), "127.255.255.255:%d", port);
     f->sender = create_context("transport-sender", on_application, f);
     f->first = create_context("transport-first", NULL, NULL);
@@ -110,10 +151,15 @@ static void fixture_start(Fixture *f, int port)
         pause_briefly();
     }
     assert(i < 5000);
+    atomic_store(&arming, 1);
+    assert(IvyContextSendDirectMsg(f->sender, f->first_peer, 99, "ARM_TRANSPORT") == IVY_OK);
+    atomic_store(&arming, 0);
+    assert(atomic_load(&fault_fd) >= 0);
 }
 
 static void fixture_stop(Fixture *f)
 {
+    atomic_store(&fault_mode, NORMAL);
     assert(IvyContextStop(f->sender) == IVY_OK);
     assert(IvyContextStop(f->first) == IVY_OK);
     assert(IvyContextStop(f->second) == IVY_OK);
@@ -125,17 +171,67 @@ static void fixture_stop(Fixture *f)
     assert(IvyContextDestroy(f->second) == IVY_OK);
 }
 
-
+static void fifo_test(void)
+{
+    IvyFifoBuffer *f = IvyFifoNew();
+    char data[600], out[32];
+    unsigned int remaining;
+    int error;
+    memset(data, 'x', sizeof(data));
+    assert(f);
+    assert(IvyFifoWriteChecked(f, "original", 8) == IVY_OK);
+    fail_malloc = 1;
+    assert(IvyFifoWriteChecked(f, data, 200) == IVY_ENOMEM);
+    assert(IvyFifoLength(f) == 8);
+    assert(IvyFifoWriteChecked(f, data, sizeof(data)) == IVY_EFIFOFULL);
+    assert(IvyFifoLength(f) == 8);
+    assert(IvyFifoFlush(f, -1, &remaining, &error) == IVY_EIO);
+    assert(remaining == 8 && error == EBADF);
+    assert(IvyFifoRead(f, out, sizeof(out)) == 8 && memcmp(out, "original", 8) == 0);
+    /* Grow a wrapped ring while preserving the old tail and head. */
+    assert(IvyFifoWriteChecked(f, data, 100) == IVY_OK);
+    assert(IvyFifoRead(f, data, 90) == 90);
+    assert(IvyFifoWriteChecked(f, data, 90) == IVY_OK);
+    fail_malloc = 1;
+    assert(IvyFifoWriteChecked(f, data, 200) == IVY_ENOMEM);
+    assert(IvyFifoLength(f) == 100);
+    assert(IvyFifoWriteChecked(f, data, 200) == IVY_OK);
+    assert(IvyFifoRead(f, data, sizeof(data)) == 300);
+    for (unsigned j = 0; j < 300; ++j) assert(data[j] == 'x');
+    IvyFifoDelete(f);
+}
 
 int main(int argc, char **argv)
 {
     Fixture f;
     int port = argc > 1 ? atoi(argv[1]) : 29400;
+    int status = IVY_OK;
+    fifo_test();
     fixture_start(&f, port);
-    assert(IvyContextSendMsg(f.sender, "TEST teardown") == 2);
-    wait_count(&f.first_messages, 1);
-    wait_count(&f.second_messages, 1);
+    atomic_store(&fault_mode, BROKEN);
+    assert(IvyContextSendDirectMsg(f.sender, f.first_peer, 7, "broken") == IVY_EIO);
+    wait_count(&f.disconnected, 1);
     fixture_stop(&f);
-    puts("Context teardown with remote regexp caches passed");
+    fixture_start(&f, port + 1);
+    atomic_store(&fault_mode, PARTIAL_NO_MEMORY);
+    assert(IvyContextSendDirectMsg(f.sender, f.first_peer, 7, "partial") == IVY_ENOMEM);
+    wait_count(&f.disconnected, 1);
+    fixture_stop(&f);
+    fixture_start(&f, port + 2);
+    atomic_store(&fault_mode, BLOCKED);
+    for (int i = 0; i < 100 && status == IVY_OK; ++i)
+        status = IvyContextSendDirectMsg(f.sender, f.first_peer, 7,
+            "full FIFO: the complete frame must fit or be rejected without changing queued bytes");
+    assert(status == IVY_EFIFOFULL);
+    atomic_store(&fault_mode, NORMAL);
+    for (int i = 0; i < 5000; ++i) {
+        status = IvyContextSendDirectMsg(f.sender, f.first_peer, 7, "recovered");
+        if (status == IVY_OK) break;
+        assert(status == IVY_EFIFOFULL);
+        pause_briefly();
+    }
+    assert(status == IVY_OK && !atomic_load(&f.disconnected));
+    fixture_stop(&f);
+    puts("Checked FIFO and partial-frame transport tests passed");
     return 0;
 }

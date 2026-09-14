@@ -30,6 +30,12 @@ int IvyFifoIsFull (const IvyFifoBuffer  *f) ;
 
 void IvyFifoWrite(IvyFifoBuffer *f, const char *buf, unsigned int size);
 
+/* Checked variants return IvyStatus values. Writes are all-or-nothing.
+ * A temporarily blocked flush is IVY_OK with a nonzero remaining length.
+ */
+int IvyFifoWriteChecked(IvyFifoBuffer *f, const char *buf, unsigned int size);
+int IvyFifoFlush(IvyFifoBuffer *f, int fd, unsigned int *remaining, int *system_error);
+
 
 
 #endif /* IVYFIFO_H */

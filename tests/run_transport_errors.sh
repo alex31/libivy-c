@@ -4,6 +4,9 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/ivy-transport-test.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 make -C "$repo_dir/src" static-libs shared-libs libivy_omp.a
+cc -O1 -g -Wall -Wextra -I"$repo_dir/src" \
+    -DIVY_FIFO_ALLOC_SIZE=128 -DIVY_FIFO_MAX_ALLOC_SIZE=512 \
+    -c "$repo_dir/src/ivyfifo.c" -o "$tmp_dir/fifo.o"
 variants='normal omp'
 if pkg-config --exists 'glib-2.0 >= 2.36'; then variants="$variants glib"; fi
 for variant in $variants; do
@@ -17,9 +20,9 @@ for variant in $variants; do
         *) library=libivy.a ;;
     esac
     cc -std=c11 -O1 -g -Wall -Wextra -UNDEBUG $extra_flags -I"$repo_dir/src" \
-        "$repo_dir/tests/transport_errors_test.c" \
+        "$repo_dir/tests/transport_errors_test.c" "$tmp_dir/fifo.o" \
         "$repo_dir/src/$library" $(pcre2-config --libs8) $extra_libs -pthread -fopenmp \
-        -o "$tmp_dir/transport_test"
+        -Wl,--wrap=send -Wl,--wrap=malloc -o "$tmp_dir/transport_test"
     echo "Transport variant: $variant"
     OMP_NUM_THREADS=2 timeout 30 "$tmp_dir/transport_test" "$((29000 + ($$ % 300)))"
 done

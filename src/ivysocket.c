@@ -53,6 +53,8 @@ typedef long ssize_t;
 #include "ivyloop.h"
 #include "ivybuffer.h"
 #include "ivyfifo.h"
+#include "ivy.h"
+#include <limits.h>
 #include "ivythread.h"
 #include "ivydebug.h"
 
@@ -106,6 +108,9 @@ struct _client {
         IvyFifoBuffer *ifb;             /* le buffer circulaire en cas de congestion */
 	IvyMutex send_lock;
 	int send_lock_initialized;
+	SendState failure;
+	int failure_system_error;
+	int failure_reported;
   	/* user data */
 	const void *data;
 	const void *owner_data;
@@ -118,15 +123,11 @@ struct _socket_state {
 	IvyChannelState *channels;
 	const void *owner_data;
 	int debug_send;
+	SocketTransportError transport_error;
+	void *transport_data;
 };
 
-static SocketState default_socket_state = {
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0
-};
+static SocketState default_socket_state = {0};
 
 #ifdef IVY_TESTING
 static int ivy_testing_socket_server_fail_step;
@@ -149,7 +150,9 @@ WSADATA	WsaData;
 #endif*/
 
 
-static SendState BufferizedSocketSendRaw (const Client client, const char *buffer, const int len );
+static SendState BufferizedSocketSendRaw(Client client, const char *buffer, int len, int *system_error);
+static int SocketDispatchFailure(Client client);
+static void SocketFailLocked(Client client, SendState failure, int system_error);
 
 static SocketState *SocketNormalizeState(SocketState *state)
 {
@@ -175,6 +178,40 @@ SocketState *SocketStateCreate(IvyChannelState *channels, const void *owner_data
 	return state;
 }
 
+void SocketStateSetTransportErrorCallback(SocketState *state, SocketTransportError callback, void *data)
+{
+  state = SocketNormalizeState(state);
+  state->transport_error = callback;
+  state->transport_data = data;
+}
+
+static void SocketFailLocked(Client client, SendState failure, int system_error)
+{
+  if (client->failure == SendOk) {
+    client->failure = failure;
+    client->failure_system_error = system_error;
+  }
+  /* Wake the loop through EOF/HUP without freeing a client used by senders. */
+  shutdown(client->fd, 2);
+}
+
+static int SocketDispatchFailure(Client client)
+{
+  SendState failure;
+  int system_error, notify = 0;
+  IvyMutexLock(&client->send_lock);
+  failure = client->failure;
+  system_error = client->failure_system_error;
+  if (failure != SendOk && !client->failure_reported) {
+    client->failure_reported = 1;
+    notify = 1;
+  }
+  IvyMutexUnlock(&client->send_lock);
+  if (notify && client->state->transport_error)
+    client->state->transport_error(client, client->state->transport_data, failure, system_error);
+  return failure != SendOk;
+}
+
 static void DeleteSocket(void *data);
 static void DeleteServerSocket(void *data);
 
@@ -195,6 +232,9 @@ static int InitClientSendLock(Client client)
 	if (IvyMutexInit(&client->send_lock) != 0)
 		return 0;
 	client->send_lock_initialized = 1;
+	client->failure = SendOk;
+	client->failure_system_error = 0;
+	client->failure_reported = 0;
 	return 1;
 }
 
@@ -218,6 +258,11 @@ static void DeleteSocket(void *data)
 	if (!client)
 		return;
 	state = SocketNormalizeState(client->state);
+	IvyMutexLock(&client->send_lock);
+	if (client->failure == SendOk && client->ifb && IvyFifoLength(client->ifb))
+		SocketFailLocked(client, SendError, 0);
+	IvyMutexUnlock(&client->send_lock);
+	(void)SocketDispatchFailure(client);
 	if (client->handle_delete )
 		(*client->handle_delete) (client, client->data );
 	shutdown (client->fd, 2 );
@@ -269,6 +314,11 @@ static void HandleSocket (Channel channel, IVY_HANDLE fd, void *data)
 	long nb_occuped;
 	long len;
 
+	if (SocketDispatchFailure(client)) {
+		IvyChannelRemove(channel);
+		return;
+	}
+
 	/* limitation taille buffer */
 	nb_occuped = client->ptr - client->buffer;
 	nb_to_read = client->buffer_size - nb_occuped;
@@ -286,15 +336,30 @@ static void HandleSocket (Channel channel, IVY_HANDLE fd, void *data)
 	}
 	client->from_len = sizeof (client->from );
 	nb = recvfrom (fd, client->ptr, nb_to_read, 0, (struct sockaddr*)&(client->from), &(client->from_len));
-	if (nb  < 0) {
-		perror(" Read Socket ");
-		IvyChannelRemove (client->channel );
-		return;
-	}
-	if (nb == 0 ) {
-		IvyChannelRemove (client->channel );
-		return;
-	}
+	if (nb < 0) {
+#ifdef WIN32
+        int error = WSAGetLastError();
+        if (error == WSAEWOULDBLOCK || error == WSAEINTR) return;
+#else
+        int error = errno;
+        if (error == EAGAIN || error == EWOULDBLOCK || error == EINTR) return;
+#endif
+        IvyMutexLock(&client->send_lock);
+        SocketFailLocked(client, SendError, error);
+        IvyMutexUnlock(&client->send_lock);
+        (void)SocketDispatchFailure(client);
+        IvyChannelRemove(channel);
+        return;
+    }
+    if (nb == 0) {
+        IvyMutexLock(&client->send_lock);
+        if (client->ifb && IvyFifoLength(client->ifb))
+            SocketFailLocked(client, SendError, 0);
+        IvyMutexUnlock(&client->send_lock);
+        (void)SocketDispatchFailure(client);
+        IvyChannelRemove(channel);
+        return;
+    }
 	client->ptr += nb;
 	ptr = client->buffer;
 	while ((ptr_nl = (char *) memchr (ptr, client->terminator,  client->ptr - ptr )))
@@ -303,6 +368,10 @@ static void HandleSocket (Channel channel, IVY_HANDLE fd, void *data)
 		if (client->interpretation )
 			(*client->interpretation) (client, client->data, ptr );
 			else fprintf (stderr,"Socket No interpretation function ???\n");
+		if (SocketDispatchFailure(client)) {
+			IvyChannelRemove(channel);
+			return;
+		}
 		ptr = ++ptr_nl;
 		}
 	if (ptr < client->ptr )
@@ -319,31 +388,33 @@ static void HandleSocket (Channel channel, IVY_HANDLE fd, void *data)
 
 
 
-static void HandleCongestionWrite (Channel channel, IVY_HANDLE fd, void *data)
+static void HandleCongestionWrite(Channel channel, IVY_HANDLE fd, void *data)
 {
   Client client = (Client)data;
   int decongested = 0;
-
-  if (!client)
-    return;
-
-  IvyMutexLock (&client->send_lock);
-
-  if (client->ifb == NULL) {
-    IvyChannelClearWritableEvent (channel);
-  } else if (IvyFifoSendSocket (client->ifb, fd) == 0) {
-    // Not congestionned anymore
-    IvyChannelClearWritableEvent (channel);
-    //    printf ("DBG> Socket *DE*congestionnee\n");
-    IvyFifoDelete (client->ifb);
-    client->ifb = NULL;
-    decongested = 1;
+  unsigned int remaining = 0;
+  int system_error = 0;
+  if (!client) return;
+  IvyMutexLock(&client->send_lock);
+  if (client->failure == SendOk && client->ifb) {
+    int status = IvyFifoFlush(client->ifb, fd, &remaining, &system_error);
+    if (status != IVY_OK)
+      SocketFailLocked(client, SendError, system_error);
+    else if (!remaining) {
+      IvyFifoDelete(client->ifb);
+      client->ifb = NULL;
+      decongested = 1;
+    }
   }
-
-  IvyMutexUnlock (&client->send_lock);
-
-  if (decongested && client->handle_decongestion )
-    (*client->handle_decongestion) (client, client->data );
+  if (!client->ifb || client->failure != SendOk)
+    IvyChannelClearWritableEvent(channel);
+  IvyMutexUnlock(&client->send_lock);
+  if (SocketDispatchFailure(client)) {
+    IvyChannelRemove(channel);
+    return;
+  }
+  if (decongested && client->handle_decongestion)
+    client->handle_decongestion(client, client->data);
 }
 
 
@@ -701,138 +772,100 @@ void SocketClose (Client client )
 		IvyChannelRemove (client->channel );
 }
 
-SendState SocketSendRaw (const Client client, const char *buffer, const int len )
+static SendState FifoStatus(int status)
+{
+  if (status == IVY_ENOMEM) return SendNoMemory;
+  if (status == IVY_EFIFOFULL) return SendStateFifoFull;
+  return SendParamError;
+}
+
+SendState SocketSendRawEx(Client client, const char *buffer, int len, int *system_error)
 {
   SendState state;
-
-  if (!client || !buffer || len < 0)
-    return SendParamError;
-
-  IvyMutexLock (&client->send_lock);
-
-  state = BufferizedSocketSendRaw (client, buffer, len);
-
-  IvyMutexUnlock (&client->send_lock);
-
+  int ignored;
+  if (!system_error) system_error = &ignored;
+  *system_error = 0;
+  if (!client || !buffer || len < 0) return SendParamError;
+  IvyMutexLock(&client->send_lock);
+  state = BufferizedSocketSendRaw(client, buffer, len, system_error);
+  IvyMutexUnlock(&client->send_lock);
   return state;
 }
 
-
-static SendState BufferizedSocketSendRaw (const Client client, const char *buffer, const int len )
+SendState SocketSendRaw(const Client client, const char *buffer, const int len)
 {
-  ssize_t reallySent;
-  SendState state;
-
-  if (client->ifb != NULL) {
-    // Socket en congestion : on rajoute juste le flux dans le buffer,
-    // quand la socket sera dispo en ecriture, le select appellera la callback
-    // pour vider ce buffer
-    IvyFifoWrite (client->ifb, buffer, len);
-    state = IvyFifoIsFull (client->ifb) ? SendStateFifoFull : SendStillCongestion;
-  } else {
-    // on tente d'ecrire direct dans la socket
-    reallySent =  send (client->fd, buffer, len, IVY_MSG_NOSIGNAL);
-    if (reallySent == len)
-	{
-      state = SendOk; // PAS CONGESTIONNEE
-    } else if (reallySent == -1)
-	{
-#ifdef WIN32
-	if ( WSAGetLastError() == WSAEWOULDBLOCK) {
-#else
-      if (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR) {
-#endif
-	// Aucun octet n'a été envoyé, mais le send ne rend pas 0
-	// car 0 peut être une longueur passée au send, donc dans ce cas
-	// send renvoie -1 et met errno a EWOULDBLOCK
-	client->ifb = IvyFifoNew ();
-	if (client->ifb == NULL) {
-	  state = SendError;
-	} else {
-	  IvyFifoWrite (client->ifb, buffer, len);
-	  // on ajoute un fdset pour que le select appelle une callback pour vider
-	  // le buffer quand la socket sera ?? nouveau libre
-	  IvyChannelAddWritableEvent (client->channel);
-	  state = SendStateChangeToCongestion;
-	}
-      } else {
-	state = SendError; // ERREUR
-      }
-    } else {
-      // socket congestionnée
-      // on initialise une fifo pour accumuler les données
-      client->ifb = IvyFifoNew ();
-      if (client->ifb == NULL) {
-	state = SendError;
-      } else {
-	IvyFifoWrite (client->ifb, &(buffer[reallySent]), len-reallySent);
-	// on ajoute un fdset pour que le select appelle une callback pour vider
-	// le buffer quand la socket sera à nouveau libre
-	IvyChannelAddWritableEvent (client->channel);
-	state = SendStateChangeToCongestion;
-      }
-    }
-  }
-
-#ifdef DEBUG
-  // DBG BEGIN DEBUG
-  /* SendOk, SendStillCongestion, SendStateChangeToCongestion,
-          SendStateChangeToDecongestion, SendStateFifoFull, SendError,
-	  SendParamError
-  */
-  {
-    static SendState DBG_state = SendOk;
-    char *litState="";
-    if (state != DBG_state) {
-      switch (state) {
-      case SendOk : litState = "SendOk";
-	break;
-      case  SendStillCongestion: litState = "SendStillCongestion";
-	break;
-      case SendStateChangeToCongestion : litState = "SendStateChangeToCongestion";
-	break;
-      case  SendStateChangeToDecongestion: litState = "SendStateChangeToDecongestion";
-	break;
-      case  SendStateFifoFull: litState = "SendStateFifoFull";
-	break;
-      case  SendError: litState = "SendError";
-	break;
-      case  SendParamError: litState = "SendParamError";
-	break;
-      }
-      printf ("DBG>> BufferizedSocketSendRaw, state changed to '%s'\n", litState);
-      DBG_state = state;
-    }
-  }
-  // DBG END DEBUG
-#endif
-
-  return (state);
+  return SocketSendRawEx(client, buffer, len, NULL);
 }
 
-
-
-SendState SocketSendRawWithId( const Client client, const char *id, const char *buffer, const int len )
+static SendState BufferizedSocketSendRaw(Client client, const char *buffer, int len, int *system_error)
 {
-  SendState s1, s2;
-
-  if (!client || !id || !buffer || len < 0)
-    return SendParamError;
-
-  IvyMutexLock (&client->send_lock);
-
-  s1 = BufferizedSocketSendRaw (client, id, strlen (id));
-
-  s2 = BufferizedSocketSendRaw (client, buffer, len);
-
-  IvyMutexUnlock (&client->send_lock);
-
-  if (s1 == SendStateChangeToCongestion) {
-    // si le passage en congestion s'est fait sur l'envoi de l'id
-    s2 = s1;
+  ssize_t sent;
+  int status;
+  if (client->failure != SendOk) {
+    *system_error = client->failure_system_error;
+    return client->failure;
   }
+  if (len == 0) return SendOk;
+  if (client->ifb) {
+    status = IvyFifoWriteChecked(client->ifb, buffer, (unsigned int)len);
+    return status == IVY_OK ? SendStillCongestion : FifoStatus(status);
+  }
+  sent = send(client->fd, buffer, len, IVY_MSG_NOSIGNAL);
+  if (sent == len) return SendOk;
+  if (sent < 0) {
+#ifdef WIN32
+    int error = WSAGetLastError();
+    int temporary = error == WSAEWOULDBLOCK || error == WSAEINTR;
+#else
+    int error = errno;
+    int temporary = error == EAGAIN || error == EWOULDBLOCK || error == EINTR;
+#endif
+    if (!temporary) {
+      *system_error = error;
+      SocketFailLocked(client, SendError, error);
+      return SendError;
+    }
+    sent = 0;
+  }
+  client->ifb = IvyFifoNew();
+  status = client->ifb ? IvyFifoWriteChecked(client->ifb, buffer + sent, (unsigned int)(len - sent)) : IVY_ENOMEM;
+  if (status != IVY_OK) {
+    if (client->ifb) IvyFifoDelete(client->ifb);
+    client->ifb = NULL;
+    /* Once a frame has started on the stream, losing its suffix is fatal. */
+    if (sent > 0) SocketFailLocked(client, FifoStatus(status), 0);
+    return FifoStatus(status);
+  }
+  IvyChannelAddWritableEvent(client->channel);
+  return SendStateChangeToCongestion;
+}
 
-  return (s2);
+SendState SocketSendRawWithIdEx(Client client, const char *id, const char *buffer,
+                               int len, int *system_error)
+{
+  char local[1024];
+  char *frame = local;
+  size_t header_size, total;
+  SendState state;
+  if (system_error) *system_error = 0;
+  if (!client || !id || !buffer || len < 0) return SendParamError;
+  header_size = strlen(id);
+  if (header_size > (size_t)(INT_MAX - len)) return SendParamError;
+  total = header_size + (size_t)len;
+  if (total > sizeof(local)) {
+    frame = (char *)malloc(total);
+    if (!frame) return SendNoMemory;
+  }
+  memcpy(frame, id, header_size);
+  memcpy(frame + header_size, buffer, (size_t)len);
+  state = SocketSendRawEx(client, frame, (int)total, system_error);
+  if (frame != local) free(frame);
+  return state;
+}
+
+SendState SocketSendRawWithId(const Client client, const char *id, const char *buffer, const int len)
+{
+  return SocketSendRawWithIdEx(client, id, buffer, len, NULL);
 }
 
 
@@ -856,7 +889,7 @@ SendState SocketSend (Client client, const char *fmt, ... )
   va_end (ap );
   if (len < 0) {
     free(buffer.data);
-    return SendError;
+    return SendNoMemory;
   }
   state = SocketSendRaw (client, buffer.data, len );
   free(buffer.data);
