@@ -264,18 +264,24 @@ typedef void (*IvyDieCallback)(IvyClientPtr app, void *user_data, int id);
  * @brief Callback called when a ping response is received or times out.
  *
  * @param app Peer that answered, or peer whose ping timed out.
+ * @param user_data User pointer supplied to ::IvyContextSetPongCallback()
+ * or ::IvySetPongCallback().
  * @param round_trip_delay Positive round-trip time in microseconds, or a
  * negative timeout duration.
  *
  * @code{.c}
- * static void on_pong(IvyClientPtr app, int delay)
+ * static void on_pong(IvyClientPtr app, void *user_data, int delay)
  * {
+ *     IvyContext *ctx = (IvyContext *)user_data;
+ *     const char *name = IvyContextGetApplicationName(ctx, app);
+ *
  *     if (delay >= 0)
- *         printf("pong in %.3f ms\n", delay / 1000.0);
+ *         printf("%s: pong in %.3f ms\n", name ? name : "peer", delay / 1000.0);
  * }
  * @endcode
  */
-typedef void (*IvyPongCallback)(IvyClientPtr app, int round_trip_delay);
+typedef void (*IvyPongCallback)(
+	IvyClientPtr app, void *user_data, int round_trip_delay);
 
 /**
  * @brief Callback called when an incoming Ivy message matches a local regexp.
@@ -490,18 +496,22 @@ int IvyContextSetBindCallback(IvyContext *ctx,
  *
  * @param ctx Context to configure.
  * @param pong_callback Callback, or NULL to disable ping handling.
+ * @param pong_data User pointer passed to @p pong_callback. May be NULL.
  * @return ::IVY_OK on success, or a negative ::IvyStatus.
  *
  * @details
  * ::IvyContextSendPing() returns ::IVY_ESTATE if no pong callback is installed.
+ * Ivy does not own @p pong_data. Keep it valid while callbacks may still use
+ * it; replacing or disabling the callback does not wait for an in-flight call.
  *
  * @code{.c}
- * IvyContextSetPongCallback(ctx, on_pong);
+ * IvyContextSetPongCallback(ctx, on_pong, ctx);
  * IvyContextSendPing(ctx, app);
  * @endcode
  */
 int IvyContextSetPongCallback(IvyContext *ctx,
-			  IvyPongCallback pong_callback );
+			  IvyPongCallback pong_callback,
+			  void *pong_data );
 
 /**
  * @brief Install or replace the callback for direct messages.
@@ -657,7 +667,7 @@ int IvyContextSendDieMsg(IvyContext *ctx, IvyClientPtr app);
  * this function.
  *
  * @code{.c}
- * IvyContextSetPongCallback(ctx, on_pong);
+ * IvyContextSetPongCallback(ctx, on_pong, ctx);
  * IvyContextSendPing(ctx, app);
  * @endcode
  */
@@ -1030,16 +1040,18 @@ int IvySetBindCallback(
  * @brief Install the default-context pong callback.
  *
  * @param pong_callback Callback, or NULL to disable.
+ * @param pong_data User pointer passed to @p pong_callback. May be NULL.
  * @return ::IVY_OK on success, or a negative ::IvyStatus.
  *
  * @deprecated Use ::IvyContextSetPongCallback().
  *
  * @code{.c}
- * IvySetPongCallback(on_pong);
+ * IvySetPongCallback(on_pong, ctx);
  * @endcode
  */
 int IvySetPongCallback(
-			  IvyPongCallback pong_callback );
+			  IvyPongCallback pong_callback,
+			  void *pong_data );
 
 /**
  * @brief Start the process default context.
@@ -1318,7 +1330,7 @@ int IvySendDirectMsg( IvyClientPtr app, int id, char *msg );
  * @deprecated Use ::IvyContextSendPing().
  *
  * @code{.c}
- * IvySetPongCallback(on_pong);
+ * IvySetPongCallback(on_pong, ctx);
  * IvySendPing(app);
  * @endcode
  */

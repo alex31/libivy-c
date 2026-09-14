@@ -1,3 +1,12 @@
+ivy-c (3.18.0) UNRELEASED; urgency=medium
+
+  * add user data to pong callbacks and their contextual and legacy
+    registration functions; callers must update their signatures and rebuild
+  * update ivyprobe and regression tests for per-context pong user data
+  * synchronize the library and build versions at 3.18
+
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Mon, 14 Sep 2026 14:02:02 +0200
+
 ivy-c (3.17.0) unstable; urgency=medium
 
   * add an MT-safe, multi-bus IvyContext API while preserving compatibility

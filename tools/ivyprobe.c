@@ -164,7 +164,7 @@ static size_t probe_history_next = 0;
 static ProbeTimerState probe_timer_state;
 
 void DirectCallback(IvyClientPtr app, void *user_data, int id, char *msg);
-void PongCallback(IvyClientPtr app, int roundTripOrTimout);
+void PongCallback(IvyClientPtr app, void *user_data, int roundTripOrTimout);
 void Callback(IvyClientPtr app, void *user_data, int argc, char *argv[]);
 void ApplicationCallback(IvyClientPtr app, void *user_data, IvyApplicationEvent event);
 void IvyPrintBindCallback(IvyClientPtr app, void *user_data, int id, const char* regexp, IvyBindEvent event);
@@ -647,17 +647,6 @@ static const char *ProbeApplicationHost(const ProbeBus *bus, IvyClientPtr app)
 	return host ? host : "unknown";
 }
 
-static ProbeBus *ProbeFindApplicationBus(IvyClientPtr app)
-{
-	size_t i;
-
-	for (i = 0; i < probe_bus_count; i++) {
-		if (IvyContextGetApplicationName(probe_buses[i].ctx, app))
-			return &probe_buses[i];
-	}
-	return NULL;
-}
-
 static char *ProbeGetApplicationList(const ProbeBus *bus, const char *separator)
 {
 	char *buffer;
@@ -780,7 +769,7 @@ static int ProbeCreateBuses(const char *agentname, const char *agentready)
 			return 0;
 		}
 		IvyContextSetBindCallback(bus->ctx, IvyPrintBindCallback, bus);
-		IvyContextSetPongCallback(bus->ctx, PongCallback);
+		IvyContextSetPongCallback(bus->ctx, PongCallback, bus);
 		IvyContextBindDirectMsg(bus->ctx, DirectCallback, bus);
 	}
 	return 1;
@@ -880,9 +869,9 @@ void DirectCallback(IvyClientPtr app, void *user_data, int id, char *msg )
 }
 
 
-void PongCallback (IvyClientPtr app, int roundTripOrTimout)
+void PongCallback (IvyClientPtr app, void *user_data, int roundTripOrTimout)
 {
-	ProbeBus *bus = ProbeFindApplicationBus(app);
+	ProbeBus *bus = (ProbeBus *)user_data;
 	const char *name = ProbeApplicationName(bus, app);
 	const char *prefix = "";
 	char prefix_buffer[256];

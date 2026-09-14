@@ -17,7 +17,7 @@ G_DEBUG=fatal-warnings "$tmp_dir/glib_backend_test" \
   "${IVY_GLIB_TEST_BUS:-127.255.255.255:$((25000 + ($$ % 1000)))}"
 
 # An optional argument tests an installed/packaged shared library as well.
-shared_lib=${1:-$repo_dir/src/libglibivy.so.3.17}
+shared_lib=${1:-$repo_dir/src/libglibivy.so.3.18}
 test -f "$shared_lib"
 ln -s "$shared_lib" "$tmp_dir/libglibivy.so.3"
 cc "$tmp_dir/glib_backend_test.o" -L"$tmp_dir" -l:libglibivy.so.3 \

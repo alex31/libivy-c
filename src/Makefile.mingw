@@ -18,8 +18,8 @@
 
 # change this in version.h too !!!!
 MAJOR=3
-MINOR=17
-MINOR2=8
+MINOR=18
+MINOR2=0
 
 #RM=del
 RM=rm -f

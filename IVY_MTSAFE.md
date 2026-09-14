@@ -191,7 +191,7 @@ void IvyContextIdle(IvyContext *ctx);
 int IvyContextSetBindCallback(IvyContext *ctx,
     IvyBindCallback bind_callback, void *bind_data);
 int IvyContextSetPongCallback(IvyContext *ctx,
-    IvyPongCallback pong_callback);
+    IvyPongCallback pong_callback, void *pong_data);
 
 MsgRcvPtr IvyContextBindMsg(IvyContext *ctx,
     MsgCallback callback, void *user_data, const char *fmt_regexp, ...);

@@ -16,7 +16,7 @@
 
 # change this in version.h too !!!!
 MAJOR=3
-MINOR=17
+MINOR=18
 
 !IFNDEF PLATFORM
 PLATFORM=x64

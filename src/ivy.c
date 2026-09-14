@@ -220,6 +220,7 @@ struct IvyContext {
 
   /* callback appele sur reception d'une trame PONG */
   IvyPongCallback ivy_application_pong_callback;
+  void *ivy_application_pong_data;
 
   /* liste des messages a recevoir */
   MsgRcvPtr ivy_msg_recv;
@@ -556,16 +557,18 @@ static void IvyDispatchDieCallback(IvyContext *ctx, IvyClientPtr app, int id)
 static void IvyDispatchPongCallback(IvyContext *ctx, IvyClientPtr app, int roundTripOrTimout)
 {
 	IvyPongCallback callback;
+	void *user_data;
 
 	IvyMutexLock(&ctx->ivy_mutex);
 	callback = ctx->ivy_application_pong_callback;
+	user_data = ctx->ivy_application_pong_data;
 	IvyMutexUnlock(&ctx->ivy_mutex);
 
 	if (!callback)
 		return;
 
 	IvyCallbackEnter(ctx);
-	(*callback)(app, roundTripOrTimout);
+	(*callback)(app, user_data, roundTripOrTimout);
 	IvyCallbackLeave(ctx);
 }
 
@@ -1747,20 +1750,22 @@ int IvySetBindCallback( IvyBindCallback bind_callback, void *bind_data )
   return IvyContextSetBindCallback(IvyGetCurrentContext(), bind_callback, bind_data);
 }
 
-int IvyContextSetPongCallback(IvyContext *ctx, IvyPongCallback pong_callback )
+int IvyContextSetPongCallback(IvyContext *ctx, IvyPongCallback pong_callback,
+			    void *pong_data )
 {
   int status = IvyContextRejectIfStopped(ctx);
   if (status != IVY_OK)
     return status;
   IvyMutexLock(&ctx->ivy_mutex);
   ctx->ivy_application_pong_callback = pong_callback;
+  ctx->ivy_application_pong_data = pong_data;
   IvyMutexUnlock(&ctx->ivy_mutex);
   return IvyReturnStatus(IVY_OK);
 }
 
-int IvySetPongCallback( IvyPongCallback pong_callback )
+int IvySetPongCallback( IvyPongCallback pong_callback, void *pong_data )
 {
-  return IvyContextSetPongCallback(IvyGetCurrentContext(), pong_callback);
+  return IvyContextSetPongCallback(IvyGetCurrentContext(), pong_callback, pong_data);
 }
 
 int IvySetFilter( int argc, const char **argv)

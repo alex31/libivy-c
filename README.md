@@ -18,6 +18,16 @@ The historical API (`IvyInit()`, `IvyStart()`, `IvyBindMsg()`,
 `IvySendMsg()`, etc.) is still kept as a compatibility facade so old programs
 continue to compile.
 
+Pong callback migration in 3.18: `IvyPongCallback` now takes
+`(IvyClientPtr app, void *user_data, int round_trip_delay)`, matching the other
+callback conventions. Register it with
+`IvyContextSetPongCallback(ctx, callback, user_data)` or
+`IvySetPongCallback(callback, user_data)`; use `NULL` when no user data is needed.
+This changes the source and binary interfaces for pong callbacks and their
+registration functions, so existing users must update their calls and callback
+signatures and rebuild against the matching library. Ivy does not own the user
+data, which must remain valid while any callback may still use it.
+
 Recent multibus/tooling work:
 
 - `ivyprobe` can run on several buses in one process. It starts the bus from

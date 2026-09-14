@@ -46,15 +46,12 @@ typedef struct {
 } ContextRun;
 
 typedef struct {
-	const char *rx_a_name;
-	const char *rx_b_name;
-	int pong_a_count;
-	int pong_b_count;
+	IvyContext *ctx;
+	const char *peer_name;
+	int pong_count;
 	int unexpected_count;
 	pthread_mutex_t mutex;
 } PongState;
-
-static PongState pong_state;
 
 static void receiver_init(ReceiverState *state, const char *label,
 			  const char *tag, const char *direct_msg, int direct_id)
@@ -95,17 +92,16 @@ static void sender_destroy(SenderState *state)
 	pthread_mutex_destroy(&state->mutex);
 }
 
-static void pong_state_init(const char *rx_a_name, const char *rx_b_name)
+static void pong_state_init(PongState *state, const char *peer_name)
 {
-	memset(&pong_state, 0, sizeof(pong_state));
-	pong_state.rx_a_name = rx_a_name;
-	pong_state.rx_b_name = rx_b_name;
-	pthread_mutex_init(&pong_state.mutex, NULL);
+	memset(state, 0, sizeof(*state));
+	state->peer_name = peer_name;
+	pthread_mutex_init(&state->mutex, NULL);
 }
 
-static void pong_state_destroy(void)
+static void pong_state_destroy(PongState *state)
 {
-	pthread_mutex_destroy(&pong_state.mutex);
+	pthread_mutex_destroy(&state->mutex);
 }
 
 static void *run_loop(void *data)
@@ -305,31 +301,44 @@ static int wait_sender_event(SenderState *state, IvyBindEvent event,
 	return 1;
 }
 
-static int wait_pong_count(const char *name, int min_count, const char *label)
+static int wait_pong_count(PongState *state, int min_count, const char *label)
 {
 	int i;
 	int count;
+	int unexpected;
 
 	for (i = 0; i < WAIT_STEPS; i++) {
-		pthread_mutex_lock(&pong_state.mutex);
-		if (strcmp(name, pong_state.rx_a_name) == 0)
-			count = pong_state.pong_a_count;
-		else
-			count = pong_state.pong_b_count;
-		pthread_mutex_unlock(&pong_state.mutex);
+		pthread_mutex_lock(&state->mutex);
+		count = state->pong_count;
+		unexpected = state->unexpected_count;
+		pthread_mutex_unlock(&state->mutex);
+		if (unexpected) {
+			fprintf(stderr, "%s received %d unexpected pong(s)\n", label, unexpected);
+			return 1;
+		}
 		if (count >= min_count)
 			return 0;
 		usleep(WAIT_USEC);
 	}
 
-	pthread_mutex_lock(&pong_state.mutex);
-	if (strcmp(name, pong_state.rx_a_name) == 0)
-		count = pong_state.pong_a_count;
-	else
-		count = pong_state.pong_b_count;
-	pthread_mutex_unlock(&pong_state.mutex);
 	fprintf(stderr, "%s did not receive pong from %s %d time(s), got %d\n",
-		label, name, min_count, count);
+		label, state->peer_name, min_count, count);
+	return 1;
+}
+
+static int expect_pong_count(PongState *state, int expected, const char *label)
+{
+	int count;
+	int unexpected;
+
+	pthread_mutex_lock(&state->mutex);
+	count = state->pong_count;
+	unexpected = state->unexpected_count;
+	pthread_mutex_unlock(&state->mutex);
+	if (count == expected && unexpected == 0)
+		return 0;
+	fprintf(stderr, "%s received %d pong(s), expected %d; %d unexpected\n",
+		label, count, expected, unexpected);
 	return 1;
 }
 
@@ -476,21 +485,18 @@ static void bind_callback(IvyClientPtr app, void *user_data, int id,
 	pthread_mutex_unlock(&state->mutex);
 }
 
-static void pong_callback(IvyClientPtr app, int round_trip_delay)
+static void pong_callback(IvyClientPtr app, void *user_data, int round_trip_delay)
 {
-	const char *app_name = IvyGetApplicationName(app);
+	PongState *state = (PongState *)user_data;
+	const char *app_name = IvyContextGetApplicationName(state->ctx, app);
 
-	pthread_mutex_lock(&pong_state.mutex);
-	if (round_trip_delay < 0) {
-		pong_state.unexpected_count++;
-	} else if (strcmp(app_name, pong_state.rx_a_name) == 0) {
-		pong_state.pong_a_count++;
-	} else if (strcmp(app_name, pong_state.rx_b_name) == 0) {
-		pong_state.pong_b_count++;
+	pthread_mutex_lock(&state->mutex);
+	if (round_trip_delay >= 0 && app_name && strcmp(app_name, state->peer_name) == 0) {
+		state->pong_count++;
 	} else {
-		pong_state.unexpected_count++;
+		state->unexpected_count++;
 	}
-	pthread_mutex_unlock(&pong_state.mutex);
+	pthread_mutex_unlock(&state->mutex);
 }
 
 int main(int argc, char **argv)
@@ -507,6 +513,9 @@ int main(int argc, char **argv)
 	ReceiverState rx_b_state;
 	SenderState tx_a_state;
 	SenderState tx_b_state;
+	PongState pong_a_state;
+	PongState pong_b_state;
+	PongState pong_replacement_state;
 	ContextRun rx_a = { NULL, rx_a_name, 0, 0 };
 	ContextRun tx_a = { NULL, tx_a_name, 0, 0 };
 	ContextRun rx_b = { NULL, rx_b_name, 0, 0 };
@@ -538,12 +547,17 @@ int main(int argc, char **argv)
 
 	sender_init(&tx_a_state, "tx-a", rx_a_name);
 	sender_init(&tx_b_state, "tx-b", rx_b_name);
-	pong_state_init(rx_a_name, rx_b_name);
+	pong_state_init(&pong_a_state, rx_a_name);
+	pong_state_init(&pong_b_state, rx_b_name);
+	pong_state_init(&pong_replacement_state, rx_a_name);
 
 	rx_a.ctx = IvyContextCreate(rx_a_name, NULL, NULL, NULL, NULL, NULL);
 	tx_a.ctx = IvyContextCreate(tx_a_name, NULL, NULL, NULL, NULL, NULL);
 	rx_b.ctx = IvyContextCreate(rx_b_name, NULL, NULL, NULL, NULL, NULL);
 	tx_b.ctx = IvyContextCreate(tx_b_name, NULL, NULL, NULL, NULL, NULL);
+	pong_a_state.ctx = tx_a.ctx;
+	pong_b_state.ctx = tx_b.ctx;
+	pong_replacement_state.ctx = tx_a.ctx;
 	if (!rx_a.ctx || !tx_a.ctx || !rx_b.ctx || !tx_b.ctx) {
 		fprintf(stderr, "IvyContextCreate failed, last error %d\n", IvyGetLastError());
 		failed = 1;
@@ -572,10 +586,10 @@ int main(int argc, char **argv)
 				IvyContextSetBindCallback(tx_b.ctx, bind_callback, &tx_b_state),
 				IVY_OK);
 	failed |= expect_status("tx-a pong callback",
-				IvyContextSetPongCallback(tx_a.ctx, pong_callback),
+				IvyContextSetPongCallback(tx_a.ctx, pong_callback, &pong_a_state),
 				IVY_OK);
 	failed |= expect_status("tx-b pong callback",
-				IvyContextSetPongCallback(tx_b.ctx, pong_callback),
+				IvyContextSetPongCallback(tx_b.ctx, pong_callback, &pong_b_state),
 				IVY_OK);
 	if (failed)
 		goto cleanup;
@@ -619,8 +633,39 @@ int main(int argc, char **argv)
 
 	failed |= expect_status("tx-a ping", IvyContextSendPing(tx_a.ctx, app_rx_a), IVY_OK);
 	failed |= expect_status("tx-b ping", IvyContextSendPing(tx_b.ctx, app_rx_b), IVY_OK);
-	failed |= wait_pong_count(rx_a_name, 1, "tx-a");
-	failed |= wait_pong_count(rx_b_name, 1, "tx-b");
+	failed |= wait_pong_count(&pong_a_state, 1, "tx-a");
+	failed |= wait_pong_count(&pong_b_state, 1, "tx-b");
+	if (failed)
+		goto cleanup;
+
+	/* Replacing one context's user data must not affect the other context. */
+	failed |= expect_status("tx-a replace pong user data",
+		IvyContextSetPongCallback(tx_a.ctx, pong_callback, &pong_replacement_state), IVY_OK);
+	failed |= expect_status("tx-a ping after replacement",
+		IvyContextSendPing(tx_a.ctx, app_rx_a), IVY_OK);
+	failed |= expect_status("tx-b ping after tx-a replacement",
+		IvyContextSendPing(tx_b.ctx, app_rx_b), IVY_OK);
+	failed |= wait_pong_count(&pong_replacement_state, 1, "tx-a replacement");
+	failed |= wait_pong_count(&pong_b_state, 2, "tx-b unchanged");
+	failed |= expect_pong_count(&pong_a_state, 1, "tx-a old user data");
+	if (failed)
+		goto cleanup;
+
+	failed |= expect_status("tx-a disable pong",
+		IvyContextSetPongCallback(tx_a.ctx, NULL, NULL), IVY_OK);
+	failed |= expect_status("tx-a ping while disabled",
+		IvyContextSendPing(tx_a.ctx, app_rx_a), IVY_ESTATE);
+	failed |= expect_status("tx-b ping while tx-a disabled",
+		IvyContextSendPing(tx_b.ctx, app_rx_b), IVY_OK);
+	failed |= wait_pong_count(&pong_b_state, 3, "tx-b still enabled");
+	failed |= expect_status("tx-a re-enable pong",
+		IvyContextSetPongCallback(tx_a.ctx, pong_callback, &pong_a_state), IVY_OK);
+	failed |= expect_status("tx-a ping after re-enable",
+		IvyContextSendPing(tx_a.ctx, app_rx_a), IVY_OK);
+	failed |= wait_pong_count(&pong_a_state, 2, "tx-a re-enabled");
+	failed |= expect_pong_count(&pong_replacement_state, 1, "tx-a previous user data");
+	if (failed)
+		goto cleanup;
 	failed |= expect_status("tx-a direct",
 		IvyContextSendDirectMsg(tx_a.ctx, app_rx_a, 101, "direct-a"), IVY_OK);
 	failed |= expect_status("tx-b direct",
@@ -693,6 +738,8 @@ cleanup:
 	receiver_destroy(&rx_b_state);
 	sender_destroy(&tx_a_state);
 	sender_destroy(&tx_b_state);
-	pong_state_destroy();
+	pong_state_destroy(&pong_a_state);
+	pong_state_destroy(&pong_b_state);
+	pong_state_destroy(&pong_replacement_state);
 	return failed ? 1 : 0;
 }

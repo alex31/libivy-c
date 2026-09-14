@@ -2,6 +2,13 @@
 
 #include <stdio.h>
 
+static void ignore_pong(IvyClientPtr app, void *user_data, int delay)
+{
+	(void)app;
+	(void)user_data;
+	(void)delay;
+}
+
 static int expect_status(const char *label, int got, int expected)
 {
 	if (got != expected) {
@@ -44,6 +51,9 @@ int main(void)
 
 	if (expect_status("start null context", IvyContextStart(NULL, NULL), IVY_EINVAL))
 		return 2;
+	if (expect_status("pong callback null context",
+		IvyContextSetPongCallback(NULL, ignore_pong, NULL), IVY_EINVAL))
+		return 21;
 
 	ctx = IvyContextCreate("phase2", "ready", NULL, NULL, NULL, NULL);
 	if (ctx == NULL) {
@@ -53,10 +63,19 @@ int main(void)
 
 	if (expect_state("new context", ctx, IVY_CTX_CREATED))
 		return 4;
+	if (expect_status("pong callback null user data",
+		IvyContextSetPongCallback(ctx, ignore_pong, NULL), IVY_OK))
+		return 22;
+	if (expect_status("disable pong callback",
+		IvyContextSetPongCallback(ctx, NULL, NULL), IVY_OK))
+		return 23;
 	if (expect_status("context stop", IvyContextStop(ctx), IVY_OK))
 		return 5;
 	if (expect_state("stopped context", ctx, IVY_CTX_STOPPED))
 		return 6;
+	if (expect_status("context pong callback after stop",
+		IvyContextSetPongCallback(ctx, ignore_pong, NULL), IVY_ESTOPPED))
+		return 24;
 	if (expect_status("context stop idempotent", IvyContextStop(ctx), IVY_OK))
 		return 7;
 	if (expect_status("restart stopped context", IvyContextStart(ctx, NULL), IVY_ESTATE))
@@ -66,6 +85,12 @@ int main(void)
 
 	if (expect_status("legacy init", IvyInit("legacy", NULL, NULL, NULL, NULL, NULL), IVY_OK))
 		return 10;
+	if (expect_status("legacy pong callback",
+		IvySetPongCallback(ignore_pong, &msg), IVY_OK))
+		return 25;
+	if (expect_status("legacy disable pong callback",
+		IvySetPongCallback(NULL, NULL), IVY_OK))
+		return 26;
 	if (expect_status("legacy stop", IvyStop(), IVY_OK))
 		return 11;
 	if (expect_status("legacy stop idempotent", IvyStop(), IVY_OK))
@@ -84,7 +109,7 @@ int main(void)
 		return 15;
 	}
 
-	if (expect_status("legacy callback set after stop", IvySetPongCallback(NULL), IVY_ESTOPPED))
+	if (expect_status("legacy callback set after stop", IvySetPongCallback(NULL, NULL), IVY_ESTOPPED))
 		return 16;
 	if (expect_status("legacy start after stop", IvyStart(NULL), IVY_ESTATE))
 		return 17;
