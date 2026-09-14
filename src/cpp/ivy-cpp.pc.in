@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}@LIB@
+includedir=${prefix}/include
+
+Name: ivy-cpp
+Description: C++23 wrapper for the Ivy software bus
+Version: @MAJOR@.@MINOR@
+Requires: ivy-c >= 3.18
+Libs: -L${libdir} -livy-cpp @THREADLIB@
+Cflags: -I${includedir}

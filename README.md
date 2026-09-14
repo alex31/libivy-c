@@ -103,6 +103,85 @@ Run the fault-injection tests with `./tests/run_transport_errors.sh`. They cover
 normal, OpenMP and (when available) GLib builds, partial fan-out, full FIFOs, allocation failures,
 partial writes, immediate/direct failures, and deferred flush errors.
 
+## C++23 wrapper
+
+`src/cpp/ivy.hpp` provides `ivy::Bus`, a non-copyable, movable owner of an
+explicit `IvyContext`. Its constructor accepts an application name as
+`std::string_view`, an optional ready message as
+`std::optional<std::string_view>`, and optional application/die callbacks as
+`std::move_only_function`. Captures replace user-data arguments at the C++
+boundary, including captures of non-copyable objects such as `std::unique_ptr`.
+The peer and event arguments currently retain their C API types.
+
+The Linux build has separate targets for the wrapper. Building the C library
+and tools does not enable C++23:
+
+```sh
+make -C src cpp
+# After installing the C library with the same PREFIX:
+make -C src install-cpp PREFIX=/usr/local
+```
+
+This produces `libivy-cpp.a` and `libivy-cpp.so.3.18` in `src/build/cpp/`,
+with `libivy-cpp.so` and `libivy-cpp.so.3` symlinks to the shared library.
+The shared wrapper links against the C shared library `libivy.so.3`.
+Installation adds both libraries and the symlinks, `Ivy/ivy.hpp`, and
+`ivy-cpp.pc`. Compile a consumer with C++23 enabled:
+
+```sh
+c++ -std=c++23 examples/cpp/lifecycle.cpp \
+    $(pkg-config --cflags --libs ivy-cpp) -o lifecycle
+```
+
+The linker selects the shared libraries by default. Selecting the `.a` archives
+explicitly retains the static linking option; `pkg-config --static --libs ivy-cpp`
+supplies their additional dependencies but does not force static linking.
+
+Construction copies the input strings and creates the context. An absent ready
+message (`std::nullopt`) is distinct from an empty message. Embedded NUL bytes
+in constructor arguments throw `std::invalid_argument`; C context creation
+failures throw `std::system_error`.
+
+`start()` uses `IVYBUS` or Ivy's default address; `start(address)` accepts a
+string view, copied before passing it to C. Both overloads are `noexcept` and
+return `std::expected<void, std::error_code>`, marked `[[nodiscard]]`. On failure,
+the error can be compared with `ivy::make_error_code(IVY_ESTATE)` or another
+`IvyStatus`. An embedded NUL in the address returns `IVY_EINVAL`; failure to
+allocate the temporary string returns `IVY_ENOMEM`.
+
+```cpp
+if (auto result = bus.start("127:2010"); !result) {
+    std::cerr << result.error().message() << '\n';
+    return 1;
+}
+```
+
+`stop()` requests an idempotent stop, and destruction releases the context.
+A moved-from object has a null `native_handle()` and reports
+`IVY_CTX_DESTROYED`; starting it returns an `IVY_ESTATE` error. Moving a bus preserves the
+context and callback storage addresses.
+
+The event-loop interface will be designed separately. For now,
+`native_handle()` provides borrowed access for C interoperation. Drive the
+loop through the contextual C API, and stop and join any external loop thread
+before destroying the bus or replacing it by move assignment. Do not destroy
+the native context, replace the wrapper's application/die callbacks, or destroy
+the bus from an Ivy callback. A rejected C destruction terminates the process
+to avoid freeing callback storage that C can still use. Moving or destroying
+the bus must not race with operations on that object.
+
+Callbacks retain Ivy's threading and borrowed-peer lifetime rules; captured
+references must remain valid, and shared mutable state needs synchronization.
+Callback exceptions are caught before returning to C. The wrapper stores the
+first exception and requests a stop. After servicing/joining the loop, call
+`rethrow_callback_exception()` to rethrow and clear it. `state()` and
+`native_handle()` are also available for lifecycle inspection.
+
+Run `./tests/cpp/run.sh` for the wrapper tests, including a temporary
+installation and consumers linked against the static and shared libraries.
+`examples/cpp/lifecycle.cpp` demonstrates the available wrapper API and exits
+when another Ivy application sends a die request.
+
 ## Installation
 
 The build currently relies on PCRE2 for regular expression support, and readline/history support for the tools target (`ivyprobe`, etc.).

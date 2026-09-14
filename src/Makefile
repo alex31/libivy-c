@@ -163,6 +163,14 @@ static-libs:  $(STATICTARGETLIBS)
 shared-libs: $(TARGETLIBS)
 # not yet need Modified Glut libglutivy.so.$(MAJOR).$(MINOR)
 
+# The C++23 wrapper is built and installed explicitly.
+.PHONY: cpp install-cpp
+cpp: libivy.a libivy.so.$(MAJOR).$(MINOR)
+	$(MAKE) -C cpp
+
+install-cpp: cpp
+	$(MAKE) -C cpp install
+
 
 ivybind.o: ivybind.c
 	$(CC) -c $(CFLAGS) $(REGEXP) $(PCREINC) ivybind.c
