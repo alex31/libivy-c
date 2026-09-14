@@ -44,6 +44,65 @@ See `IVY_MTSAFE.md` for the migration plan and status. See
 `IVY_CODE_QUALITY_AUDIT.md` for remaining hardening work that is broader than
 the multibus migration.
 
+## Sending and transport errors (3.18)
+
+`IvyContextSendMsg()` and `IvySendMsg()` keep their signatures. They return the
+number of complete frames accepted locally, or a negative `IvyStatus` if any
+matching send fails. Zero matching subscriptions is success. A peer with several
+matching subscriptions is counted once per subscription. Acceptance means the
+frame was written to the socket or queued in full; it does not acknowledge
+remote delivery. Fan-out continues after an individual failure.
+
+`IvyContextSendMsgEx(ctx, &report, format, ...)` returns `IVY_OK` or the first
+failure and fills an `IvySendReport`, including on partial failure:
+
+```c
+IvySendReport report;
+int status = IvyContextSendMsgEx(ctx, &report, "TRACK %d %s", id, label);
+/* report.matched == report.accepted + report.failed */
+if (status != IVY_OK)
+    fprintf(stderr, "Ivy %d, OS %d: %zu accepted, %zu failed\n",
+            status, report.system_error, report.accepted, report.failed);
+```
+
+`IvySendMsgEx()` provides the same report for the current/default context.
+Errors before matching leave the counts zero. `system_error` contains the
+`errno`/WSA code associated with the first reported failure, or zero when that
+failure has no OS code. With OpenMP, the first failure depends on scheduling.
+The old count-only functions cannot expose partial counts; retrying a whole
+message after failure can duplicate frames that other subscriptions accepted.
+
+The transport path distinguishes `IVY_EIO`, `IVY_ENOMEM` and the new
+`IVY_EFIFOFULL`. FIFO append is all-or-nothing. If a frame has already been
+partly written and its suffix cannot be queued, the connection is closed to
+prevent subsequent frames from corrupting the stream. Direct sends use the
+same checked transport and status values. Newlines, Ivy separators (bytes 2
+and 3), and formatted NUL bytes are rejected before matching; messages are
+text, and UTF-8 is allowed.
+
+Install `IvyContextSetTransportErrorCallback(ctx, callback, data)` to observe
+connection failures, including failures while flushing an accepted FIFO:
+
+```c
+static void on_transport(IvyClientPtr peer, void *data,
+                         IvyStatus status, int system_error) {
+    /* peer belongs to this context and may be NULL during connection setup. */
+}
+```
+
+The callback runs on the context's event-loop thread, outside internal locks,
+before its disconnection callback. It describes a failed connection and its
+pending frames, not an individual message receipt. Recoverable FIFO-full or
+allocation rejections are returned synchronously without this notification.
+Passing `NULL` disables it; replacing a callback does not wait for an invocation
+already in progress, so its data must remain valid until that invocation returns.
+The legacy setter is `IvySetTransportErrorCallback()`. Notifications require a
+running loop; none are promised during stop or destruction.
+
+Run the fault-injection tests with `./tests/run_transport_errors.sh`. They cover
+normal, OpenMP and (when available) GLib builds, partial fan-out, full FIFOs, allocation failures,
+partial writes, immediate/direct failures, and deferred flush errors.
+
 ## Installation
 
 The build currently relies on PCRE2 for regular expression support, and readline/history support for the tools target (`ivyprobe`, etc.).

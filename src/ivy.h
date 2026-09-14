@@ -76,8 +76,8 @@
  * Return conventions:
  * - functions returning int usually return ::IVY_OK on success and a negative
  *   ::IvyStatus on hard failure;
- * - ::IvyContextSendMsg() and ::IvySendMsg() return the number of matching
- *   recipients, or a negative ::IvyStatus;
+ * - ::IvyContextSendMsg() and ::IvySendMsg() return the number of frames accepted
+ *   locally, or a negative ::IvyStatus if any matching send failed;
  * - query functions returning pointers return NULL on failure and expose the
  *   detailed error through ::IvyGetLastError();
  * - buffer query functions return the required buffer size including the
@@ -163,6 +163,26 @@ typedef enum {
 	IVY_EUNANCHORED = -6, /**< Regexp does not satisfy the required start anchoring. */
 	IVY_EFIFOFULL = -7 /**< A complete outgoing frame could not fit in the FIFO. */
 } IvyStatus;
+
+/** Per-subscription fan-out results, not remote delivery acknowledgements.
+ * A peer with several matching subscriptions is counted once per subscription.
+ */
+typedef struct {
+	size_t matched;
+	size_t accepted; /**< Complete frames written or queued locally. */
+	size_t failed;
+	int system_error; /**< errno/WSA error for the first failure, or zero. */
+} IvySendReport;
+
+/** Transport failure observed by the loop, before the peer is disconnected.
+ * The peer may be NULL during connection setup. The notification describes
+ * the connection, including its queued frames, rather than a delivery receipt.
+ * status is an Ivy error; system_error is errno/WSAGetLastError(), or zero
+ * when the failure has no operating-system error. A recoverable FIFO or
+ * allocation rejection is returned by the send call without this notification.
+ */
+typedef void (*IvyTransportErrorCallback)(IvyClientPtr app, void *user_data,
+	IvyStatus status, int system_error);
 
 /**
  * @brief Lifecycle state of an ::IvyContext.
@@ -515,6 +535,17 @@ int IvyContextSetPongCallback(IvyContext *ctx,
 			  IvyPongCallback pong_callback,
 			  void *pong_data );
 
+/** Install an optional transport-error callback. NULL disables it.
+ * Called by the event loop outside internal locks. No notification is promised
+ * after the loop stops; immediate send failures are always returned to callers.
+ * Replacing the callback does not wait for an invocation already in progress;
+ * keep its user_data valid until that invocation returns.
+ * Returns IVY_OK, IVY_EINVAL for a NULL context, or IVY_ESTOPPED after stop.
+ */
+int IvyContextSetTransportErrorCallback(IvyContext *ctx,
+	IvyTransportErrorCallback callback, void *user_data);
+int IvySetTransportErrorCallback(IvyTransportErrorCallback callback, void *user_data);
+
 /**
  * @brief Install or replace the callback for direct messages.
  *
@@ -626,12 +657,21 @@ __attribute__((format(printf,4,5))) ;
  * @param ctx Context to send on.
  * @param fmt_message printf-style format string for the message.
  * @param ... Arguments for @p fmt_message.
- * @return Number of matching recipients, or a negative ::IvyStatus.
+ * @return Number of frames accepted locally, or a negative ::IvyStatus if any
+ * matching send failed. Zero matches is success.
  *
  * @details
  * The message is matched against remote subscriptions known by @p ctx. In a
  * multi-bus program, call this once per context if the same message should be
- * sent on several buses.
+ * sent on several buses. A peer with multiple matching subscriptions counts
+ * multiple times. Success means a complete frame was written or queued, not
+ * that the peer received it. Sending continues after individual failures;
+ * use ::IvyContextSendMsgEx() when partial counts are needed. Retrying the
+ * whole message can duplicate frames already accepted by other subscriptions.
+ * IVY_EIO reports a socket failure, IVY_ENOMEM an allocation failure, and
+ * IVY_EFIFOFULL a frame that cannot fit in the outgoing FIFO. Newlines, Ivy
+ * argument separators (bytes 2 and 3), and formatted NUL bytes are rejected
+ * with IVY_EINVAL before matching.
  *
  * @code{.c}
  * int recipients = IvyContextSendMsg(ctx, "TRACK %d %s", id, label);
@@ -642,14 +682,28 @@ __attribute__((format(printf,4,5))) ;
 int IvyContextSendMsg(IvyContext *ctx, const char *fmt_message, ... )
 __attribute__((format(printf,2,3)));
 
+/** Send with a report, including on partial failure. Returns IVY_OK only if
+ * every matching frame was accepted locally; otherwise the first error.
+ * Sending continues to the remaining subscriptions after an individual failure.
+ * matched == accepted + failed; errors before matching leave all counts zero.
+ * report must not be NULL. A negative result does not undo accepted frames.
+ */
+int IvyContextSendMsgEx(IvyContext *ctx, IvySendReport *report, const char *fmt_message, ...)
+__attribute__((format(printf,3,4)));
+int IvySendMsgEx(IvySendReport *report, const char *fmt_message, ...)
+__attribute__((format(printf,2,3)));
+
 /**
  * @brief Send a direct message to one peer.
  *
  * @param ctx Context that owns @p app.
  * @param app Peer handle.
  * @param id Application-defined direct-message identifier.
- * @param msg Message payload.
- * @return ::IVY_OK on success, or a negative ::IvyStatus.
+ * @param msg NUL-terminated text, without newline or Ivy argument separators.
+ * @return ::IVY_OK when the complete frame is written or queued locally, or a
+ * negative ::IvyStatus (including IVY_EIO, IVY_ENOMEM and IVY_EFIFOFULL).
+ * No delivery acknowledgement is implied; deferred failures are reported to
+ * the optional ::IvyTransportErrorCallback.
  *
  * @code{.c}
  * IvyContextSendDirectMsg(ctx, app, 7, "reload");
@@ -1296,7 +1350,8 @@ int IvySendDieMsg(IvyClientPtr app );
  *
  * @param fmt_message printf-style message format.
  * @param ... Arguments for @p fmt_message.
- * @return Number of matching recipients, or a negative ::IvyStatus.
+ * @return Number of frames accepted locally, or a negative ::IvyStatus if any
+ * matching send failed. See ::IvyContextSendMsg() for partial-send semantics.
  *
  * @deprecated Use ::IvyContextSendMsg().
  *

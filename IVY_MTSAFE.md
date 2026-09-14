@@ -163,7 +163,8 @@ typedef enum {
     IVY_EINVAL = -3,
     IVY_ENOMEM = -4,
     IVY_EIO = -5,
-    IVY_EUNANCHORED = -6
+    IVY_EUNANCHORED = -6,
+    IVY_EFIFOFULL = -7
 } IvyStatus;
 
 typedef enum {
@@ -978,3 +979,29 @@ passer en `STOPPING`, réveiller la boucle, libérer dans le bon thread, marquer
 `STOPPED`, puis réveiller les threads en attente. Les autres threads découvrent
 l'arrêt de façon asynchrone lors de leur prochain appel Ivy, par une valeur de
 retour négative ou un pointeur `NULL` accompagné de `IvyGetLastError()`.
+
+
+### Erreurs de transport et envoi partiel (3.18)
+
+`IvyContextSendMsg()` et `IvySendMsg()` retournent un statut négatif dès qu'une
+trame correspondante échoue, même si d'autres ont été acceptées. Les variantes
+`SendMsgEx` exposent `IvySendReport` (matched/accepted/failed et code système).
+L'agrégation OpenMP est protégée et poursuit les autres envois. L'acceptation
+signifie écriture ou mise en FIFO complète, sans accusé de réception distant.
+
+Les écritures FIFO sont atomiques au niveau de la trame, avec distinction
+`IVY_ENOMEM` / `IVY_EFIFOFULL`. Une perte de suffixe après écriture partielle
+invalide la connexion. Les erreurs de vidage ne laissent plus la boucle
+réessayer indéfiniment une socket en erreur. L'intérêt en écriture de select
+est un drapeau protégé, sans commande différée retenant un Channel supprimé.
+
+Le callback optionnel `IvyContextSetTransportErrorCallback()` reçoit le pair,
+son user_data, le statut Ivy et errno/WSA. Il est appelé par la boucle, avant
+la déconnexion, hors verrous d'envoi et de contexte. Il participe au suivi des
+callbacks actifs ; un remplacement n'attend pas une invocation en cours.
+Les refus récupérables (FIFO pleine ou allocation avant écriture) sont retournés
+par l'appel d'envoi. L'arrêt ne garantit pas le vidage des FIFO ni une dernière
+notification. `tests/run_transport_errors.sh` couvre ces contrats par injection
+de fautes sur les bibliothèques normale, OpenMP et GLib. La destruction GLib
+conserve une référence au GMainContext jusqu’à la fin de la libération de sa
+source, même si l’application a déjà relâché la sienne.

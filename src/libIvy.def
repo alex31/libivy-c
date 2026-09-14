@@ -13,6 +13,8 @@ IvyContextMainLoop
 IvyContextIdle
 IvyContextSetBindCallback
 IvyContextSetPongCallback
+IvyContextSetTransportErrorCallback
+IvySetTransportErrorCallback
 IvyContextBindDirectMsg
 IvyContextBindMsg
 IvyContextChangeMsg
@@ -20,6 +22,8 @@ IvyValidateAnchoredRegexp
 IvyContextUnbindMsg
 IvyContextSendError
 IvyContextSendMsg
+IvyContextSendMsgEx
+IvySendMsgEx
 IvyContextSendDirectMsg
 IvyContextSendDieMsg
 IvyContextSendPing

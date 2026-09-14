@@ -91,7 +91,20 @@ static void on_application(IvyClientPtr app, void *data, IvyApplicationEvent eve
         atomic_fetch_add(&f->disconnected, 1);
 }
 
-
+static void on_transport(IvyClientPtr app, void *data, IvyStatus status, int system_error)
+{
+    Fixture *f = data;
+    const char *name = IvyContextGetApplicationName(f->sender, app);
+    if (!pthread_equal(pthread_self(), f->sender_thread)) atomic_fetch_or(&f->bad_callback, 1);
+    if (!name || strcmp(name, "transport-first") != 0) atomic_fetch_or(&f->bad_callback, 2);
+    if (atomic_load(&f->disconnected)) atomic_fetch_or(&f->bad_callback, 4);
+    /* These reentrant calls prove that notification holds neither send nor context locks. */
+    assert(IvyContextSetTransportErrorCallback(f->sender, NULL, NULL) == IVY_OK);
+    assert(IvyContextSendMsg(f->sender, "NO_MATCH") == 0);
+    atomic_store(&f->error_status, status);
+    atomic_store(&f->system_error, system_error);
+    atomic_fetch_add(&f->errors, 1);
+}
 
 static IvyClientPtr wait_peer(IvyContext *ctx, const char *name)
 {
@@ -133,6 +146,7 @@ static void fixture_start(Fixture *f, int port)
     assert(f->sender && f->first && f->second);
     assert(IvyContextBindMsg(f->first, message, &f->first_messages, "^TEST (.*)$"));
     assert(IvyContextBindMsg(f->second, message, &f->second_messages, "^TEST (.*)$"));
+    assert(IvyContextSetTransportErrorCallback(f->sender, on_transport, f) == IVY_OK);
     assert(IvyContextStart(f->first, bus) == IVY_OK);
     assert(IvyContextStart(f->second, bus) == IVY_OK);
     assert(pthread_create(&f->first_thread, NULL, loop, f->first) == 0);
@@ -204,34 +218,92 @@ static void fifo_test(void)
 int main(int argc, char **argv)
 {
     Fixture f;
+    IvySendReport report;
     int port = argc > 1 ? atoi(argv[1]) : 29400;
-    int status = IVY_OK;
+    int i, status;
     fifo_test();
     fixture_start(&f, port);
+    report = (IvySendReport){9, 9, 9, 9};
+    assert(IvyContextSendMsgEx(NULL, &report, "TEST") == IVY_EINVAL);
+    assert(!report.matched && !report.accepted && !report.failed && !report.system_error);
+    assert(IvyContextSendMsgEx(f.sender, NULL, "TEST") == IVY_EINVAL);
+    assert(IvyContextSetTransportErrorCallback(NULL, NULL, NULL) == IVY_EINVAL);
+    assert(IvyContextSendDirectMsg(f.sender, NULL, 0, "TEST") == IVY_EINVAL);
+    assert(IvyContextSendDirectMsg(f.first, f.first_peer, 0, "TEST") == IVY_EINVAL);
+    assert(IvyContextSendMsgEx(f.sender, &report, "TEST %c", 0) == IVY_EINVAL);
+    for (const char *invalid = "\n\002\003"; *invalid; ++invalid) {
+        assert(IvyContextSendMsgEx(f.sender, &report, "TEST %c", *invalid) == IVY_EINVAL);
+        assert(!report.matched && !report.accepted && !report.failed && !report.system_error);
+        assert(IvyContextSendDirectMsg(f.sender, f.first_peer, 0, (char *)invalid) == IVY_EINVAL);
+    }
+    assert(IvyContextSendMsgEx(f.sender, &report, "NOT_MATCHING") == IVY_OK);
+    assert(report.matched == 0 && report.accepted == 0 && report.failed == 0);
+    fail_malloc = 1;
+    assert(IvyContextSendMsgEx(f.sender, &report, "TEST allocation") == IVY_ENOMEM);
+    assert(report.matched == 0 && report.failed == 0);
     atomic_store(&fault_mode, BROKEN);
-    assert(IvyContextSendDirectMsg(f.sender, f.first_peer, 7, "broken") == IVY_EIO);
+    status = IvyContextSendMsgEx(f.sender, &report, "TEST failure");
+    assert(status == IVY_EIO && IvyGetLastError() == IVY_EIO);
+    assert(report.matched == 2 && report.accepted == 1 && report.failed == 1 && report.system_error == EPIPE);
+    wait_count(&f.second_messages, 1);
+    wait_count(&f.errors, 1);
     wait_count(&f.disconnected, 1);
+    assert(atomic_load(&send_calls) == 1 && !atomic_load(&f.bad_callback));
+    assert(atomic_load(&f.error_status) == IVY_EIO && atomic_load(&f.system_error) == EPIPE);
     fixture_stop(&f);
+
     fixture_start(&f, port + 1);
     atomic_store(&fault_mode, PARTIAL_NO_MEMORY);
-    assert(IvyContextSendDirectMsg(f.sender, f.first_peer, 7, "partial") == IVY_ENOMEM);
-    wait_count(&f.disconnected, 1);
+    assert(IvyContextSendMsg(f.sender, "TEST partial") == IVY_ENOMEM);
+    wait_count(&f.errors, 1);
+    wait_count(&f.second_messages, 1);
+    assert(atomic_load(&f.first_messages) == 0 && atomic_load(&send_calls) == 1);
+    assert(atomic_load(&f.error_status) == IVY_ENOMEM && atomic_load(&f.system_error) == 0);
     fixture_stop(&f);
+
     fixture_start(&f, port + 2);
     atomic_store(&fault_mode, BLOCKED);
-    for (int i = 0; i < 100 && status == IVY_OK; ++i)
-        status = IvyContextSendDirectMsg(f.sender, f.first_peer, 7,
-            "full FIFO: the complete frame must fit or be rejected without changing queued bytes");
-    assert(status == IVY_EFIFOFULL);
-    atomic_store(&fault_mode, NORMAL);
-    for (int i = 0; i < 5000; ++i) {
-        status = IvyContextSendDirectMsg(f.sender, f.first_peer, 7, "recovered");
-        if (status == IVY_OK) break;
-        assert(status == IVY_EFIFOFULL);
-        pause_briefly();
+    for (i = 0; i < 100; ++i) {
+        status = IvyContextSendMsgEx(f.sender, &report, "TEST %080d", i);
+        if (status != IVY_OK) break;
+        assert(report.matched == 2 && report.accepted == 2 && report.failed == 0);
     }
-    assert(status == IVY_OK && !atomic_load(&f.disconnected));
+    assert(i > 0 && i < 100 && status == IVY_EFIFOFULL);
+    assert(report.matched == 2 && report.accepted == 1 && report.failed == 1 && !report.system_error);
+    assert(!atomic_load(&f.errors));
+    atomic_store(&fault_mode, NORMAL);
+    wait_count(&f.first_messages, i);
+    wait_count(&f.second_messages, i + 1);
+    assert(IvyContextSendMsg(f.sender, "TEST after-full") == 2);
+    wait_count(&f.first_messages, i + 1);
+    wait_count(&f.second_messages, i + 2);
     fixture_stop(&f);
-    puts("Checked FIFO and partial-frame transport tests passed");
+
+    fixture_start(&f, port + 3);
+    atomic_store(&fault_mode, BLOCKED);
+    assert(IvyContextSendMsgEx(f.sender, &report, "TEST deferred") == IVY_OK);
+    assert(report.accepted == 2 && !report.failed);
+    atomic_store(&fault_mode, BROKEN);
+    wait_count(&f.errors, 1);
+    wait_count(&f.disconnected, 1);
+    assert(!atomic_load(&f.bad_callback) && atomic_load(&f.error_status) == IVY_EIO);
+    assert(atomic_load(&f.system_error) == EPIPE);
+    fixture_stop(&f);
+    fixture_start(&f, port + 4);
+    atomic_store(&fault_mode, BROKEN);
+    assert(IvyContextSendDirectMsg(f.sender, f.first_peer, 7, "direct failure") == IVY_EIO);
+    wait_count(&f.errors, 1);
+    wait_count(&f.disconnected, 1);
+    assert(!atomic_load(&f.bad_callback) && atomic_load(&f.system_error) == EPIPE);
+    fixture_stop(&f);
+
+    fixture_start(&f, port + 5);
+    assert(IvyContextSetTransportErrorCallback(f.sender, NULL, NULL) == IVY_OK);
+    atomic_store(&fault_mode, BROKEN);
+    assert(IvyContextSendDirectMsg(f.sender, f.first_peer, 7, "no handler") == IVY_EIO);
+    wait_count(&f.disconnected, 1);
+    assert(!atomic_load(&f.errors));
+    fixture_stop(&f);
+    puts("C transport, partial fan-out, FIFO and deferred-error tests passed");
     return 0;
 }
