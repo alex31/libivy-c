@@ -5,6 +5,7 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/ivy-transport-test.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 make -C "$repo_dir/src" static-libs shared-libs libivy_omp.a
 variants='normal omp'
+if pkg-config --exists 'glib-2.0 >= 2.36'; then variants="$variants glib"; fi
 for variant in $variants; do
     extra_libs=''
     extra_flags=''

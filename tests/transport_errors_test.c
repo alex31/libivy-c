@@ -12,6 +12,9 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef TRANSPORT_GLIB
+#include <glib.h>
+#endif
 
 static void pause_briefly(void)
 {
@@ -64,7 +67,16 @@ static IvyClientPtr wait_peer(IvyContext *ctx, const char *name)
 
 static IvyContext *create_context(const char *name, IvyApplicationCallback callback, void *data)
 {
+#ifdef TRANSPORT_GLIB
+    /* Each loop thread must drive its own GMainContext. */
+    GMainContext *main_context = g_main_context_new();
+    g_main_context_push_thread_default(main_context);
+#endif
     IvyContext *ctx = IvyContextCreate(name, NULL, callback, data, NULL, NULL);
+#ifdef TRANSPORT_GLIB
+    g_main_context_pop_thread_default(main_context);
+    g_main_context_unref(main_context);
+#endif
     return ctx;
 }
 

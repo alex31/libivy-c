@@ -242,6 +242,7 @@ IvyChannelState *IvyChannelGetDefaultState(void)
 void IvyChannelStateDestroy(IvyChannelState *state)
 {
   Channel channels;
+  GMainContext *context;
   if (!state || state == default_state)
     return;
   IvyChannelStopFor(state);
@@ -257,7 +258,11 @@ void IvyChannelStateDestroy(IvyChannelState *state)
   g_mutex_unlock(&state->mutex);
   delete_channels(channels);
   TimerStateDestroy(state->timers);
+  /* GLib still uses the context while finalizing the source. Keep it alive
+   * until g_source_unref returns, even if no application reference remains. */
+  context = g_main_context_ref(state->context);
   g_source_unref((GSource *)state);
+  g_main_context_unref(context);
 }
 
 IvyTimerState *IvyChannelGetTimerState(IvyChannelState *state)
