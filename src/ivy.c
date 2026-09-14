@@ -279,7 +279,7 @@ static void IvyDispatchBindCallback(IvyContext *ctx, IvyClientPtr app, int id, c
 static void IvyDispatchDieCallback(IvyContext *ctx, IvyClientPtr app, int id);
 static void IvyDispatchPongCallback(IvyContext *ctx, IvyClientPtr app, int roundTripOrTimout);
 static void IvyDispatchDirectCallback(IvyContext *ctx, IvyClientPtr app, int id, char *msg);
-static void substituteInterval (IvyBuffer *src);
+static int substituteInterval(IvyBuffer *src);
 static int ParseIvyIPv4Broadcast(const char *start, const char *end, uint32_t *out);
 
 typedef struct _ivy_app_callback_event {
@@ -2151,7 +2151,7 @@ static MsgRcvPtr
 IvyContextBindMsgV(IvyContext *ctx, MsgCallback callback, void *user_data,
 		   const char *fmt_regex, va_list ap)
 {
-	IvyBuffer *buffer;
+	IvyBuffer buffer = { NULL, 0, 0 };
 	int status = IvyContextRejectIfStopped(ctx);
 	IvyClientPtr clnt;
 	MsgRcvPtr msg;
@@ -2164,24 +2164,35 @@ IvyContextBindMsgV(IvyContext *ctx, MsgCallback callback, void *user_data,
 		return NULL;
 	}
 
-	buffer = &ctx->ivy_bind_buffer;
-	buffer->offset = 0;
-	if (make_message( buffer, fmt_regex, ap ) < 0) {
+	if (make_message( &buffer, fmt_regex, ap ) < 0) {
+		free(buffer.data);
 		IvySetLastError(IVY_ENOMEM);
 		return NULL;
 	}
 
-	substituteInterval (buffer);
+	status = substituteInterval(&buffer);
+	if (status != IVY_OK) {
+		free(buffer.data);
+		IvySetLastError((IvyStatus)status);
+		return NULL;
+	}
+	msg = (MsgRcvPtr)calloc(1, sizeof(*msg));
+	if (!msg) {
+		free(buffer.data);
+		IvySetLastError(IVY_ENOMEM);
+		return NULL;
+	}
+	/* Each registration owns its formatted regexp, including concurrent calls. */
+	msg->regexp = buffer.data;
+	msg->callback = callback;
+	msg->user_data = user_data;
 
 	IvyAppCallbackQueueInit(&callback_events);
 	IvyBindingsWriteLock(ctx);
 	/* add Msg to the query list */
-	IVY_LIST_ADD_START( msg_recv, msg )
-		msg->id = ctx->ivy_recv_id++;
-		msg->regexp = strdup(buffer->data);
-		msg->callback = callback;
-		msg->user_data = user_data;
-	IVY_LIST_ADD_END( msg_recv, msg )
+	msg->id = ctx->ivy_recv_id++;
+	msg->next = msg_recv;
+	msg_recv = msg;
 	/* Send to already connected clients */
 	/* recherche dans la liste des requetes recues de mes clients */
 	IVY_LIST_EACH( allClients, clnt ) {
@@ -2231,10 +2242,9 @@ IvyBindMsg (MsgCallback callback, void *user_data, const char *fmt_regex, ... )
 static MsgRcvPtr
 IvyContextChangeMsgV(IvyContext *ctx, MsgRcvPtr msg, const char *fmt_regex, va_list ap)
 {
-	IvyBuffer *buffer;
+	IvyBuffer buffer = { NULL, 0, 0 };
 	int status = IvyContextRejectIfStopped(ctx);
 	IvyClientPtr clnt;
-	char *new_regexp;
 	IvyAppCallbackQueue callback_events;
 
 	if (status != IVY_OK)
@@ -2244,27 +2254,24 @@ IvyContextChangeMsgV(IvyContext *ctx, MsgRcvPtr msg, const char *fmt_regex, va_l
 		return NULL;
 	}
 
-	buffer = &ctx->ivy_change_buffer;
-	buffer->offset = 0;
-	if (make_message( buffer, fmt_regex, ap ) < 0) {
+	if (make_message( &buffer, fmt_regex, ap ) < 0) {
+		free(buffer.data);
 		IvySetLastError(IVY_ENOMEM);
 		return NULL;
 	}
 
-	substituteInterval (buffer);
+	status = substituteInterval(&buffer);
+	if (status != IVY_OK) {
+		free(buffer.data);
+		IvySetLastError((IvyStatus)status);
+		return NULL;
+	}
 
 	IvyAppCallbackQueueInit(&callback_events);
 	IvyBindingsWriteLock(ctx);
 	/* change Msg in the query list */
-	new_regexp = strdup(buffer->data);
-	if (!new_regexp) {
-		IvyBindingsWriteUnlock(ctx);
-		IvyAppCallbackQueueDestroy(&callback_events);
-		IvySetLastError(IVY_ENOMEM);
-		return NULL;
-	}
 	free (msg->regexp);
-	msg->regexp = new_regexp;
+	msg->regexp = buffer.data;
 
 	/* Send to already connected clients */
 	/* recherche dans la liste des requetes recues de mes clients */
@@ -2983,46 +2990,79 @@ int IvyGetApplicationMessagesBuffer(IvyClientPtr app,
 		app, buffer, buffer_size, sep);
 }
 
-static void substituteInterval (IvyBuffer *src)
+static int substituteInterval(IvyBuffer *src)
 {
-  /* pas de traitement couteux s'il n'y a rien à interpoler */
-  if (strstr (src->data, "(?I") == NULL) {
-    return;
-  } else {
-    char *curPos;
-    char *itvPos;
-    IvyBuffer dst = {NULL, 0, 0};
-    dst.size = 8192;
-    dst.data = (char *) malloc (dst.size);
+	const char *cursor = src->data;
+	const char *interval;
+	IvyBuffer result = { NULL, 0, 0 };
+	int status = IVY_EINVAL;
 
-    curPos = src->data;
-    while ((itvPos = strstr (curPos, "(?I")) != NULL) {
-      /* copie depuis la position courante jusqu'à l'intervalle */
-      int lenCp, min,max;
-      char withDecimal;
-      lenCp = itvPos-curPos;
-      memcpy (&(dst.data[dst.offset]), curPos, lenCp);
-      curPos=itvPos;
-      dst.offset += lenCp;
+	if (!strstr(cursor, "(?I"))
+		return IVY_OK;
+	while ((interval = strstr(cursor, "(?I")) != NULL) {
+		char *end;
+		const char *number = interval + 3;
+		long min, max;
+		int floating = 1;
+		char expanded[8192];
+		size_t prefix_size = (size_t)(interval - cursor);
 
-      /* extraction des paramètres de l'intervalle */
-      sscanf (itvPos, "(?I%d#%d%c", &min, &max, &withDecimal);
+		errno = 0;
+		min = strtol(number, &end, 10);
+		if (end == number || errno == ERANGE || *end != '#')
+			goto fail;
+		number = end + 1;
+		errno = 0;
+		max = strtol(number, &end, 10);
+		if (end == number || errno == ERANGE)
+			goto fail;
+		if (*end == 'i' || *end == 'f') {
+			floating = *end != 'i';
+			++end;
+		}
+		if (*end != ')' || !regexpGen(expanded, sizeof(expanded), min, max, floating))
+			goto fail;
+		if (prefix_size > INT_MAX ||
+		    prefix_size + strlen(expanded) >= (size_t)(INT_MAX - result.offset))
+			goto fail;
+		if (make_message_var(&result, "%.*s%s", (int)prefix_size, cursor, expanded) < 0) {
+			status = IVY_ENOMEM;
+			goto fail;
+		}
+		cursor = end + 1;
+	}
+	if (strlen(cursor) >= (size_t)(INT_MAX - result.offset))
+		goto fail;
+	if (make_message_var(&result, "%s", cursor) < 0) {
+		status = IVY_ENOMEM;
+		goto fail;
+	}
+	free(src->data);
+	*src = result;
+	return IVY_OK;
+fail:
+	free(result.data);
+	return status;
+}
 
-      /*      printf ("DBG> substituteInterval min=%d max=%d withDecimal=%d\n",  */
-      /*      min, max, (withDecimal != 'i'));    */
+int IvyValidateAnchoredRegexp(const char *regexp)
+{
+	IvyBuffer buffer = { NULL, 0, 0 };
+	int status;
 
-      /* generation et copie de l'intervalle */
-      regexpGen (&(dst.data[dst.offset]), dst.size-dst.offset, min, max, (withDecimal != 'i'));
-      dst.offset = strlen (dst.data);
-
-      /* consommation des caractères décrivant intervalle dans la chaine source */
-      curPos = strstr (curPos, ")");
-      curPos++;
-    }
-    strncat (dst.data, curPos, dst.size-dst.offset);
-    free (src->data);
-    src->data = dst.data;
-  }
+	if (!regexp || strlen(regexp) >= INT_MAX)
+		return IvyReturnStatus(IVY_EINVAL);
+	if (regexp[0] != '^')
+		return IvyReturnStatus(IVY_EUNANCHORED);
+	if (make_message_var(&buffer, "%s", regexp) < 0) {
+		free(buffer.data);
+		return IvyReturnStatus(IVY_ENOMEM);
+	}
+	status = substituteInterval(&buffer);
+	if (status == IVY_OK)
+		status = IvyBindingCheckAnchored(buffer.data);
+	free(buffer.data);
+	return IvyReturnStatus((IvyStatus)status);
 }
 
 

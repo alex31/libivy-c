@@ -162,7 +162,8 @@ typedef enum {
     IVY_ESTATE = -2,
     IVY_EINVAL = -3,
     IVY_ENOMEM = -4,
-    IVY_EIO = -5
+    IVY_EIO = -5,
+    IVY_EUNANCHORED = -6
 } IvyStatus;
 
 typedef enum {
@@ -250,6 +251,8 @@ Convention proposée :
 - `IVY_ESTOPPED` indique que le contexte est en arrêt ou arrêté ;
 - `IVY_ESTATE` indique un appel invalide pour l'état courant ;
 - `IVY_EINVAL`, `IVY_ENOMEM` et `IVY_EIO` couvrent les erreurs classiques ;
+- `IVY_EUNANCHORED` distingue une regexp qui ne respecte pas l'ancrage requis
+  d'une erreur de syntaxe ou d'un autre argument invalide ;
 - `IvySendMsg()` retourne `-1` sur arrêt, car `0` signifie déjà "aucun
   destinataire".
 

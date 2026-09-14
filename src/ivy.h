@@ -159,7 +159,8 @@ typedef enum {
 	IVY_ESTATE = -2, /**< Operation is invalid in the current context state. */
 	IVY_EINVAL = -3, /**< Invalid argument or invalid handle for this context. */
 	IVY_ENOMEM = -4, /**< Allocation failed or caller buffer was too small. */
-	IVY_EIO = -5     /**< Socket or transport I/O failure. */
+	IVY_EIO = -5,    /**< Socket or transport I/O failure. */
+	IVY_EUNANCHORED = -6 /**< Regexp does not satisfy the required start anchoring. */
 } IvyStatus;
 
 /**
@@ -570,6 +571,21 @@ __attribute__((format(printf,4,5))) ;
 MsgRcvPtr IvyContextChangeMsg(IvyContext *ctx,
 	 MsgRcvPtr msg, const char *fmt_regex, ... )
 __attribute__((format(printf,3,4)));
+
+/**
+ * @brief Validate a start-anchored regexp without registering it.
+ *
+ * @param regexp Regexp text, not a printf format. It must begin with ^.
+ * @return IVY_OK when PCRE2 recognizes the expanded regexp as anchored,
+ * IVY_EUNANCHORED when the leading ^ is missing or the expanded regexp is not
+ * recognized as anchored, IVY_EINVAL for other invalid arguments or regexp
+ * syntax, IVY_ENOMEM on allocation failure, or IVY_ESTATE without PCRE2.
+ *
+ * Ivy interval syntax is expanded before validation. The original expression
+ * is not rewritten, and PCRE2_ANCHORED is not forced on the compiled pattern.
+ * This context-independent check does not register a subscription or run JIT.
+ */
+int IvyValidateAnchoredRegexp(const char *regexp);
 
 /**
  * @brief Remove a local message subscription.

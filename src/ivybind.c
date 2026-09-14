@@ -40,6 +40,7 @@
 
 #include "list.h"
 #include "ivybind.h"
+#include "ivy.h"
 #include "ivythread.h"
 
 static IVY_TLS char err_buf[4096];
@@ -91,6 +92,33 @@ static int IvyBindingPrepareMatchData(IvyBinding bind)
 	return 1;
 }
 #endif /* USE_PCRE_REGEX */
+
+int IvyBindingCheckAnchored(const char *expression)
+{
+#ifdef USE_PCRE_REGEX
+	pcre2_code *regexp;
+	int error;
+	PCRE2_SIZE offset;
+	uint32_t options = 0;
+	int status;
+
+	if (!expression)
+		return IVY_EINVAL;
+	regexp = pcre2_compile((PCRE2_SPTR)expression, PCRE2_ZERO_TERMINATED,
+		PCRE_OPT, &error, &offset, NULL);
+	if (!regexp)
+		return error == PCRE2_ERROR_HEAP_FAILED ? IVY_ENOMEM : IVY_EINVAL;
+	status = pcre2_pattern_info(regexp, PCRE2_INFO_ALLOPTIONS, &options);
+	pcre2_code_free(regexp);
+	if (status != 0)
+		return IVY_EINVAL;
+	return options & PCRE2_ANCHORED ? IVY_OK : IVY_EUNANCHORED;
+#else
+	(void)expression;
+	/* Do not claim an anchoring guarantee this backend cannot establish. */
+	return IVY_ESTATE;
+#endif
+}
 
 IvyBinding IvyBindingCompile( const char * expression,  int *erroffset, const char **errmessage )
 {

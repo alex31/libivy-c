@@ -16,6 +16,7 @@ IvyContextSetPongCallback
 IvyContextBindDirectMsg
 IvyContextBindMsg
 IvyContextChangeMsg
+IvyValidateAnchoredRegexp
 IvyContextUnbindMsg
 IvyContextSendError
 IvyContextSendMsg

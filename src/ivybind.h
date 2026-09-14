@@ -34,6 +34,9 @@ void IvyBindindFilterCheck( const char *message );
 IvyBinding IvyBindingCompile( const char *expression, int *erroffset, const char **errmessage );
 void IvyBindingFree( IvyBinding _bind );
 
+/* Internal check after Ivy interval expansion; returns an IvyStatus. */
+int IvyBindingCheckAnchored(const char *expression);
+
 /* Execution , extraction */
 int IvyBindingExec( IvyBinding _bind, const char * message );
 /* Get Argument */
@@ -47,4 +50,3 @@ void IvyBindingTerminate();
 #ifdef __cplusplus
 }
 #endif
-
