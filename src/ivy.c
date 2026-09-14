@@ -830,9 +830,6 @@ int IvyContextDestroy(IvyContext *ctx)
 	free(ctx->ivy_send_error_buffer.data);
 	free(ctx->ivy_regexp_call_buffer.data);
 	free(ctx->ivy_regexp_call_unique_buffer.data);
-#ifdef OPENMP
-	free(ctx->ivy_omp_dict_cache.msgPtrArray);
-#endif
 
 	for (msg = ctx->ivy_msg_recv; msg; msg = next_msg) {
 		next_msg = msg->next;
@@ -845,6 +842,10 @@ int IvyContextDestroy(IvyContext *ctx)
 	ctx->ivy_loop = NULL;
 	SocketStateDestroy(ctx->ivy_sockets);
 	ctx->ivy_sockets = NULL;
+#ifdef OPENMP
+	free(ctx->ivy_omp_dict_cache.msgPtrArray);
+	ctx->ivy_omp_dict_cache.msgPtrArray = NULL;
+#endif
 
 	IvyContextSetState(ctx, IVY_CTX_DESTROYED);
 	IvyRwLockDestroy(&ctx->ivy_bindings_rwlock);
