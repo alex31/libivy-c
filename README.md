@@ -185,6 +185,28 @@ auto filtered = bus.bind(on_message, R"(^TRACK {} ([0-9]{{2}})$)", aircraft_id);
 auto direct = bus.bind(on_direct);
 ```
 
+Regexp subscriptions are start-anchored by default. A `consteval` parameter
+type requires constant regexps and format strings to begin with `^`; missing
+anchors cause a compilation error. The final regexp is also validated with
+PCRE2 after formatting and Ivy interval expansion. For example, `^FOO|BAR`
+starts with `^` but is rejected at registration because its second alternative
+is unanchored. Runtime arguments cannot introduce such an alternative silently.
+The validator checks PCRE2's inferred `PCRE2_ANCHORED` flag without forcing it.
+It does not add anchors or groups, preserving Ivy's `^MESSAGE_CLASS` filtering.
+
+Unanchored search requires an explicit operation:
+
+```cpp
+auto anywhere = bus.bind_unanchored(on_message, R"(TRACK ([0-9]{2})$)");
+auto formatted_anywhere = bus.bind_unanchored(on_message, "TRACK {} (.*)", aircraft_id);
+```
+
+For a dynamically constructed regexp that must remain anchored, use
+`bus.bind(on_message, ivy::runtime_regexp(expression))`. `runtime_regexp` borrows
+the string for this call and does not opt out of validation: it still must
+start with `^`, and PCRE2 must recognize it as anchored. A dynamic format can
+be processed separately and its resulting regexp passed through this route.
+
 `MessageCallback` is a `std::move_only_function` taking
 `(IvyClientPtr, std::span<const std::string_view>)`; `DirectCallback` takes
 `(IvyClientPtr, int, std::string_view)`. Captures and direct-message text are
@@ -195,7 +217,11 @@ Without formatting arguments, the regexp is passed unchanged, including braces
 and percent signs. With one or more arguments, the header's template uses
 `std::format_string` and `std::format`: double literal regexp braces as `{{` and
 `}}`. Formatting inserts values as supplied, without escaping regexp syntax.
-The format is checked at compile time.
+The format is checked at compile time. Anchored regexps are compiled locally
+once for validation; remote Ivy peers still compile them for message matching.
+The `_unanchored` overloads bypass this local anchoring validation and retain
+the C API's remote regexp compilation behavior. Raw C printf formatting is not
+exposed by these overloads. Local validation requires a PCRE2-enabled C library.
 
 The regexp overloads return `std::expected<ivy::Subscription, std::error_code>`;
 the direct overload returns `std::expected<ivy::DirectSubscription, std::error_code>`.
@@ -232,6 +258,13 @@ if (filtered) {
 }
 ```
 
+`change()` enforces anchoring even on a subscription originally created with
+`bind_unanchored`. Use `change_unanchored(regexp)` or
+`change_unanchored(format, arguments...)` to explicitly allow search away from
+the start, or `change(ivy::runtime_regexp(expression))` to check a dynamic
+anchored regexp. The default forms deliberately have no implicit runtime
+`std::string_view` overload, so dynamic strings cannot bypass the policy.
+
 Both change overloads return `std::expected<void, std::error_code>`. An inactive
 token returns `IVY_ESTATE`, and a stopped bus returns `IVY_ESTOPPED`. Input,
 formatting and allocation errors use the same conventions as bind. A failed
@@ -253,6 +286,11 @@ Empty callables and embedded NUL bytes in regexps return `IVY_EINVAL`; stopped
 buses return `IVY_ESTOPPED`, and moved-from buses return `IVY_ESTATE`. Allocation
 failures return `IVY_ENOMEM`. The formatted overload maps `std::format_error` to
 `IVY_EINVAL`; other exceptions from user-defined formatters propagate to the caller.
+The anchoring policy has its own status, `IVY_EUNANCHORED`: the required leading
+`^` is missing or PCRE2 does not recognize the expanded regexp as anchored.
+Syntax errors remain `IVY_EINVAL`. The C++ error message for `IVY_EUNANCHORED` is
+"regexp must start with '^' and be anchored".
+
 Run `./tests/cpp/run.sh` for the wrapper tests, including a temporary
 installation and consumers linked against the static and shared libraries.
 `examples/cpp/lifecycle.cpp` demonstrates the available wrapper API and exits

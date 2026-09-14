@@ -31,7 +31,7 @@ int main(int argc, char** argv) {
             [](IvyClientPtr, int id, std::string_view message) {
                 std::cout << "Direct " << id << ": " << message << '\n';
             });
-        auto anywhere = bus.bind(
+        auto anywhere = bus.bind_unanchored(
             [](IvyClientPtr, std::span<const std::string_view> args) {
                 if (!args.empty())
                     std::cout << "Unanchored alert: " << args[0] << '\n';
@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
 
         // Only regexp subscriptions offer change(); the callback stays the same.
         const std::string dynamic_pattern = R"(^BONJOUR (.*)$)";
-        if (auto changed = messages->change(std::string_view(dynamic_pattern)); !changed) {
+        if (auto changed = messages->change(ivy::runtime_regexp(dynamic_pattern)); !changed) {
             std::cerr << "Unable to change subscription: " << changed.error().message() << '\n';
             return 1;
         }

@@ -45,6 +45,9 @@ static IvyStatus create_error = IVY_OK;
 static IvyStatus start_error = IVY_OK;
 static IvyStatus bind_error = IVY_OK;
 static IvyStatus change_error = IVY_OK;
+static IvyStatus validation_error = IVY_OK;
+static int validations = 0;
+static std::string validated_regexp;
 static std::move_only_function<void()> during_change;
 static int unbind_count = 0;
 static int live_contexts = 0;
@@ -99,7 +102,12 @@ IvyStatus IvyGetLastError() { return last_error; }
 
 
 
-
+int IvyValidateAnchoredRegexp(const char* regexp) {
+    ++validations;
+    validated_regexp = regexp;
+    last_error = regexp[0] == '^' ? validation_error : IVY_EUNANCHORED;
+    return last_error;
+}
 
 MsgRcvPtr IvyContextBindMsg(IvyContext* ctx, MsgCallback callback, void* data,
                            const char* format, ...) {
@@ -336,7 +344,7 @@ void subscriptions_and_formats() {
             received.assign(args.begin(), args.end());
         };
     std::string pattern = R"(^TRACK ([0-9]{2}) 100%$-suffix)";
-    auto result = bus.bind(std::move(callback), std::string_view(std::string_view(pattern).substr(0, pattern.size() - 7)));
+    auto result = bus.bind(std::move(callback), ivy::runtime_regexp(std::string_view(pattern).substr(0, pattern.size() - 7)));
     assert(result && result->is_bound());
     auto* binding = ctx->bindings.back();
     assert(binding->regexp == R"(^TRACK ([0-9]{2}) 100%$)");
@@ -353,12 +361,12 @@ void subscriptions_and_formats() {
     auto formatted = bus.bind(ignore, R"(^TRACK {} ([0-9]{{2}}) 100%$)", 42);
     assert(formatted);
     assert(ctx->bindings.back()->regexp == R"(^TRACK 42 ([0-9]{2}) 100%$)");
-    auto braces = bus.bind(ignore, "{}");
+    auto braces = bus.bind_unanchored(ignore, "{}");
     assert(braces && ctx->bindings.back()->regexp == "{}");
     const auto count = ctx->bindings.size();
     auto invalid_format = bus.bind(ignore, "^{:{}d}", 42, -1);
     assert(!invalid_format && invalid_format.error() == ivy::make_error_code(IVY_EINVAL));
-    assert(!bus.bind(ignore, std::string_view(std::string_view("a\0b", 3))));
+    assert(!bus.bind(ignore, ivy::runtime_regexp(std::string_view("a\0b", 3))));
     assert(!bus.bind(ivy::Bus::MessageCallback{}, "^regexp"));
     assert(!bus.bind(ivy::Bus::DirectCallback{}));
     assert(ctx->bindings.size() == count);
@@ -527,7 +535,7 @@ void change_preserves_subscription() {
         assert(calls == 1);
 
         const std::string pattern = R"(^NEW [0-9]{2} 100%$-suffix)";
-        assert(result->change(std::string_view(std::string_view(pattern).substr(0, pattern.size() - 7))));
+        assert(result->change(ivy::runtime_regexp(std::string_view(pattern).substr(0, pattern.size() - 7))));
         assert(ctx->bindings.size() == 1 && ctx->bindings.back() == original);
         assert(original->regexp == R"(^NEW [0-9]{2} 100%$)");
         assert(original->callback == callback && original->data == data);
@@ -540,7 +548,7 @@ void change_preserves_subscription() {
         change_error = IVY_ENOMEM;
         expect_error(IVY_ENOMEM, result->change("^failed"));
         change_error = IVY_OK;
-        expect_error(IVY_EINVAL, result->change(std::string_view(std::string_view("a\0b", 3))));
+        expect_error(IVY_EINVAL, result->change(ivy::runtime_regexp(std::string_view("a\0b", 3))));
         expect_error(IVY_EINVAL, result->change("^{:{}d}", 42, -1));
         assert(original->regexp == previous_pattern && result->is_bound());
         callback(nullptr, data, 0, nullptr);
@@ -619,7 +627,36 @@ void direct_token_lifetimes() {
     assert(weak_capture.expired());
 }
 
+void anchoring_boundary() {
+    ivy::Bus bus("anchoring policy");
+    auto callback = [](IvyClientPtr, auto) {};
+    auto result = bus.bind(callback, "^PREFIX {}", 42);
+    assert(result && validated_regexp == "^PREFIX 42");
+    assert(result->change("^CHANGED {}", 43));
+    assert(validated_regexp == "^CHANGED 43");
 
+    std::string dynamic = "^DYNAMIC [0-9]{2}";
+    assert(bus.bind(callback, ivy::runtime_regexp(dynamic)));
+    assert(validated_regexp == dynamic);
+    auto missing_anchor = bus.bind(callback, ivy::runtime_regexp("DYNAMIC"));
+    assert(!missing_anchor && missing_anchor.error() == ivy::make_error_code(IVY_EUNANCHORED));
+
+    validation_error = IVY_ENOMEM;
+    auto failed = bus.bind(callback, "^REJECTED");
+    assert(!failed && failed.error() == ivy::make_error_code(IVY_ENOMEM));
+    expect_error(IVY_ENOMEM, result->change("^REJECTED"));
+    assert(bus.native_handle()->bindings.front()->regexp == "^CHANGED 43");
+    validation_error = IVY_OK;
+
+    const int before = validations;
+    auto unanchored = bus.bind_unanchored(callback, "ANYWHERE {}", 44);
+    assert(unanchored && validations == before);
+    assert(unanchored->change_unanchored("ELSEWHERE {}", 45));
+    assert(validations == before);
+    assert(bus.native_handle()->bindings.back()->regexp == "ELSEWHERE 45");
+    assert(unanchored->change("^ANCHORED AGAIN"));
+    assert(validations == before + 1);
+}
 
 template<class T>
 concept HasChange = requires(T& subscription) { subscription.change("^regexp"); };
@@ -669,6 +706,7 @@ int main() {
     change_preserves_subscription();
     change_and_unbind();
     direct_token_lifetimes();
+    anchoring_boundary();
     assert(live_contexts == 0);
     std::cout << "C++ bus boundary tests passed\n";
 }

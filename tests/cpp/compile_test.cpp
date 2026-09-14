@@ -13,15 +13,15 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.bind(message, R"(^TRACK {} ([0-9]{{2}})$)", id);
     constexpr std::string_view constant = "^CONSTANT (.*)";
     (void)bus.bind(message, constant);
-    (void)bus.bind(message, std::string_view(dynamic));
-    (void)bus.bind(message, dynamic);
-    (void)bus.bind(message, "TRACK {}", id);
+    (void)bus.bind(message, ivy::runtime_regexp(dynamic));
+    (void)bus.bind_unanchored(message, dynamic);
+    (void)bus.bind_unanchored(message, "TRACK {}", id);
     (void)bus.bind([](IvyClientPtr, int, std::string_view) {});
     (void)subscription.change(R"(^UPDATED ([0-9]{2})$)");
     (void)subscription.change("^UPDATED {}", id);
-    (void)subscription.change(std::string_view(dynamic));
-    (void)subscription.change(dynamic);
-    (void)subscription.change("UPDATED {}", id);
+    (void)subscription.change(ivy::runtime_regexp(dynamic));
+    (void)subscription.change_unanchored(dynamic);
+    (void)subscription.change_unanchored("UPDATED {}", id);
 #elif IVY_COMPILE_CASE == 1
     (void)bus.bind(message, "TRACK (.*)");
 #elif IVY_COMPILE_CASE == 2

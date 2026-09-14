@@ -31,6 +31,55 @@ namespace ivy {
 /// Convert a C API status to an error code in the "ivy" category.
 [[nodiscard]] std::error_code make_error_code(IvyStatus status) noexcept;
 
+namespace detail {
+template<std::size_t N>
+constexpr std::string_view regexp_view(const char (&text)[N]) noexcept {
+    return {text, N && text[N - 1] == '\0' ? N - 1 : N};
+}
+constexpr std::string_view regexp_view(std::string_view text) noexcept { return text; }
+
+consteval void require_anchor(std::string_view text) {
+    if (!text.starts_with('^'))
+        throw "Ivy regexp must start with ^; use bind_unanchored or change_unanchored otherwise";
+    if (text.find('\0') != std::string_view::npos)
+        throw "Ivy regexp must not contain a NUL byte";
+}
+
+template<class... Args>
+class AnchoredFormat {
+public:
+    template<class T> requires std::convertible_to<const T&, std::string_view>
+    consteval AnchoredFormat(const T& text) : format_(text) {
+        require_anchor(regexp_view(text));
+    }
+    constexpr std::format_string<Args...> get() const noexcept { return format_; }
+private:
+    std::format_string<Args...> format_;
+};
+} // namespace detail
+
+/// A constant regexp whose leading ^ is checked during compilation.
+class AnchoredRegexp {
+public:
+    template<class T> requires std::convertible_to<const T&, std::string_view>
+    consteval AnchoredRegexp(const T& text) : text_(detail::regexp_view(text)) {
+        detail::require_anchor(text_);
+    }
+    constexpr std::string_view get() const noexcept { return text_; }
+private:
+    std::string_view text_;
+};
+
+template<class... Args>
+using AnchoredFormat = detail::AnchoredFormat<std::type_identity_t<Args>...>;
+
+/// Explicitly supply a dynamic regexp; bind/change still require start anchoring.
+struct RuntimeRegexp { std::string_view text; };
+/// Borrows the string for the duration of bind/change, like std::string_view.
+[[nodiscard]] constexpr RuntimeRegexp runtime_regexp(std::string_view text) noexcept {
+    return {text};
+}
+
 class Bus;
 
 /**
@@ -57,20 +106,24 @@ public:
 
     /**
      * Change the regexp while retaining the C handle, callback and captures.
+     * Constants must begin with ^; the final expanded regexp must be anchored.
      * Without format arguments, braces and '%' are passed unchanged.
      * An inactive token returns IVY_ESTATE; a stopped Bus returns IVY_ESTOPPED.
      * If unbind wins a race with change, the token stays inactive and change
      * reports IVY_ESTATE. Native removal waits for ongoing changes to finish.
      */
-    [[nodiscard]] std::expected<void, std::error_code> change(std::string_view regexp) noexcept;
+    [[nodiscard]] std::expected<void, std::error_code> change(AnchoredRegexp regexp) noexcept;
+    [[nodiscard]] std::expected<void, std::error_code> change(RuntimeRegexp regexp) noexcept;
+    /// Explicitly allow a regexp that searches away from the start of a message.
+    [[nodiscard]] std::expected<void, std::error_code> change_unanchored(std::string_view regexp) noexcept;
 
     /// Formatting and error conventions are the same as Bus::bind().
     template<class... Args>
         requires (sizeof...(Args) > 0)
     [[nodiscard]] std::expected<void, std::error_code>
-    change(std::format_string<Args...> format, Args&&... args) {
+    change(AnchoredFormat<Args...> format, Args&&... args) {
         try {
-            return change(std::format(format, std::forward<Args>(args)...));
+            return change(runtime_regexp(std::format(format.get(), std::forward<Args>(args)...)));
         } catch (const std::bad_alloc&) {
             return std::unexpected(make_error_code(IVY_ENOMEM));
         } catch (const std::format_error&) {
@@ -80,12 +133,26 @@ public:
         }
     }
 
+    template<class... Args>
+        requires (sizeof...(Args) > 0)
+    [[nodiscard]] std::expected<void, std::error_code>
+    change_unanchored(std::format_string<Args...> format, Args&&... args) {
+        try {
+            return change_unanchored(std::format(format, std::forward<Args>(args)...));
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(make_error_code(IVY_ENOMEM));
+        } catch (const std::format_error&) {
+            return std::unexpected(make_error_code(IVY_EINVAL));
+        } catch (const std::length_error&) {
+            return std::unexpected(make_error_code(IVY_EINVAL));
+        }
+    }
 
 private:
     struct State;
     std::shared_ptr<State> state_;
     explicit Subscription(std::shared_ptr<State> state) noexcept;
-    std::expected<void, std::error_code> change_impl(std::string_view regexp) noexcept;
+    std::expected<void, std::error_code> change_impl(std::string_view regexp, bool anchored) noexcept;
     friend class Bus;
 };
 
@@ -167,13 +234,17 @@ public:
     void stop();
 
     /**
-     * Subscribe to messages matching a regexp. Without formatting arguments,
-     * '%' and braces are unchanged.
+     * Subscribe at the start of a message. A constant regexp must start with ^.
+     * PCRE2 must recognize the expanded regexp as anchored, otherwise IVY_EUNANCHORED
+     * is returned. Without formatting arguments, '%' and braces are unchanged.
      * Capture views are valid only during the callback. Keep the returned
      * Subscription (or its expected) alive to keep receiving messages.
      * An empty callable or embedded NUL returns IVY_EINVAL.
      */
-    [[nodiscard]] BindResult bind(MessageCallback callback, std::string_view regexp) noexcept;
+    [[nodiscard]] BindResult bind(MessageCallback callback, AnchoredRegexp regexp) noexcept;
+    [[nodiscard]] BindResult bind(MessageCallback callback, RuntimeRegexp regexp) noexcept;
+    /// Explicitly allow a regexp that searches away from the start of a message.
+    [[nodiscard]] BindResult bind_unanchored(MessageCallback callback, std::string_view regexp) noexcept;
     /**
      * Register the context's single direct-message callback. A successful bind
      * replaces the previous direct subscription and makes its token inactive.
@@ -190,9 +261,24 @@ public:
     template<class... Args>
         requires (sizeof...(Args) > 0)
     [[nodiscard]] BindResult bind(MessageCallback callback,
-                                  std::format_string<Args...> format, Args&&... args) {
+                                  AnchoredFormat<Args...> format, Args&&... args) {
         try {
-            return bind(std::move(callback), std::format(format, std::forward<Args>(args)...));
+            return bind(std::move(callback), runtime_regexp(std::format(format.get(), std::forward<Args>(args)...)));
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(make_error_code(IVY_ENOMEM));
+        } catch (const std::format_error&) {
+            return std::unexpected(make_error_code(IVY_EINVAL));
+        } catch (const std::length_error&) {
+            return std::unexpected(make_error_code(IVY_EINVAL));
+        }
+    }
+
+    template<class... Args>
+        requires (sizeof...(Args) > 0)
+    [[nodiscard]] BindResult bind_unanchored(MessageCallback callback,
+                                            std::format_string<Args...> format, Args&&... args) {
+        try {
+            return bind_unanchored(std::move(callback), std::format(format, std::forward<Args>(args)...));
         } catch (const std::bad_alloc&) {
             return std::unexpected(make_error_code(IVY_ENOMEM));
         } catch (const std::format_error&) {
@@ -217,7 +303,7 @@ public:
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
-    BindResult bind_impl(MessageCallback callback, std::string_view regexp) noexcept;
+    BindResult bind_impl(MessageCallback callback, std::string_view regexp, bool anchored) noexcept;
     friend class Subscription;
 };
 

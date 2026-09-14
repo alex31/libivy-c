@@ -234,11 +234,19 @@ bool Subscription::is_bound() const noexcept {
     return state_->handler != nullptr;
 }
 
-std::expected<void, std::error_code> Subscription::change(std::string_view regexp) noexcept {
-    return change_impl(regexp);
+std::expected<void, std::error_code> Subscription::change(AnchoredRegexp regexp) noexcept {
+    return change_impl(regexp.get(), true);
 }
 
-std::expected<void, std::error_code> Subscription::change_impl(std::string_view regexp) noexcept {
+std::expected<void, std::error_code> Subscription::change(RuntimeRegexp regexp) noexcept {
+    return change_impl(regexp.text, true);
+}
+
+std::expected<void, std::error_code> Subscription::change_unanchored(std::string_view regexp) noexcept {
+    return change_impl(regexp, false);
+}
+
+std::expected<void, std::error_code> Subscription::change_impl(std::string_view regexp, bool anchored) noexcept {
     const auto state = state_;
     if (!state)
         return status_result(IVY_ESTATE);
@@ -251,6 +259,11 @@ std::expected<void, std::error_code> Subscription::change_impl(std::string_view 
         return status_result(IVY_ESTOPPED);
     try {
         const std::string pattern(regexp);
+        if (anchored) {
+            const int status = IvyValidateAnchoredRegexp(pattern.c_str());
+            if (status != IVY_OK)
+                return status_result(status);
+        }
         MsgRcvPtr binding;
         {
             std::lock_guard lock(owner->subscriptions_mutex);
@@ -346,11 +359,19 @@ void Bus::stop() {
         check_status(IvyContextStop(impl_->context), "IvyContextStop");
 }
 
-Bus::BindResult Bus::bind(MessageCallback callback, std::string_view regexp) noexcept {
-    return bind_impl(std::move(callback), regexp);
+Bus::BindResult Bus::bind(MessageCallback callback, AnchoredRegexp regexp) noexcept {
+    return bind_impl(std::move(callback), regexp.get(), true);
 }
 
-Bus::BindResult Bus::bind_impl(MessageCallback callback, std::string_view regexp) noexcept {
+Bus::BindResult Bus::bind(MessageCallback callback, RuntimeRegexp regexp) noexcept {
+    return bind_impl(std::move(callback), regexp.text, true);
+}
+
+Bus::BindResult Bus::bind_unanchored(MessageCallback callback, std::string_view regexp) noexcept {
+    return bind_impl(std::move(callback), regexp, false);
+}
+
+Bus::BindResult Bus::bind_impl(MessageCallback callback, std::string_view regexp, bool anchored) noexcept {
     const auto owner = impl_;
     if (!owner)
         return std::unexpected(make_error_code(IVY_ESTATE));
@@ -358,6 +379,11 @@ Bus::BindResult Bus::bind_impl(MessageCallback callback, std::string_view regexp
         return std::unexpected(make_error_code(IVY_EINVAL));
     try {
         const std::string pattern(regexp);
+        if (anchored) {
+            const int status = IvyValidateAnchoredRegexp(pattern.c_str());
+            if (status != IVY_OK)
+                return std::unexpected(make_error_code(static_cast<IvyStatus>(status)));
+        }
         auto subscription = std::make_shared<Subscription::State>();
         subscription->owner = owner;
         subscription->handler = std::make_shared<Subscription::State::Handler>(std::move(callback));

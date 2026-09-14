@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
         ivy::Bus peer_b("cpp-peer-b");
         std::atomic<int> messages_a{0}, messages_b{0}, direct_a{0}, direct_b{0}, once_count{0};
         std::atomic<int> anywhere_count{0}, interval_count{0};
-        auto anywhere = require_bind(bus_a.bind(
+        auto anywhere = require_bind(bus_a.bind_unanchored(
             [&anywhere_count, &unexpected](IvyClientPtr, auto args) {
                 if (args.size() != 1 || args[0] != "42")
                     ++unexpected;
@@ -242,7 +242,11 @@ int main(int argc, char** argv) {
         }, "formatted change advertisement timed out");
         assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "UPDATED 77 42 100%") == 1);
         wait_for([&] { return messages_a == 3; }, "callback after formatted change timed out");
-        require_start(anywhere.change(R"(UPDATED_NEEDLE ([0-9]{{2}}) {}$)", "tail"),
+        auto rejected = message_a.change("^UPDATED|UNANCHORED");
+        assert(!rejected && rejected.error() == ivy::make_error_code(IVY_EUNANCHORED));
+        assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "UPDATED 77 42 100%") == 1);
+        wait_for([&] { return messages_a == 4; }, "failed validation changed the subscription");
+        require_start(anywhere.change_unanchored(R"(UPDATED_NEEDLE ([0-9]{{2}}) {}$)", "tail"),
                       "unanchored formatted change");
         wait_for([&] {
             return advertises(peer_a.native_handle(), receiver_a, R"(UPDATED_NEEDLE ([0-9]{2}) tail$)");
@@ -278,7 +282,7 @@ int main(int argc, char** argv) {
         assert(IvyContextSendMsg(peer_a.native_handle(), "%s", "UPDATED 77 42 100%") == 0);
         assert(IvyContextSendMsg(peer_b.native_handle(), "CPP %d %d 100%%", 23, 17) == 1);
         wait_for([&] { return messages_b == 2; }, "other bus stopped receiving after unbind");
-        assert(messages_a == 3 && unexpected == 0);
+        assert(messages_a == 4 && unexpected == 0);
 
         assert(IvyContextSendDieMsg(peer_a.native_handle(), receiver_a) == IVY_OK);
         wait_for([&] { return died_a == 1 && bus_a.state() == IVY_CTX_STOPPED; }, "die callback A timed out");
