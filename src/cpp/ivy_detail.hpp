@@ -151,6 +151,14 @@ Bus::send_error(IvyClientPtr peer, int id, std::format_string<Args...> format, A
         });
 }
 
+template<class... Args> requires (sizeof...(Args) > 0)
+std::expected<void, std::error_code>
+validate_anchored_regexp(std::format_string<Args...> format, Args&&... args) noexcept {
+    return detail::guard<std::expected<void, std::error_code>>(
+        make_error_code(Error::formatter_failed), [&] {
+            return validate_anchored_regexp(std::format(format, std::forward<Args>(args)...));
+        });
+}
 
 template<class Callback> requires std::constructible_from<Bus::TransportCallback, Callback>
 std::expected<void, std::error_code> Bus::set_transport_error_callback(Callback&& callback) noexcept {

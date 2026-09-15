@@ -35,6 +35,20 @@ int main() {
     std::string large = "^" + std::string(10000, 'X') + "(?I1#2i)$";
     expect_status(large.c_str(), IVY_OK);
 
+    assert(ivy::validate_anchored_regexp("^TRACK (.*)$"));
+    assert(ivy::validate_anchored_regexp("^TRACK {} ([0-9]{{2}})$", 42));
+    assert(ivy::validate_anchored_regexp("^RANGE (?I{}#{}i)$", 1, 3));
+    const auto missing = ivy::validate_anchored_regexp("TRACK (.*)$");
+    assert(!missing && missing.error() == ivy::make_error_code(IVY_EUNANCHORED));
+    const auto expanded = ivy::validate_anchored_regexp("^TRACK {}", "X|OTHER");
+    assert(!expanded && expanded.error() == ivy::make_error_code(IVY_EUNANCHORED));
+    const auto syntax = ivy::validate_anchored_regexp("^(");
+    assert(!syntax && syntax.error() == ivy::make_error_code(IVY_EINVAL));
+    const auto nul = ivy::validate_anchored_regexp(std::string_view("^OK\0BAD", 7));
+    assert(!nul && nul.error() == ivy::make_error_code(IVY_EINVAL));
+    const auto bad_format = ivy::validate_anchored_regexp("^{:{}d}", 42, -1);
+    assert(!bad_format && bad_format.error() == ivy::make_error_code(IVY_EINVAL));
+
     auto bus = require_bus(ivy::Bus::create("anchoring"));
     auto callback = [](IvyClientPtr, auto) {};
     auto valid = bus.bind(callback, R"(^TRACK ([0-9]{2}) 100%$)");

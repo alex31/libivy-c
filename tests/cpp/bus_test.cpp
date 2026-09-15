@@ -921,6 +921,7 @@ void nonthrowing_boundaries() {
         check(bus.send("{}", failing));
         check(bus.send(&peer, 1, "{}", failing));
         check(bus.send_error(&peer, 1, "{}", failing));
+        check(ivy::validate_anchored_regexp("^{}", failing));
         const auto report = bus.send_report("{}", failing);
         assert(report.error == expected && !report.system_error);
         assert(report.matched == 0 && report.accepted == 0 && report.failed == 0);

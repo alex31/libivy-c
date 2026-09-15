@@ -81,6 +81,28 @@ struct RuntimeRegexp {
  */
 [[nodiscard]] constexpr RuntimeRegexp runtime_regexp(std::string_view text) noexcept;
 
+/**
+ * @brief Validate a regexp's start anchoring without creating a subscription.
+ * @param expression Regexp text, copied during the call; no NUL is allowed.
+ * @return Empty success, IVY_EUNANCHORED for missing/effective unanchoring,
+ * IVY_EINVAL for invalid input/syntax/interval expansion, IVY_ENOMEM on allocation
+ * failure, or IVY_ESTATE if the C library lacks PCRE2 support.
+ * Constants and dynamic expressions both return errors at runtime here. Validation
+ * uses the same Ivy interval expansion as bind(), without needing a Bus.
+ */
+[[nodiscard]] std::expected<void, std::error_code>
+validate_anchored_regexp(std::string_view expression) noexcept;
+
+/** @brief Format and validate an anchored regexp without subscribing.
+ * @tparam Args Types of the format arguments.
+ * @param format Constant std::format string; literal braces must be doubled.
+ * @param args Values inserted without escaping regexp syntax.
+ * @return Same validation errors as the text overload, plus formatting errors.
+ */
+template<class... Args> requires (sizeof...(Args) > 0)
+[[nodiscard]] std::expected<void, std::error_code>
+validate_anchored_regexp(std::format_string<Args...> format, Args&&... args) noexcept;
+
 } // namespace ivy
 // IVY_CPP_API_END
 

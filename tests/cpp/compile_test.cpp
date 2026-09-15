@@ -15,6 +15,8 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.send_die(IvyClientPtr{});
     (void)bus.send_error(IvyClientPtr{}, id, dynamic);
     (void)bus.send_error(IvyClientPtr{}, id, "ERROR {}", id);
+    (void)ivy::validate_anchored_regexp(dynamic);
+    (void)ivy::validate_anchored_regexp("^TRACK {}", id);
     (void)bus.send(dynamic);
     (void)bus.send("100% {} unchanged");
     (void)bus.send("TRACK {} {:02d}", dynamic, id);
@@ -60,5 +62,7 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.send_report("TRACK {:d}", "wrong type");
 #elif IVY_COMPILE_CASE == 19
     (void)bus.send_error(IvyClientPtr{}, id, "ERROR {:d}", "wrong type");
+#elif IVY_COMPILE_CASE == 20
+    (void)ivy::validate_anchored_regexp("^TRACK {:d}", "wrong type");
 #endif
 }

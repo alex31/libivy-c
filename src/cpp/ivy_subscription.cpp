@@ -8,6 +8,13 @@
 
 namespace ivy {
 
+std::expected<void, std::error_code> validate_anchored_regexp(std::string_view expression) noexcept {
+    if (expression.find('\0') != std::string_view::npos) return detail::status_result(IVY_EINVAL);
+    return detail::guard<std::expected<void, std::error_code>>(make_error_code(IVY_EINVAL), [&] {
+        const std::string text(expression);
+        return detail::status_result(IvyValidateAnchoredRegexp(text.c_str()));
+    });
+}
 
 void Subscription::State::on_message(IvyClientPtr app, void* data, int argc, char** argv) noexcept {
     auto& state = *static_cast<State*>(data);
