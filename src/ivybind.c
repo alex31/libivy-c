@@ -22,6 +22,7 @@
 #include <memory.h> 
 #include <string.h>
 #include <stdarg.h>
+#include <limits.h>
 
 #ifdef WIN32
 #ifndef __MINGW32__
@@ -55,16 +56,11 @@ struct _binding {
 #endif /* USE_PCRE_REGEX */
 	};
 
-/* classes de messages emis par l'application utilise pour le filtrage */
-typedef struct _filtred_word * FiltredWordPtr;
-struct _filtred_word {                       /* requete d'emission d'un client */
-        FiltredWordPtr next;
-        const char *word;           /* entete de regexp a conserver */
+/* Filter lists belong to an IvyContext, protected by its bindings lock. */
+struct _ivy_filter {
+    struct _ivy_filter *next;
+    char *word;
 };
-
-static FiltredWordPtr messages_classes =0 ;
-/* regexp d'extraction du mot clef des regexp client pour le filtrage des regexp , ca va c'est clair ??? */
-static IvyBinding token_extract =0;
 
 #ifdef USE_PCRE_REGEX
 static IVY_TLS pcre2_match_data *thread_match_data = NULL;
@@ -283,106 +279,114 @@ void IvyBindingMatch( IvyBinding bind, const char *message, int argnum, int *arg
 
 }
 
-/*filter Expression Bind  */
-
-void IvyBindingSetFilter( int argc, const char **argv)
+/* This lexer matches the former ^\\^([a-zA-Z_0-9-]+) extraction regexp,
+ * without a process-global compiled regexp or mutable regexp match storage. */
+static int IvyFilterWordChar(unsigned char c)
 {
-	int i;
-	for ( i = 0 ; i < argc; i++ )
-	{
-	IvyBindingAddFilter( argv[i] );
-	}
-
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '-';
 }
 
-void IvyBindingAddFilter( const char *arg)
+int IvyFilterValidWord(const char *word)
 {
-	const char *errbuf;
-	int erroffset;
-	if ( arg )
-	{
-	FiltredWordPtr word=0;
-	IVY_LIST_ADD_START( messages_classes, word );
-	word->word = strdup(arg);
-  IVY_LIST_ADD_END( messages_classes, word );
-
-	}
-	/* compile the token extraction regexp */
-	if ( !token_extract )
-	{
-		token_extract = IvyBindingCompile("^\\^([a-zA-Z_0-9-]+).*", & erroffset, & errbuf);
-		if ( !token_extract )
-		{
-			printf("Error compiling Token Extract regexp: %s\n", errbuf);
-		}
-	}
+    if (!word || !*word) return 0;
+    while (*word) {
+        if (!IvyFilterWordChar((unsigned char)*word++)) return 0;
+    }
+    return 1;
 }
-void IvyBindingRemoveFilter( const char *arg)
-{
-	FiltredWordPtr word=0;
-	FiltredWordPtr next=0;
-	IVY_LIST_EACH_SAFE( messages_classes, word, next )
-	{
-		if ( strcmp( arg, word->word) == 0 )
-			{
-			free( (void*)word->word );
-			IVY_LIST_REMOVE( messages_classes, word );
-			}
-	}
-}
-	
-int IvyBindingFilter(const char *expression)
-{
-	FiltredWordPtr word=0;
-	int err;
-	int regexp_ok = 1; /* accepte tout par default */
-	int tokenlen = 0;
-	const char *token = NULL;
-	
-	if ( *expression =='^' && messages_classes !=0 )
-	{
-		regexp_ok = 0;
-		
-		/* extract token */
-		err = IvyBindingExec( token_extract, expression );
-		if ( err < 1 ) return 1;
-		IvyBindingMatch( token_extract, expression , 1, &tokenlen, &token );
-		if ( token == NULL || tokenlen <= 0 ) return 1;
 
-		IVY_LIST_ITER( messages_classes, word, strncmp( word->word, token, (size_t)tokenlen ) != 0);
-
-		if (word) {
-		    return 1; 
-		    }
-		  /*		  else { */
-		  /*printf ("DBG> %s eliminé [%s]\n", token, expression); */
-		  /*} */
-		
- 	}
-	return regexp_ok;
-}
-/* recherche si le message commence par un mot clef de la table */
-void IvyBindindFilterCheck( const char *message )
+void IvyFilterFree(IvyFilter filters)
 {
-	FiltredWordPtr word=0;
-	IVY_LIST_ITER( messages_classes, word, strcmp( word->word, message ) != 0);
-
-	if (word)
-		{
-		return; 
-	}
-	
-	fprintf(stderr,"*** WARNING *** message '%s' not sent due to missing keyword in filter table!!!\n", message );    
+    while (filters) {
+        IvyFilter next = filters->next;
+        free(filters->word);
+        free(filters);
+        filters = next;
+    }
 }
-void IvyBindingTerminate()
+
+int IvyFilterContains(IvyFilter filters, const char *word)
 {
-	FiltredWordPtr word=0;
-	FiltredWordPtr next=0;
-	
-	IVY_LIST_EACH_SAFE( messages_classes, word, next )
-  {
-  free((void*) word->word );
-  }
-	IVY_LIST_EMPTY( messages_classes );
-	messages_classes = 0;
+    if (!word) return 0;
+    for (; filters; filters = filters->next) {
+        if (strcmp(filters->word, word) == 0) return 1;
+    }
+    return 0;
+}
+
+int IvyFilterAdd(IvyFilter *filters, const char *word)
+{
+    IvyFilter entry;
+    if (!IvyFilterValidWord(word)) return IVY_EINVAL;
+    if (IvyFilterContains(*filters, word)) return IVY_OK;
+    entry = malloc(sizeof(*entry));
+    if (!entry) return IVY_ENOMEM;
+    entry->word = strdup(word);
+    if (!entry->word) {
+        free(entry);
+        return IVY_ENOMEM;
+    }
+    entry->next = *filters;
+    *filters = entry;
+    return IVY_OK;
+}
+
+int IvyFilterCreate(int count, const char **words, IvyFilter *result)
+{
+    int i;
+    *result = NULL;
+    if (count < 0 || (count > 0 && !words)) return IVY_EINVAL;
+    for (i = 0; i < count; ++i) {
+        if (!IvyFilterValidWord(words[i])) return IVY_EINVAL;
+    }
+    for (i = 0; i < count; ++i) {
+        int status = IvyFilterAdd(result, words[i]);
+        if (status != IVY_OK) {
+            IvyFilterFree(*result);
+            *result = NULL;
+            return status;
+        }
+    }
+    return IVY_OK;
+}
+
+void IvyFilterRemove(IvyFilter *filters, const char *word)
+{
+    while (*filters) {
+        IvyFilter entry = *filters;
+        if (strcmp(entry->word, word) == 0) {
+            *filters = entry->next;
+            entry->next = NULL;
+            IvyFilterFree(entry);
+        } else {
+            filters = &entry->next;
+        }
+    }
+}
+
+int IvyFilterAccepts(IvyFilter filters, const char *expression)
+{
+    const char *token;
+    size_t length = 0;
+    if (!expression) return 0;
+    if (!filters || *expression != '^') return 1;
+    token = expression + 1;
+    while (IvyFilterWordChar((unsigned char)token[length])) ++length;
+    if (!length) return 1;
+    for (; filters; filters = filters->next) {
+        /* Preserve prefix matching: ^TRA.* may match the declared class TRACK. */
+        if (strncmp(filters->word, token, length) == 0) return 1;
+    }
+    return 0;
+}
+
+int IvyFilterCount(IvyFilter filters)
+{
+    int count = 0;
+    for (; filters; filters = filters->next) {
+        if (count == INT_MAX) return count;
+        ++count;
+    }
+    return count;
 }

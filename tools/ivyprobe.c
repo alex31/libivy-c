@@ -768,6 +768,11 @@ static int ProbeCreateBuses(const char *agentname, const char *agentready)
 				ProbeBusLabel(bus), IvyGetLastError());
 			return 0;
 		}
+		if (IvyContextSetFilter(bus->ctx, filter_count, filter) != IVY_OK) {
+			fprintf(stderr, "invalid or unavailable filters for %s: %d\n",
+				ProbeBusLabel(bus), IvyGetLastError());
+			return 0;
+		}
 		IvyContextSetBindCallback(bus->ctx, IvyPrintBindCallback, bus);
 		IvyContextSetPongCallback(bus->ctx, PongCallback, bus);
 		IvyContextBindDirectMsg(bus->ctx, DirectCallback, bus);
@@ -1555,8 +1560,6 @@ void BuildFilterRegexp()
 	filter[filter_count++] = word;
 	word = strtok( NULL, ",");
 	}
-	if ( filter_count )
-	IvyBindingSetFilter( filter_count, filter );
 }
 int main(int argc, char *argv[])
 {

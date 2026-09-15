@@ -22,8 +22,20 @@ typedef struct _binding *IvyBinding;
 extern "C" {
 #endif
 
-/* Mise en place des Filtrages */
-int IvyBindingGetFilterCount();
+/* Context-owned filters. The caller holds the owning context's bindings
+ * lock when accessing a shared list. Detached lists can be built/freed unlocked. */
+typedef struct _ivy_filter *IvyFilter;
+int IvyFilterValidWord(const char *word);
+int IvyFilterCreate(int count, const char **words, IvyFilter *result);
+void IvyFilterFree(IvyFilter filters);
+int IvyFilterAdd(IvyFilter *filters, const char *word);
+void IvyFilterRemove(IvyFilter *filters, const char *word);
+int IvyFilterContains(IvyFilter filters, const char *word);
+int IvyFilterAccepts(IvyFilter filters, const char *expression);
+int IvyFilterCount(IvyFilter filters);
+
+/* Compatibility helpers operating on the current/default context. */
+int IvyBindingGetFilterCount(void);
 void IvyBindingSetFilter( int argc, const char ** argv );
 void IvyBindingAddFilter( const char * argv );
 void IvyBindingRemoveFilter( const char * arg );
@@ -45,7 +57,7 @@ void IvyBindingMatch( IvyBinding _bind, const char *message, int argnum, int *ar
 /*
 Liberation de memoire en fin d'execution 
 */
-void IvyBindingTerminate();
+void IvyBindingTerminate(void);
 
 #ifdef __cplusplus
 }

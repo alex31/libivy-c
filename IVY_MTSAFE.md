@@ -58,9 +58,14 @@ global existant.
   par défaut, et `tests/run_phase10_tools.sh` couvre la compilation, le grep
   anti-wrapper legacy et un smoke `ivythroughput -V`.
 
+Le complément filtres de l'API 3.18 supprime également leur portée globale.
+`tests/run_context_filters.sh` couvre l'isolation, le cycle de vie, les échecs
+d'allocation et les mises à jour concurrentes ; les tests C++ vérifient les
+annonces et envois réels sur deux bus ainsi que le routage des fonctions legacy
+appelées depuis un callback.
+
 Limites encore présentes :
 
-- le filtrage global de `ivybind.c` n'est pas encore contextualisé ;
 - les backends de boucle alternatifs GLib, Xt, Tcl et GLUT conservent leur
   modèle global historique ;
 - les callbacks issus du dispatch réseau restent exécutés dans le thread de
@@ -103,7 +108,10 @@ défaut et conservent donc une partie du modèle historique pour la compatibilit
   `SocketState`, associé à sa boucle propriétaire ;
 - `src/timer.c` : la liste de timers et le timeout de `select()` sont portés
   par `IvyTimerState`, lui-même attaché à la boucle ;
-- `src/ivybind.c` : la table de filtrage des regexps reste globale.
+- `src/ivybind.c` : chaque table de filtres appartient maintenant à son
+  `IvyContext` et utilise son verrou de bindings. L'extraction du préfixe est
+  locale, sans regexp compilée globale. `IvyContextSetFilter()` remplace la
+  liste atomiquement ; les façades legacy ciblent le contexte courant/défaut.
 
 Plusieurs fonctions utilisent aussi des buffers `static` pour éviter des
 allocations répétées. C'est pratique dans une boucle mono-thread historique,
@@ -265,8 +273,7 @@ valeur de retour ne doit pas devenir un mécanisme de contrôle Ivy.
 La majorité des globals mutables du coeur Ivy ont migré dans `struct
 IvyContext` ou dans des états possédés par lui (`IvyChannelState`,
 `SocketState`, `IvyTimerState`). Les points encore ouverts concernent surtout
-le filtrage global, les backends de boucle alternatifs et les conventions de
-handles/buffers héritées.
+les backends de boucle alternatifs et les conventions de handles/buffers héritées.
 
 Au niveau bus :
 

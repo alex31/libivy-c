@@ -239,7 +239,11 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "IvyContextCreate failed: %d\n", IvyGetLastError());
 		return 1;
 	}
-	IvySetFilter( sizeof( mymessages )/ sizeof( char *),mymessages );
+	if (IvyContextSetFilter(perf_ctx, sizeof(mymessages) / sizeof(mymessages[0]), mymessages) != IVY_OK) {
+		fprintf(stderr, "IvyContextSetFilter failed: %d\n", IvyGetLastError());
+		IvyContextDestroy(perf_ctx);
+		return 1;
+	}
 	IvyContextSetBindCallback( perf_ctx, binCB, 0 );
 	IvyContextBindMsg (perf_ctx, Reply, perf_ctx, "^ping ts=(.*)");
 	IvyContextBindMsg (perf_ctx, Pong, NULL, "^pong ts=(.*) tr=(.*)");

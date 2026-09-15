@@ -950,53 +950,84 @@ IvyStatus IvyGetLastError(void);
 
 /**
  * @defgroup ivy_filters Filtering API
- * @brief Public regexp filtering helpers.
+ * @brief Per-context filtering of regexp subscriptions advertised by peers.
  *
- * @warning
- * The filter table is currently process-global. It is preserved for
- * compatibility and diagnostic tools, but it is not yet isolated per
- * ::IvyContext. Avoid using it for independent multi-bus policies until the
- * filter implementation is contextualized.
+ * Each context owns an initially empty list of message-class words. An empty
+ * list accepts every regexp. With a nonempty list, Ivy checks the first literal
+ * word after ^ against the declared classes. Prefixes are accepted: ^TRA.* may
+ * match class TRACK. Expressions without a recognizable leading word are kept.
+ * This is a send-side optimization, not a restriction on incoming messages.
+ *
+ * Filtering applies when a peer advertises or changes a regexp. Changes to the
+ * filter list do not reprocess already accepted/rejected subscriptions. Rejected
+ * advertisements generate IvyFilterBind outside internal locks. Configure filters
+ * before start when the policy must apply to all initial advertisements.
+ * Operations are serialized with subscription processing within the owning context.
  * @{
  */
 
 /**
- * @brief Replace the global regexp filter list.
- *
- * @param argc Number of filter words in @p argv.
- * @param argv Filter word array.
- * @return ::IVY_OK on success, or a negative ::IvyStatus.
+ * @brief Atomically replace the filter list of one context.
+ * @param ctx Context to configure; no other context is affected.
+ * @param argc Number of class words. Zero disables filtering for this context.
+ * @param argv Class words, copied during the call; may be NULL when argc is zero.
+ * Words must be nonempty and contain only ASCII letters, digits, underscore or hyphen.
+ * @return IVY_OK, IVY_EINVAL for invalid arguments, IVY_ESTOPPED after stop,
+ * or IVY_ENOMEM on allocation failure. Failure leaves the previous list intact.
  *
  * @code{.c}
  * const char *classes[] = { "STATUS", "TRACK" };
- * IvySetFilter(2, classes);
+ * int status = IvyContextSetFilter(ctx, 2, classes);
+ * if (status != IVY_OK)
+ *     fprintf(stderr, "filter setup failed: %d\n", status);
  * @endcode
  */
-int IvySetFilter( int argc, const char **argv);
+int IvyContextSetFilter(IvyContext *ctx, int argc, const char **argv);
 
 /**
- * @brief Add one word to the global regexp filter list.
- *
- * @param arg Filter word to add.
- * @return ::IVY_OK on success, or a negative ::IvyStatus.
- *
- * @code{.c}
- * IvyAddFilter("DEBUG");
- * @endcode
+ * @brief Add a class word to one context's filter list.
+ * @param ctx Context to configure.
+ * @param arg Nonempty class word, copied during the call; same syntax as IvyContextSetFilter().
+ * @return IVY_OK, including if already present; IVY_EINVAL, IVY_ESTOPPED or IVY_ENOMEM
+ * on failure. Failure leaves the previous list intact.
  */
-int IvyAddFilter( const char *arg);
+int IvyContextAddFilter(IvyContext *ctx, const char *arg);
 
 /**
- * @brief Remove one word from the global regexp filter list.
- *
- * @param arg Filter word to remove.
- * @return ::IVY_OK on success, or a negative ::IvyStatus.
- *
- * @code{.c}
- * IvyRemoveFilter("DEBUG");
- * @endcode
+ * @brief Remove a class word from one context's filter list.
+ * @param ctx Context to configure.
+ * @param arg Nonempty class word, with the same syntax as IvyContextSetFilter().
+ * @return IVY_OK, including if absent, or IVY_EINVAL/IVY_ESTOPPED.
+ * Removing the final word disables filtering for this context.
  */
-int IvyRemoveFilter( const char *arg);
+int IvyContextRemoveFilter(IvyContext *ctx, const char *arg);
+
+/**
+ * @brief Replace filters for the calling thread's current/default context.
+ * @param argc Number of class words; zero disables filtering.
+ * @param argv Class words, copied during the call.
+ * @return Same status as IvyContextSetFilter().
+ * In 3.18 this really replaces the list; older implementations appended to it.
+ * From a native Ivy callback, the current context is the callback's bus.
+ * @see IvyContextSetFilter()
+ */
+int IvySetFilter(int argc, const char **argv);
+
+/**
+ * @brief Add one filter word to the current/default context.
+ * @param arg Class word to copy.
+ * @return Same status as IvyContextAddFilter().
+ * @see IvyContextAddFilter()
+ */
+int IvyAddFilter(const char *arg);
+
+/**
+ * @brief Remove one filter word from the current/default context.
+ * @param arg Class word to remove.
+ * @return Same status as IvyContextRemoveFilter().
+ * @see IvyContextRemoveFilter()
+ */
+int IvyRemoveFilter(const char *arg);
 
 /** @} */
 

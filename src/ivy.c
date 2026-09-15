@@ -178,14 +178,13 @@ struct IvyContext {
   IvyCond ivy_callbacks_done;
   int ivy_callbacks_active;
   IvyRwLock ivy_bindings_rwlock;
+  IvyFilter ivy_filters;
   IvyThreadId ivy_owner_thread;
   int ivy_owner_thread_set;
   IvyContextState ivy_state;
   IvyChannelState *ivy_loop;
   SocketState *ivy_sockets;
 
-  /* flag pour le debug en cas de Filter de regexp */
-  int ivy_debug_filter;
   /* flag pour le debug en cas de message binaire */
   int ivy_debug_binary_msg;
   /* mode IPV6 pour les sockets */
@@ -358,7 +357,6 @@ static void regenerateRegPtrArrayCache ();
 static void addRegToPtrArrayCache (MsgSndDictPtr newReg);
 #endif
 
-#define debug_filter (IvyGetCurrentContext()->ivy_debug_filter)
 #define debug_binary_msg (IvyGetCurrentContext()->ivy_debug_binary_msg)
 #define ipv6 (IvyGetCurrentContext()->ivy_ipv6)
 #define server (IvyGetCurrentContext()->ivy_server)
@@ -830,6 +828,8 @@ int IvyContextDestroy(IvyContext *ctx)
 
 	if (ctx == default_ctx)
 		default_ctx = NULL;
+	if (ivy_current_context == ctx)
+		ivy_current_context = NULL;
 
 	free(ctx->ivy_application_name);
 	free(ctx->ivy_ready_message);
@@ -859,6 +859,7 @@ int IvyContextDestroy(IvyContext *ctx)
 #endif
 
 	IvyContextSetState(ctx, IVY_CTX_DESTROYED);
+	IvyFilterFree(ctx->ivy_filters);
 	IvyRwLockDestroy(&ctx->ivy_bindings_rwlock);
 	IvyCondDestroy(&ctx->ivy_callbacks_done);
 	IvyCondDestroy(&ctx->ivy_stop_done);
@@ -927,6 +928,15 @@ int IvyTestingSetDefaultContextState(IvyContextState state)
 IvyContextState IvyTestingGetDefaultContextState(void)
 {
 	return IvyContextGetState(IvyGetDefaultContext());
+}
+
+int IvyTestingContextAcceptsFilter(IvyContext *ctx, const char *expression)
+{
+    int accepted;
+    IvyBindingsReadLock(ctx);
+    accepted = IvyFilterAccepts(ctx->ivy_filters, expression);
+    IvyBindingsReadUnlock(ctx);
+    return accepted;
 }
 
 int IvyTestingContextLoopIsActive(IvyContext *ctx)
@@ -1190,8 +1200,10 @@ static void Receive( Client client, const void *data, char *line )
 
 
 			TRACE("Regexp  id=%d exp='%s'\n",  id, arg);
-			if ( !IvyBindingFilter( arg ) )
+			IvyBindingsWriteLock(ctx);
+			if (!IvyFilterAccepts(ctx->ivy_filters, arg))
 				{
+				IvyBindingsWriteUnlock(ctx);
 
 				TRACE("Warning: regexp '%s' filtered, removing from %s\n",arg,ApplicationName);
 
@@ -1200,7 +1212,6 @@ static void Receive( Client client, const void *data, char *line )
 				return;
 				}
 
-			IvyBindingsWriteLock(ctx);
 			bind_event = addOrChangeRegexp (arg, clnt);
 			IvyBindingsWriteUnlock(ctx);
 			IvyDispatchBindCallback(ctx, clnt, id, arg, bind_event);
@@ -1675,7 +1686,6 @@ int IvyTerminate()
 	    default_ctx = NULL;
 	  }
 	}
-	IvyBindingTerminate();
 	if (status != IVY_OK)
 		return status;
 	return IvyReturnStatus(IVY_OK);
@@ -1751,31 +1761,106 @@ static void IvySocketTransportError(Client client, void *data, SendState state, 
   IvyPopCurrentContext(previous);
 }
 
-int IvySetFilter( int argc, const char **argv)
+int IvyContextSetFilter(IvyContext *ctx, int count, const char **words)
 {
-	int status = IvyContextRejectIfStopped(IvyGetCurrentContext());
-	if (status != IVY_OK)
-		return status;
-	IvyBindingSetFilter( argc, argv );
-	if ( getenv( "IVY_DEBUG_FILTER" )) debug_filter = 1;
-	return IvyReturnStatus(IVY_OK);
+    IvyFilter replacement;
+    IvyFilter retired;
+    int status = IvyContextRejectIfStopped(ctx);
+    if (status != IVY_OK) return status;
+    status = IvyFilterCreate(count, words, &replacement);
+    if (status != IVY_OK) return IvyReturnStatus(status);
+    IvyBindingsWriteLock(ctx);
+    retired = ctx->ivy_filters;
+    ctx->ivy_filters = replacement;
+    IvyBindingsWriteUnlock(ctx);
+    IvyFilterFree(retired);
+    return IvyReturnStatus(IVY_OK);
 }
-int IvyAddFilter( const char *arg)
+
+int IvyContextAddFilter(IvyContext *ctx, const char *word)
 {
-	int status = IvyContextRejectIfStopped(IvyGetCurrentContext());
-	if (status != IVY_OK)
-		return status;
-	IvyBindingAddFilter( arg );
-	if ( getenv( "IVY_DEBUG_FILTER" )) debug_filter = 1;
-	return IvyReturnStatus(IVY_OK);
+    int status = IvyContextRejectIfStopped(ctx);
+    if (status != IVY_OK) return status;
+    IvyBindingsWriteLock(ctx);
+    status = IvyFilterAdd(&ctx->ivy_filters, word);
+    IvyBindingsWriteUnlock(ctx);
+    return IvyReturnStatus(status);
 }
-int IvyRemoveFilter( const char *arg)
+
+int IvyContextRemoveFilter(IvyContext *ctx, const char *word)
 {
-	int status = IvyContextRejectIfStopped(IvyGetCurrentContext());
-	if (status != IVY_OK)
-		return status;
-	IvyBindingRemoveFilter( arg );
-	return IvyReturnStatus(IVY_OK);
+    int status = IvyContextRejectIfStopped(ctx);
+    if (status != IVY_OK) return status;
+    if (!IvyFilterValidWord(word)) return IvyReturnStatus(IVY_EINVAL);
+    IvyBindingsWriteLock(ctx);
+    IvyFilterRemove(&ctx->ivy_filters, word);
+    IvyBindingsWriteUnlock(ctx);
+    return IvyReturnStatus(IVY_OK);
+}
+
+int IvySetFilter(int count, const char **words)
+{
+    return IvyContextSetFilter(IvyGetCurrentContext(), count, words);
+}
+
+int IvyAddFilter(const char *word)
+{
+    return IvyContextAddFilter(IvyGetCurrentContext(), word);
+}
+
+int IvyRemoveFilter(const char *word)
+{
+    return IvyContextRemoveFilter(IvyGetCurrentContext(), word);
+}
+
+/* Historical lower-level filter entry points also use the current context. */
+void IvyBindingSetFilter(int count, const char **words) { (void)IvySetFilter(count, words); }
+void IvyBindingAddFilter(const char *word) { (void)IvyAddFilter(word); }
+void IvyBindingRemoveFilter(const char *word) { (void)IvyRemoveFilter(word); }
+
+int IvyBindingFilter(const char *expression)
+{
+    IvyContext *ctx = IvyGetCurrentContext();
+    int accepted;
+    IvyBindingsReadLock(ctx);
+    accepted = IvyFilterAccepts(ctx->ivy_filters, expression);
+    IvyBindingsReadUnlock(ctx);
+    return accepted;
+}
+
+int IvyBindingGetFilterCount(void)
+{
+    IvyContext *ctx = ivy_current_context ? ivy_current_context : default_ctx;
+    int count;
+    if (!ctx) return 0;
+    IvyBindingsReadLock(ctx);
+    count = IvyFilterCount(ctx->ivy_filters);
+    IvyBindingsReadUnlock(ctx);
+    return count;
+}
+
+void IvyBindindFilterCheck(const char *message)
+{
+    IvyContext *ctx = IvyGetCurrentContext();
+    int found;
+    IvyBindingsReadLock(ctx);
+    found = IvyFilterContains(ctx->ivy_filters, message);
+    IvyBindingsReadUnlock(ctx);
+    if (!found)
+        fprintf(stderr, "*** WARNING *** message '%s' has no keyword in this context's filter table\n",
+            message ? message : "");
+}
+
+void IvyBindingTerminate(void)
+{
+    IvyContext *ctx = ivy_current_context ? ivy_current_context : default_ctx;
+    IvyFilter retired;
+    if (!ctx) return;
+    IvyBindingsWriteLock(ctx);
+    retired = ctx->ivy_filters;
+    ctx->ivy_filters = NULL;
+    IvyBindingsWriteUnlock(ctx);
+    IvyFilterFree(retired);
 }
 
 static void IvyContextStopInLoop(void *data)

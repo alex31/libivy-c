@@ -103,6 +103,38 @@ Run the fault-injection tests with `./tests/run_transport_errors.sh`. They cover
 normal, OpenMP and (when available) GLib builds, partial fan-out, full FIFOs, allocation failures,
 partial writes, immediate/direct failures, and deferred flush errors.
 
+## Per-context filters (3.18)
+
+Filters are owned by each `IvyContext` and initially empty. Configure them with
+`IvyContextSetFilter(ctx, count, words)`, `IvyContextAddFilter(ctx, word)` and
+`IvyContextRemoveFilter(ctx, word)`. Creating, modifying or destroying one bus
+never changes another bus's filters. An empty list disables filtering.
+
+`SetFilter` now atomically **replaces** the list, as its name implies; older
+implementations appended. Class words are copied, deduplicated and validated
+(nonempty ASCII letters, digits, underscores or hyphens). Invalid input returns
+`IVY_EINVAL`; allocation failures return `IVY_ENOMEM` and leave the old policy
+intact. Calls after stop return `IVY_ESTOPPED`. Updates and subscription
+processing share the context's bindings lock.
+
+The legacy `IvySetFilter`, `IvyAddFilter` and `IvyRemoveFilter` delegate to the
+calling thread's current/default context. Inside a native callback they target
+that callback's bus. Code that previously relied on process-wide filters must
+configure each context explicitly. `ivyprobe` applies its CLI filter list to
+each configured bus, and `ivyperf` configures its own context.
+
+Filtering remains an optimization on **remote regexp advertisements**, used
+when selecting recipients for sends. It checks the leading literal class after
+`^`; prefixes such as `^TRA.*` remain compatible with class `TRACK`, and general
+expressions without an extractable class are kept. Changes apply to future
+advertisements, without reprocessing already accepted or rejected subscriptions.
+Rejections generate `IvyFilterBind` outside internal locks. Configure before
+start when the policy must cover initial advertisements.
+
+Run `./tests/run_context_filters.sh` for lifecycle, replacement, allocation
+failure and concurrent-update checks. `./tests/cpp/run.sh` additionally verifies
+actual filtering and legacy callback routing on two independent buses.
+
 ## C++23 wrapper
 
 `src/cpp/ivy.hpp` provides `ivy::Bus`, a non-copyable, movable owner of an
