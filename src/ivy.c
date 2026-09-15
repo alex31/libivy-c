@@ -1893,7 +1893,7 @@ static void IvyContextStopInLoop(void *data)
 	IvyMutexUnlock(&ctx->ivy_mutex);
 }
 
-int IvyContextStop(IvyContext *ctx)
+static int IvyContextStopRequest(IvyContext *ctx, int wait_for_stop)
 {
 	IvyContextState state;
 	int should_post = 0;
@@ -1923,12 +1923,13 @@ int IvyContextStop(IvyContext *ctx)
 	}
 
 #ifdef WIN32
+	(void)wait_for_stop;
 	run_direct = 1;
 #else
 	if (IvyChannelIsLoopThreadFor(ctx->ivy_loop) || !IvyChannelLoopIsActiveFor(ctx->ivy_loop))
 		run_direct = 1;
 	else
-		should_wait = 1;
+		should_wait = wait_for_stop;
 #endif
 
 	IvyMutexUnlock(&ctx->ivy_mutex);
@@ -1951,6 +1952,16 @@ int IvyContextStop(IvyContext *ctx)
 	}
 
 	return IvyReturnStatus(IVY_OK);
+}
+
+int IvyContextRequestStop(IvyContext *ctx)
+{
+	return IvyContextStopRequest(ctx, 0);
+}
+
+int IvyContextStop(IvyContext *ctx)
+{
+	return IvyContextStopRequest(ctx, 1);
 }
 
 int IvyStop (void)

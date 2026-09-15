@@ -11,6 +11,7 @@ IvyContextStop
 IvyContextDestroy
 IvyContextMainLoop
 IvyContextRun
+IvyContextRequestStop
 IvyContextIdle
 IvyContextSetBindCallback
 IvyContextSetPongCallback

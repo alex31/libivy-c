@@ -441,6 +441,17 @@ int IvyContextStart(IvyContext *ctx, const char *bus);
 int IvyContextStop(IvyContext *ctx);
 
 /**
+ * @brief Request a stop without waiting for the loop to observe it.
+ * @param ctx Context to stop.
+ * @return IVY_OK for an accepted or already requested stop, IVY_EINVAL for NULL.
+ * @details Wakes the loop and rejects further user operations. The return does
+ * not mean that callbacks have finished or the loop thread has returned. Join
+ * that thread before destruction. Internal locks may briefly delay this call;
+ * it does not wait on the loop's stop-completion condition.
+ */
+int IvyContextRequestStop(IvyContext *ctx);
+
+/**
  * @brief Destroy a context and release its resources.
  *
  * @param ctx Context to destroy.
