@@ -1,24 +1,30 @@
-cmake_minimum_required(VERSION 3.17)
-
+cmake_minimum_required(VERSION 3.20)
 project(qtdemo_ivy LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTOUIC OFF)
-set(CMAKE_AUTORCC OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(IVY REQUIRED IMPORTED_TARGET ivy-c)
-find_package(Threads REQUIRED)
+pkg_check_modules(IVY REQUIRED IMPORTED_TARGET ivy-cpp>=3.18)
 
-add_executable(qtdemo
-  main.cpp
-)
+add_library(qtdemo_window STATIC window.cpp window.hpp)
+target_include_directories(qtdemo_window PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(qtdemo_window PUBLIC Qt6::Widgets PkgConfig::IVY)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(qtdemo_window PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_executable(qtdemo main.cpp)
+target_link_libraries(qtdemo PRIVATE qtdemo_window)
 
-target_link_libraries(qtdemo PRIVATE
-  Qt6::Widgets
-  PkgConfig::IVY
-  Threads::Threads
-)
+option(IVY_QT_BUILD_TESTS "Build the offscreen Qt/Ivy integration test" OFF)
+if(IVY_QT_BUILD_TESTS)
+    enable_testing()
+    find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+    add_executable(qtdemo_test ../../tests/cpp/qt_example_test.cpp)
+    target_link_libraries(qtdemo_test PRIVATE qtdemo_window Qt6::Test)
+    add_test(NAME qtdemo_integration COMMAND qtdemo_test)
+    set_tests_properties(qtdemo_integration PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+endif()

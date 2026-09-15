@@ -1,1 +1,11 @@
-since qt is a c++ framework, qt loop is in ivy-c++
+The Qt6 example is in ../examples/ivyqt (see its README.md).
+
+It uses the C++23 API in cpp/ivy.hpp and cpp/ivy_thread.hpp, linked with
+ivy-cpp. ivy::LoopThread runs the native Ivy loop in a dedicated thread.
+The GUI and demo workers send directly through the MT-safe ivy::Bus API;
+incoming data and completion notifications reach the GUI through queued Qt signals.
+
+The example's normal close path requests stop, waits for completion notifications
+while Qt continues to run, and joins the producers before destroying the Bus.
+There is no IvyContextIdle polling or native Qt socket/timer backend in this example.
+See ../QT6_INTEGRATION.md for the optional future QtCore backend study.
