@@ -63,6 +63,8 @@ Bus::Impl::~Impl() {
     // No token can lock its weak owner once this destructor has begun.
     for (const auto& subscription : subscriptions)
         subscription->handler.reset();
+    for (const auto& timer : timers)
+        timer->handler.reset();
 }
 
 void Bus::Impl::save_callback_error(std::error_code error) noexcept {

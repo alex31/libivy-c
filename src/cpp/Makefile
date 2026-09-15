@@ -15,7 +15,7 @@ SONAME = libivy-cpp.so.$(MAJOR)
 SHARED_LINKS = $(BUILD_DIR)/libivy-cpp.so $(BUILD_DIR)/$(SONAME)
 CORE_SHARED = ../libivy.so.$(MAJOR).$(MINOR)
 PKGCONF = $(BUILD_DIR)/ivy-cpp.pc
-SOURCES = ivy.cpp ivy_subscription.cpp ivy_events.cpp ivy_send.cpp
+SOURCES = ivy.cpp ivy_subscription.cpp ivy_events.cpp ivy_send.cpp ivy_timer.cpp
 OBJECTS = $(SOURCES:%.cpp=$(BUILD_DIR)/%.o)
 HEADERS = ivy.hpp ivy_detail.hpp ivy_bus_private.hpp
 API_HEADERS = $(wildcard api/*.hpp)

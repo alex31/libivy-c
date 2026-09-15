@@ -912,6 +912,9 @@ void nonthrowing_boundaries() {
         check(bus.bind(failing));
         check(bus.bind(failing, ivy::pong));
         check(bus.bind(failing, ivy::remote_bindings));
+        check(bus.bind(failing, ivy::every(std::chrono::milliseconds(10))));
+        check(bus.bind(failing, ivy::every(std::chrono::milliseconds(10), 2)));
+        check(bus.bind(failing, ivy::after(std::chrono::milliseconds(0))));
         check(bus.set_transport_error_callback(failing));
     }
     for (int kind : {0, 1, 2, 3}) {
@@ -952,6 +955,12 @@ void nonthrowing_boundaries() {
     static_assert(noexcept(subscription->change("^{}", 42)));
 }
 
+void timer_event(TimerId timer, unsigned long lateness = 0) {
+    if (timer->removed) return;
+    timer->owner->in_callback = true;
+    timer->callback(timer, timer->data, lateness);
+    timer->owner->in_callback = false;
+}
 
 void event_subscriptions_and_ping() {
     auto bus = require_bus(ivy::Bus::create("events"));
@@ -1082,7 +1091,122 @@ void event_callback_lifetimes() {
     }
 }
 
+void timer_subscriptions() {
+    using namespace std::chrono_literals;
+    auto bus = require_bus(ivy::Bus::create("timers"));
+    auto* ctx = bus.native_handle();
+    int calls = 0;
+    auto callback = [counter = std::make_unique<int>(0), &calls](std::chrono::milliseconds late) {
+        assert(late == 3ms);
+        calls = ++*counter;
+    };
+    auto timer = bus.bind(std::move(callback), ivy::every(1s));
+    assert(timer && timer->is_bound());
+    auto* original = ctx->timers.back();
+    assert(original->period == 1000);
+    timer_event(original, 3);
+    assert(calls == 1);
+    expect_error(IVY_EINVAL, timer->set_period(0ms));
+    expect_error(IVY_EINVAL, timer->set_period(-1ms));
+    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::every(0ms)));
+    expect_error(IVY_EINVAL, bus.bind(ivy::Bus::TimerCallback{}, ivy::every(1s)));
+    timer_error = IVY_ENOMEM;
+    expect_error(IVY_ENOMEM, timer->set_period(20ms));
+    expect_error(IVY_ENOMEM, bus.bind([](auto) {}, ivy::every(20ms)));
+    timer_error = IVY_OK;
+    timer_event(original, 3);
+    assert(calls == 2 && !original->removed);
 
+    // A timer may expire on the loop before the creating thread resumes.
+    during_timer_create = [&] { timer_event(ctx->timers.back(), 3); };
+    assert(timer->set_period(20ms));
+    during_timer_create = {};
+    auto* replacement = ctx->timers.back();
+    assert(replacement != original && replacement->period == 20 && calls == 2);
+    timer_event(original, 3);
+    assert(original->removed && calls == 2);
+    timer_event(replacement, 3);
+    assert(calls == 3);
+
+    auto other = bus.bind([](auto) {}, ivy::every(40ms));
+    assert(other && timer->is_bound());
+    auto moved = std::move(bus);
+    assert(timer->is_bound() && other->is_bound());
+    expect_error(IVY_ESTATE, bus.bind([](auto) {}, ivy::every(1s)));
+    during_timer_create = [&] { assert(timer->unbind()); };
+    expect_error(IVY_ESTATE, timer->set_period(30ms));
+    during_timer_create = {};
+    assert(!timer->is_bound() && other->is_bound());
+    timer_event(replacement, 3);
+    timer_event(ctx->timers.back(), 3);
+    assert(replacement->removed && ctx->timers.back()->removed && calls == 3);
+    expect_error(IVY_ESTATE, timer->set_period(1s));
+    assert(moved.stop());
+    assert(!other->is_bound());
+    expect_error(IVY_ESTOPPED, other->set_period(1s));
+    expect_error(IVY_ESTOPPED, moved.bind([](auto) {}, ivy::every(1s)));
+    assert(other->unbind());
+}
+
+void timer_callback_lifetimes() {
+    using namespace std::chrono_literals;
+    ivy::TimerSubscription survivor;
+    std::weak_ptr<int> weak;
+    {
+        auto bus = require_bus(ivy::Bus::create("timer lifetime"));
+        auto* ctx = bus.native_handle();
+        auto capture = std::make_shared<int>(42);
+        weak = capture;
+        std::latch entered(1), release(1);
+        auto timer = bus.bind([value = std::move(capture), &entered, &release](auto) {
+            entered.count_down();
+            release.wait();
+            assert(*value == 42);
+        }, ivy::every(1s));
+        assert(timer);
+        auto* native = ctx->timers.back();
+        std::thread thread([&] { timer_event(native); });
+        entered.wait();
+        assert(timer->unbind() && !timer->is_bound() && !weak.expired());
+        release.count_down();
+        thread.join();
+        assert(weak.expired() && native->removed);
+
+        std::optional<ivy::TimerSubscription> self;
+        auto self_result = bus.bind([&](auto) { self.reset(); }, ivy::every(1s));
+        assert(self_result);
+        self.emplace(std::move(*self_result));
+        native = ctx->timers.back();
+        timer_event(native);
+        assert(!self && native->removed);
+
+        std::optional<ivy::TimerSubscription> changing;
+        auto changed = bus.bind([&](auto) { assert(changing->set_period(20ms)); }, ivy::every(1s));
+        assert(changed);
+        changing.emplace(std::move(*changed));
+        native = ctx->timers.back();
+        timer_event(native);
+        assert(native->removed && ctx->timers.back()->period == 20 && changing->is_bound());
+        assert(changing->unbind());
+
+        auto failing = bus.bind([](auto) { throw 42; }, ivy::every(1s));
+        assert(failing);
+        timer_event(ctx->timers.back());
+        expect_error(ivy::Error::callback_failed, bus.take_callback_error());
+        assert(bus.state() == IVY_CTX_STOPPED);
+    }
+    {
+        auto bus = require_bus(ivy::Bus::create("surviving timer"));
+        auto capture = std::make_shared<int>(42);
+        weak = capture;
+        auto timer = bus.bind([value = std::move(capture)](auto) {}, ivy::every(1s));
+        assert(timer);
+        survivor = std::move(*timer);
+        assert(!timer->is_bound());
+    }
+    assert(weak.expired() && !survivor.is_bound() && survivor.unbind());
+    expect_error(IVY_ESTATE, survivor.set_period(1s));
+}
 
 
 void control_messages() {
@@ -1123,6 +1247,95 @@ void control_messages() {
     static_assert(noexcept(moved.send_error(&peer, 1, std::string_view{})));
 }
 
+void limited_timers() {
+    using namespace std::chrono_literals;
+    auto bus = require_bus(ivy::Bus::create("limited timers"));
+    auto* ctx = bus.native_handle();
+    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::every(1ms, 0)));
+    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::every(1ms, -1)));
+    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::every(0ms, 1)));
+    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::after(-1ms)));
+    assert(ctx->timers.empty());
+
+    int calls = 0;
+    auto capture = std::make_shared<int>(42);
+    std::weak_ptr<int> weak = capture;
+    auto finite = bus.bind([value = std::move(capture), &calls](auto) {
+        assert(*value == 42);
+        ++calls;
+    }, ivy::every(1s, 3));
+    assert(finite && finite->is_bound());
+    auto* original = ctx->timers.back();
+    timer_event(original);
+    assert(calls == 1 && finite->is_bound());
+    timer_error = IVY_ENOMEM;
+    expect_error(IVY_ENOMEM, finite->set_period(10ms));
+    timer_error = IVY_OK;
+    assert(finite->set_period(10ms));
+    auto* changed = ctx->timers.back();
+    timer_event(original);
+    assert(original->removed && calls == 1);
+    timer_event(changed);
+    assert(calls == 2 && finite->is_bound());
+    timer_event(changed);
+    assert(calls == 3 && !finite->is_bound() && changed->removed && weak.expired());
+    timer_event(changed);
+    assert(calls == 3 && finite->unbind());
+    expect_error(IVY_ESTATE, finite->set_period(1s));
+
+    int once_calls = 0;
+    during_timer_create = [&] { timer_event(ctx->timers.back()); };
+    auto once = bus.bind([&](auto) { ++once_calls; }, ivy::after(0ms));
+    during_timer_create = {};
+    assert(once && once->is_bound() && once_calls == 0);
+    auto* immediate = ctx->timers.back();
+    assert(immediate->period == 0 && !immediate->removed);
+    assert(once->set_period(0ms));
+    auto* rescheduled = ctx->timers.back();
+    timer_event(immediate);
+    assert(immediate->removed && once_calls == 0);
+    timer_event(rescheduled);
+    assert(once_calls == 1 && !once->is_bound() && rescheduled->removed);
+    expect_error(IVY_ESTATE, once->set_period(0ms));
+
+    auto expiring = bus.bind([&](auto) { ++once_calls; }, ivy::every(1ms, 1));
+    assert(expiring);
+    auto* last = ctx->timers.back();
+    during_timer_create = [&] { timer_event(last); };
+    expect_error(IVY_ESTATE, expiring->set_period(10ms));
+    during_timer_create = {};
+    assert(once_calls == 2 && !expiring->is_bound());
+    timer_event(ctx->timers.back());
+    assert(ctx->timers.back()->removed && once_calls == 2);
+
+    TimerId cancelled;
+    {
+        auto token = bus.bind([&](auto) { ++once_calls; }, ivy::after(1ms));
+        assert(token);
+        cancelled = ctx->timers.back();
+    }
+    timer_event(cancelled);
+    assert(cancelled->removed && once_calls == 2);
+
+    std::latch entered(1), release(1);
+    capture = std::make_shared<int>(43);
+    weak = capture;
+    auto in_progress = bus.bind([value = std::move(capture), &entered, &release](auto) {
+        entered.count_down();
+        release.wait();
+        assert(*value == 43);
+    }, ivy::after(1ms));
+    assert(in_progress);
+    auto* running = ctx->timers.back();
+    std::thread thread([&] { timer_event(running); });
+    entered.wait();
+    assert(!in_progress->is_bound() && !weak.expired());
+    expect_error(IVY_ESTATE, in_progress->set_period(1ms));
+    assert(in_progress->unbind());
+    release.count_down();
+    thread.join();
+    assert(running->removed && weak.expired());
+}
 
 int main() {
     static_assert(HasChange<ivy::Subscription>);
@@ -1157,13 +1370,21 @@ int main() {
     static_assert(std::is_nothrow_move_assignable_v<ivy::Bus>);
     static_assert(std::is_nothrow_destructible_v<ivy::Bus>);
     static_assert(!HasChange<ivy::EventSubscription>);
+    static_assert(!HasChange<ivy::TimerSubscription>);
     static_assert(!std::is_copy_constructible_v<ivy::EventSubscription>);
+    static_assert(!std::is_copy_constructible_v<ivy::TimerSubscription>);
     static_assert(std::is_nothrow_move_constructible_v<ivy::EventSubscription>);
+    static_assert(std::is_nothrow_move_constructible_v<ivy::TimerSubscription>);
     static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto...) {}, ivy::pong)));
     static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto...) {}, ivy::remote_bindings)));
+    constexpr auto schedule = ivy::every(std::chrono::milliseconds(1000));
+    static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto) {}, schedule)));
     control_messages();
     event_subscriptions_and_ping();
     event_callback_lifetimes();
+    limited_timers();
+    timer_subscriptions();
+    timer_callback_lifetimes();
     nonthrowing_boundaries();
     strings_and_lifecycle();
     move_only_callbacks();

@@ -13,10 +13,15 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     using namespace std::chrono_literals;
     (void)bus.bind([](IvyClientPtr, int) {}, ivy::pong);
     (void)bus.bind([](IvyClientPtr, int, std::string_view, IvyBindEvent) {}, ivy::remote_bindings);
+    (void)bus.bind([](std::chrono::milliseconds) {}, ivy::every(1s));
+    (void)bus.bind([](auto late) { (void)late.count(); }, ivy::every(1s, 3));
+    (void)bus.bind([](auto late) { (void)late.count(); }, ivy::after(0ms));
     (void)bus.bind([](IvyClientPtr, auto delay) { (void)(delay < 0); }, ivy::pong);
     (void)bus.bind([](IvyClientPtr, auto args) { (void)args.size(); }, "^GENERIC (.*)");
+    (void)bus.bind([](auto late) { (void)late.count(); }, ivy::every(1s));
     (void)bus.bind([](auto...) {}, ivy::pong);
     (void)bus.bind([](auto...) {}, ivy::remote_bindings);
+    (void)bus.bind([](auto...) {}, ivy::every(1s));
     (void)bus.send_ping(IvyClientPtr{});
     (void)bus.send_die(IvyClientPtr{});
     (void)bus.send_error(IvyClientPtr{}, id, dynamic);
@@ -70,11 +75,15 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.bind([](IvyClientPtr, int, std::string_view) {}, ivy::pong);
 #elif IVY_COMPILE_CASE == 14
     (void)bus.bind([](IvyClientPtr, int) {}, ivy::remote_bindings);
+#elif IVY_COMPILE_CASE == 15
+    (void)bus.bind([](IvyClientPtr, int) {}, ivy::every(std::chrono::seconds(1)));
 #elif IVY_COMPILE_CASE == 16
     (void)bus.bind(message, "TRACK {}", ivy::pong);
 #elif IVY_COMPILE_CASE == 19
     (void)bus.send_error(IvyClientPtr{}, id, "ERROR {:d}", "wrong type");
 #elif IVY_COMPILE_CASE == 20
     (void)ivy::validate_anchored_regexp("^TRACK {:d}", "wrong type");
+#elif IVY_COMPILE_CASE == 21
+    (void)bus.bind([](IvyClientPtr, int) {}, ivy::after(std::chrono::milliseconds(0)));
 #endif
 }

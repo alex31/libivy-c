@@ -114,7 +114,9 @@ int main(int argc, char** argv) {
         auto peer_a = require_bus(ivy::Bus::create("cpp-peer-a"));
         auto peer_b = require_bus(ivy::Bus::create("cpp-peer-b"));
         std::atomic<int> pongs_a{0}, pongs_b{0}, remote_added{0}, remote_changed{0}, remote_removed{0};
-        std::atomic<int> replacement_pongs{0};
+        std::atomic<int> ticks_a{0}, ticks_b{0}, replacement_pongs{0}, once_ticks{0}, limited_ticks{0};
+        auto once_timer = require_bind(bus_a.bind([&](auto) { ++once_ticks; }, ivy::after(0ms)));
+        assert(once_ticks == 0 && once_timer.is_bound());
         int observed_id = -1;
         IvyClientPtr observed_peer = nullptr;
         auto pong_a = require_bind(peer_a.bind([&](IvyClientPtr peer, int delay) {
@@ -271,6 +273,34 @@ int main(int argc, char** argv) {
         assert(observed.unbind());
         wait_for([&] { return remote_removed > 0; }, "remote unbind notification timed out");
         assert(observer.unbind());
+
+        wait_for([&] { return once_ticks == 1; }, "one-shot timer before start timed out");
+        assert(!once_timer.is_bound());
+        auto finite_timer = require_bind(moved_b.bind([&](auto) { ++limited_ticks; }, ivy::every(5ms, 3)));
+        wait_for([&] { return limited_ticks == 3; }, "limited timer timed out");
+        assert(!finite_timer.is_bound());
+
+        // Register and change timers from a thread other than either event loop.
+        auto timer_a = require_bind(bus_a.bind([&](std::chrono::milliseconds late) {
+            if (late < 0ms) ++unexpected;
+            ++ticks_a;
+        }, ivy::every(10ms)));
+        auto timer_b = require_bind(moved_b.bind([&](std::chrono::milliseconds late) {
+            if (late < 0ms) ++unexpected;
+            ++ticks_b;
+        }, ivy::every(15ms)));
+        wait_for([&] { return ticks_a >= 2 && ticks_b >= 2; }, "periodic timers timed out");
+        require_start(timer_a.set_period(5ms), "change timer period");
+        const auto ticks_before_change = ticks_a.load();
+        wait_for([&] { return ticks_a >= ticks_before_change + 2; }, "changed timer timed out");
+        assert(timer_a.unbind() && !timer_a.is_bound() && timer_b.is_bound());
+        const auto other_before = ticks_b.load();
+        wait_for([&] { return ticks_b >= other_before + 2; }, "other bus timer was cancelled");
+        const auto cancelled_ticks = ticks_a.load();
+        std::this_thread::sleep_for(30ms);
+        assert(ticks_a == cancelled_ticks);
+        assert(timer_b.unbind());
+        assert(once_ticks == 1 && limited_ticks == 3);
 
 
 

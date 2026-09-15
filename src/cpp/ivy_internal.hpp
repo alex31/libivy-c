@@ -42,6 +42,26 @@ struct Subscription::State {
         const char* regexp, IvyBindEvent event) noexcept;
 };
 
+struct TimerSubscription::State {
+    struct Registration {
+        State* state;
+        bool pending = true;
+        explicit Registration(State* state) : state(state) {}
+    };
+
+    std::weak_ptr<Bus::Impl> owner;
+    std::shared_ptr<Bus::TimerCallback> handler;
+    Registration* current = nullptr;
+    std::optional<int> remaining;
+    bool one_shot = false;
+    // Only the loop touches native timer handles. These relays also cover
+    // a callback selected just before cancellation or a period change.
+    std::vector<std::unique_ptr<Registration>> registrations;
+
+    std::expected<void, std::error_code> schedule(std::chrono::milliseconds period) noexcept;
+    static void on_timer(TimerId timer, void* data, unsigned long lateness) noexcept;
+};
+
 struct Bus::Impl {
     ApplicationCallback application_callback;
     DieCallback die_callback;
@@ -56,6 +76,7 @@ struct Bus::Impl {
     Subscription::State* direct_subscription = nullptr;
     Subscription::State* pong_subscription = nullptr;
     Subscription::State* remote_bindings_subscription = nullptr;
+    std::vector<std::shared_ptr<TimerSubscription::State>> timers;
 
     Impl(ApplicationCallback application, DieCallback die);
     ~Impl();

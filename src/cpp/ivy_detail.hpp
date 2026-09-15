@@ -86,6 +86,9 @@ consteval AnchoredRegexp::AnchoredRegexp(const T& text) noexcept : text_(detail:
 
 constexpr std::string_view AnchoredRegexp::get() const noexcept { return text_; }
 
+constexpr Every every(std::chrono::milliseconds period) noexcept { return {period}; }
+constexpr Every every(std::chrono::milliseconds period, int count) noexcept { return {period, count}; }
+constexpr After after(std::chrono::milliseconds delay) noexcept { return {delay}; }
 
 constexpr RuntimeRegexp runtime_regexp(std::string_view text) noexcept { return {text}; }
 
@@ -231,7 +234,19 @@ Bus::EventBindResult Bus::bind(Callback&& callback, RemoteBindingsTag) noexcept 
     });
 }
 
+template<class Callback>
+Bus::TimerBindResult Bus::bind(Callback&& callback, Every schedule) noexcept {
+    return detail::guard<TimerBindResult>(make_error_code(Error::callback_failed), [&] {
+        return bind_timer_impl(TimerCallback(std::forward<Callback>(callback)), schedule);
+    });
+}
 
+template<class Callback>
+Bus::TimerBindResult Bus::bind(Callback&& callback, After schedule) noexcept {
+    return detail::guard<TimerBindResult>(make_error_code(Error::callback_failed), [&] {
+        return bind_timer_impl(TimerCallback(std::forward<Callback>(callback)), Every{schedule.delay, 1}, true);
+    });
+}
 
 
 
