@@ -172,6 +172,11 @@ std::expected<void, std::error_code> Bus::stop() noexcept {
     return detail::status_result(IvyContextStop(impl_->context));
 }
 
+std::expected<void, std::error_code> Bus::request_stop() noexcept {
+    if (!impl_)
+        return {};
+    return detail::status_result(IvyContextRequestStop(impl_->context));
+}
 
 std::expected<void, std::error_code> Bus::set_transport_error_callback_impl(TransportCallback callback) noexcept {
     const auto owner = impl_;

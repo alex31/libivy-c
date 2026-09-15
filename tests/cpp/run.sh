@@ -40,6 +40,11 @@ echo "Anchoring and send-format compile-time checks passed"
     "$repo_dir/src/libivy.a" $(pcre2-config --libs8) -pthread \
     -o "$tmp_dir/integration_test"
 
+"$cxx" -std=c++23 -O2 -g -Wall -Wextra -Wpedantic -UNDEBUG \
+    -I"$repo_dir/src/cpp" -I"$repo_dir/src" \
+    "$repo_dir/tests/cpp/mainloop_test.cpp" "$archive" "$repo_dir/src/libivy.a" \
+    $(pcre2-config --libs8) -pthread -o "$tmp_dir/mainloop_test"
+
 # Check the installed header layout and pkg-config link flags in a private prefix.
 stage=$tmp_dir/stage
 make -C "$repo_dir/src" includes installpkgconf install-cpp DESTDIR="$stage" PREFIX=/usr
@@ -78,4 +83,11 @@ port=$((27000 + ($$ % 1000)))
 "$tmp_dir/integration_test" "127.255.255.255:$port" "127.255.255.255:$((port + 1100))"
 LD_LIBRARY_PATH="$stage/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     "$tmp_dir/integration_shared_test" "127.255.255.255:$((port + 2))" "127.255.255.255:$((port + 1102))"
+timeout 20s "$tmp_dir/mainloop_test" "127.255.255.255:$((port + 4))"
+"$cxx" -std=c++23 -O2 -g -Wall -Wextra -Wpedantic -UNDEBUG \
+    -I"$stage/usr/include/Ivy" $(pkg-config --cflags ivy-cpp) \
+    "$repo_dir/tests/cpp/mainloop_test.cpp" $(pkg-config --libs ivy-cpp) \
+    -o "$tmp_dir/mainloop_shared_test"
+LD_LIBRARY_PATH="$stage/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    timeout 20s "$tmp_dir/mainloop_shared_test" "127.255.255.255:$((port + 5))"
 echo "C++23 static/shared wrapper and installed consumer checks passed"

@@ -79,7 +79,10 @@ int main(int argc, char** argv) {
     }
 
     // A received die request stops the loop; destruction follows its return.
-    IvyContextMainLoop(bus.native_handle());
+    if (auto result = bus.run(); !result) {
+        std::cerr << result.error().message() << '\n';
+        return 1;
+    }
     if (auto callbacks = bus.take_callback_error(); !callbacks) {
         std::cerr << "Callback failed: " << callbacks.error().message() << '\n';
         return 1;

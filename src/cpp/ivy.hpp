@@ -54,6 +54,7 @@ namespace ivy {
 class Bus {
 public:
 #include "api/lifecycle.hpp"
+#include "api/mainloop.hpp"
 #include "api/messages.hpp"
 #include "api/send.hpp"
 #include "api/callbacks.hpp"

@@ -1412,6 +1412,20 @@ void limited_timers() {
 }
 
 int main() {
+    {
+        auto bus = require_bus(ivy::Bus::create("run-result"));
+        assert(!bus.run());
+        assert(bus.start());
+        last_error = IVY_ENOMEM;
+        assert(bus.run()); // No stale TLS error may leak into the result.
+        run_error = IVY_EIO;
+        last_error = IVY_OK;
+        assert(bus.run().error() == ivy::make_error_code(IVY_EIO));
+        run_error = IVY_OK;
+        auto moved = std::move(bus);
+        assert(bus.run().error() == ivy::make_error_code(IVY_ESTATE));
+    }
+
     static_assert(HasChange<ivy::Subscription>);
     static_assert(!HasChange<ivy::DirectSubscription>);
     static_assert(!std::is_convertible_v<ivy::DirectSubscription, ivy::Subscription>);
