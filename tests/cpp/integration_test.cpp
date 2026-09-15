@@ -34,12 +34,9 @@ T require_bind(std::expected<T, std::error_code> result) {
 }
 
 bool advertises(const ivy::Bus& bus, IvyClientPtr peer, std::string_view regexp) {
-    std::array<char, 16384> buffer{};
-    const int size = IvyContextGetApplicationMessagesBuffer(bus.native_handle(), peer,
-        buffer.data(), buffer.size(), "\n");
-    if (size < 0 || size > static_cast<int>(buffer.size()))
-        throw std::runtime_error("query peer regexps failed");
-    return std::string_view(buffer.data()).find(regexp) != std::string_view::npos;
+    const auto regexps = bus.application_regexps(peer);
+    if (!regexps) throw std::system_error(regexps.error(), "query peer regexps");
+    return std::ranges::find(*regexps, regexp) != regexps->end();
 }
 
 // Until the C++ loop API is designed, use the borrowed C handle explicitly.
@@ -113,6 +110,10 @@ int main(int argc, char** argv) {
             }));
         auto peer_a = require_bus(ivy::Bus::create("cpp-peer-a"));
         auto peer_b = require_bus(ivy::Bus::create("cpp-peer-b"));
+        const auto no_applications = peer_a.applications();
+        const auto no_peer = peer_a.find_application("absent");
+        assert(no_applications && no_applications->empty() && no_peer && !*no_peer);
+        assert(!peer_a.application(nullptr) && !peer_a.application_regexps(nullptr));
         std::atomic<int> pongs_a{0}, pongs_b{0}, remote_added{0}, remote_changed{0}, remote_removed{0};
         std::atomic<int> ticks_a{0}, ticks_b{0}, replacement_pongs{0}, once_ticks{0}, limited_ticks{0};
         auto once_timer = require_bind(bus_a.bind([&](auto) { ++once_ticks; }, ivy::after(0ms)));
@@ -240,11 +241,39 @@ int main(int argc, char** argv) {
         char name_a[] = "cpp-receiver-a";
         char name_b[] = "cpp-receiver-b";
         wait_for([&] {
-            receiver_a = IvyContextGetApplication(peer_a.native_handle(), name_a);
-            receiver_b = IvyContextGetApplication(peer_b.native_handle(), name_b);
+            const auto found_a = peer_a.find_application(name_a);
+            const auto found_b = peer_b.find_application(name_b);
+            assert(found_a && found_b);
+            receiver_a = *found_a ? **found_a : nullptr;
+            receiver_b = *found_b ? **found_b : nullptr;
             return receiver_a && receiver_b;
         }, "peer lookup timed out");
 
+        const auto endpoint_a = peer_a.application_info(receiver_a);
+        assert(endpoint_a && endpoint_a->name == "cpp-receiver-a");
+        assert(endpoint_a->address.starts_with("127.") && endpoint_a->port > 0);
+        assert(!peer_a.application_info(nullptr));
+        const auto wrong_endpoint = peer_a.application_info(receiver_b);
+        assert(!wrong_endpoint && wrong_endpoint.error() == ivy::make_error_code(IVY_EINVAL));
+        const auto info_a = peer_a.application(receiver_a);
+        const auto info_b = peer_b.application(receiver_b);
+        assert(info_a && info_b);
+        const auto& [application_name, host] = *info_a;
+        assert(application_name == "cpp-receiver-a" && !host.empty());
+        assert(info_b->first == "cpp-receiver-b" && !info_b->second.empty());
+        const auto names_a = peer_a.applications();
+        const auto names_b = peer_b.applications();
+        assert(names_a && *names_a == std::vector<std::string>{"cpp-receiver-a"});
+        assert(names_b && *names_b == std::vector<std::string>{"cpp-receiver-b"});
+        const auto missing = peer_a.find_application("absent");
+        assert(missing && !*missing);
+        const auto invalid_name = peer_a.find_application(std::string_view("bad\0name", 8));
+        assert(!invalid_name && invalid_name.error() == ivy::make_error_code(IVY_EINVAL));
+        auto foreign_info = peer_a.application(receiver_b);
+        auto foreign_regexps = peer_a.application_regexps(receiver_b);
+        assert(!foreign_info && foreign_info.error() == ivy::make_error_code(IVY_EINVAL));
+        assert(!foreign_regexps && foreign_regexps.error() == ivy::make_error_code(IVY_EINVAL));
+        assert(!bus_b.applications() && !bus_b.application(receiver_b) && !bus_b.find_application("absent"));
         assert(!peer_a.send_die(receiver_b));
         assert(!peer_a.send_error(receiver_b, 7, "wrong context"));
         require_start(peer_a.send_error(receiver_a, 7, "expected test error {}", 42), "send error frame");
@@ -395,6 +424,13 @@ int main(int argc, char** argv) {
         const auto callback_error = moved_b.take_callback_error();
         assert(!callback_error && callback_error.error() == ivy::make_error_code(ivy::Error::callback_failed));
         assert(moved_b.take_callback_error());
+        const auto stopped_names = bus_a.applications();
+        assert(!stopped_names && stopped_names.error() == ivy::make_error_code(IVY_ESTOPPED));
+        const auto stopped_lookup = bus_a.find_application("anything");
+        assert(!stopped_lookup && stopped_lookup.error() == ivy::make_error_code(IVY_ESTOPPED));
+        assert(info_a->first == "cpp-receiver-a" && names_a->front() == "cpp-receiver-a");
+        assert(endpoint_a->name == "cpp-receiver-a" && endpoint_a->address.starts_with("127.") && endpoint_a->port > 0);
+        assert(!bus_a.application_info(receiver_a));
         assert(unexpected == 0);
         std::cout << "C++ multibus integration tests passed\n";
     } catch (const std::exception& error) {

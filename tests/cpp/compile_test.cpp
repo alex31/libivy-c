@@ -26,6 +26,10 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.send_die(IvyClientPtr{});
     (void)bus.send_error(IvyClientPtr{}, id, dynamic);
     (void)bus.send_error(IvyClientPtr{}, id, "ERROR {}", id);
+    (void)bus.application(IvyClientPtr{});
+    (void)bus.applications();
+    (void)bus.application_regexps(IvyClientPtr{});
+    (void)bus.find_application(dynamic);
     (void)ivy::validate_anchored_regexp(dynamic);
     (void)ivy::validate_anchored_regexp("^TRACK {}", id);
     (void)bus.send(dynamic);

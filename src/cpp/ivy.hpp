@@ -30,6 +30,7 @@ namespace ivy { class Bus; }
 #include "api/regexp.hpp"
 #include "api/subscriptions.hpp"
 #include "api/timer_types.hpp"
+#include "api/application_types.hpp"
 
 namespace ivy {
 
@@ -57,6 +58,7 @@ public:
 #include "api/send.hpp"
 #include "api/callbacks.hpp"
 #include "api/timers.hpp"
+#include "api/applications.hpp"
 
 #include "ivy_bus_private.hpp"
 };
