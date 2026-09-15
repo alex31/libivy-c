@@ -118,6 +118,7 @@ int main(int argc, char** argv) {
         std::atomic<int> ticks_a{0}, ticks_b{0}, replacement_pongs{0}, once_ticks{0}, limited_ticks{0};
         auto once_timer = require_bind(bus_a.bind([&](auto) { ++once_ticks; }, ivy::after(0ms)));
         assert(once_ticks == 0 && once_timer.is_bound());
+        std::atomic<int> filter_rejected_a{0}, filter_rejected_b{0}, filter_hits_a{0}, filter_hits_b{0};
         int observed_id = -1;
         IvyClientPtr observed_peer = nullptr;
         auto pong_a = require_bind(peer_a.bind([&](IvyClientPtr peer, int delay) {
@@ -331,7 +332,58 @@ int main(int argc, char** argv) {
         assert(timer_b.unbind());
         assert(once_ticks == 1 && limited_ticks == 3);
 
-
+        // Identical subscriptions on two buses must see different filter policies.
+        {
+            require_start(peer_a.set_filters({"FILTER_A"}), "filters A");
+            require_start(peer_b.set_filters({"FILTER_B"}), "filters B");
+            auto filter_observer_a = require_bind(peer_a.bind(
+                [&](IvyClientPtr, int, std::string_view regexp, IvyBindEvent event) {
+                    if (event == IvyFilterBind && regexp == "^FILTER_B$") {
+                        // The legacy facade must target this callback's context, not another bus.
+                        if (IvyAddFilter("FILTER_LOCAL") != IVY_OK) ++unexpected;
+                        ++filter_rejected_a;
+                    }
+                }, ivy::remote_bindings));
+            auto filter_observer_b = require_bind(peer_b.bind(
+                [&](IvyClientPtr, int, std::string_view regexp, IvyBindEvent event) {
+                    if (event == IvyFilterBind && (regexp == "^FILTER_A$" || regexp == "^FILTER_LOCAL$"))
+                        ++filter_rejected_b;
+                }, ivy::remote_bindings));
+            auto aa = require_bind(bus_a.bind([&](auto...) { ++filter_hits_a; }, "^FILTER_A$"));
+            auto ab = require_bind(bus_a.bind([&](auto...) { ++filter_hits_a; }, "^FILTER_B$"));
+            auto ba = require_bind(moved_b.bind([&](auto...) { ++filter_hits_b; }, "^FILTER_A$"));
+            auto bb = require_bind(moved_b.bind([&](auto...) { ++filter_hits_b; }, "^FILTER_B$"));
+            wait_for([&] {
+                return filter_rejected_a == 1 && filter_rejected_b == 1 &&
+                    advertises(peer_a, receiver_a, "^FILTER_A$") &&
+                    advertises(peer_b, receiver_b, "^FILTER_B$");
+            }, "per-bus filters did not isolate remote subscriptions");
+            auto local_a = require_bind(bus_a.bind([&](auto...) { ++filter_hits_a; }, "^FILTER_LOCAL$"));
+            auto local_b = require_bind(moved_b.bind([&](auto...) { ++filter_hits_b; }, "^FILTER_LOCAL$"));
+            wait_for([&] {
+                return filter_rejected_b == 2 && advertises(peer_a, receiver_a, "^FILTER_LOCAL$");
+            }, "legacy filter update did not stay in the callback's bus");
+            auto check_send = [](ivy::Bus& sender, std::string_view message, std::size_t matches) {
+                const auto report = sender.send_report(message);
+                assert(!report.error && report.matched == matches && report.accepted == matches && report.failed == 0);
+            };
+            check_send(peer_a, "FILTER_A", 1);
+            check_send(peer_a, "FILTER_B", 0);
+            check_send(peer_a, "FILTER_LOCAL", 1);
+            check_send(peer_b, "FILTER_A", 0);
+            check_send(peer_b, "FILTER_B", 1);
+            check_send(peer_b, "FILTER_LOCAL", 0);
+            wait_for([&] { return filter_hits_a == 2 && filter_hits_b == 1; }, "filtered message delivery timed out");
+            require_start(peer_a.clear_filters(), "clear filters A");
+            check_send(peer_a, "FILTER_B", 0); // Rejected registrations are not replayed on policy changes.
+            require_start(ab.change("^FILTER_B$"), "readvertise after clearing filter");
+            wait_for([&] { return advertises(peer_a, receiver_a, "^FILTER_B$"); },
+                     "readvertised regexp was still filtered");
+            check_send(peer_a, "FILTER_B", 1);
+            check_send(peer_b, "FILTER_LOCAL", 0); // Clearing A did not clear B.
+            wait_for([&] { return filter_hits_a == 3; }, "delivery after clearing filter timed out");
+            require_start(peer_b.clear_filters(), "clear filters B");
+        }
 
 
         wait_for([&] {

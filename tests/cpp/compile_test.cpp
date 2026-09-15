@@ -32,6 +32,13 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.find_application(dynamic);
     (void)ivy::validate_anchored_regexp(dynamic);
     (void)ivy::validate_anchored_regexp("^TRACK {}", id);
+    (void)bus.set_filters({"TRACK", "STATUS"});
+    (void)bus.set_filters("TRACK", dynamic);
+    (void)bus.set_filters();
+    (void)bus.set_filters(std::vector<std::string>{"TRACK", "STATUS"});
+    (void)bus.add_filter(dynamic);
+    (void)bus.remove_filter(dynamic);
+    (void)bus.clear_filters();
     (void)bus.send(dynamic);
     (void)bus.send("100% {} unchanged");
     (void)bus.send("TRACK {} {:02d}", dynamic, id);
@@ -83,6 +90,10 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.bind([](IvyClientPtr, int) {}, ivy::every(std::chrono::seconds(1)));
 #elif IVY_COMPILE_CASE == 16
     (void)bus.bind(message, "TRACK {}", ivy::pong);
+#elif IVY_COMPILE_CASE == 17
+    (void)bus.set_filters(42);
+#elif IVY_COMPILE_CASE == 18
+    (void)bus.set_filters(std::vector<int>{1, 2});
 #elif IVY_COMPILE_CASE == 19
     (void)bus.send_error(IvyClientPtr{}, id, "ERROR {:d}", "wrong type");
 #elif IVY_COMPILE_CASE == 20

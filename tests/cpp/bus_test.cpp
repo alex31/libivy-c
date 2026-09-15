@@ -1208,6 +1208,80 @@ void timer_callback_lifetimes() {
     expect_error(IVY_ESTATE, survivor.set_period(1s));
 }
 
+void bus_filters() {
+    auto a = require_bus(ivy::Bus::create("filter-a"));
+    auto b = require_bus(ivy::Bus::create("filter-b"));
+    std::string word = "TRACK-suffix";
+    assert(a.set_filters({std::string_view(word).substr(0, 5), "STATUS"}));
+    word.clear();
+    assert((a.native_handle()->filters == std::vector<std::string>{"TRACK", "STATUS"}));
+    const std::string_view other[] = {"OTHER"};
+    assert(b.set_filters(other));
+    assert(a.add_filter(std::string_view("EXTRA-suffix").substr(0, 5)));
+    assert(a.remove_filter(std::string_view("TRACK-suffix").substr(0, 5)));
+    assert((a.native_handle()->filters == std::vector<std::string>{"STATUS", "EXTRA"}));
+    assert((b.native_handle()->filters == std::vector<std::string>{"OTHER"}));
+    const std::string_view nul("BAD\0WORD", 8);
+    expect_error(IVY_EINVAL, a.set_filters({"GOOD", nul}));
+    expect_error(IVY_EINVAL, a.add_filter(nul));
+    expect_error(IVY_EINVAL, a.remove_filter(nul));
+    assert((a.native_handle()->filters == std::vector<std::string>{"STATUS", "EXTRA"}));
+    assert(a.set_filters("ONE", std::string("TWO"), std::string_view("THREE")));
+    assert((a.native_handle()->filters == std::vector<std::string>{"ONE", "TWO", "THREE"}));
+    std::vector<std::string> collection{"FOUR", "FIVE"};
+    assert(a.set_filters(collection));
+    collection[0] = "MUTATED";
+    assert((a.native_handle()->filters == std::vector<std::string>{"FOUR", "FIVE"}));
+    assert(a.set_filters(std::vector<std::string>{"TEMPORARY"}));
+    const char* literals[] = {"SIX", "SEVEN"};
+    assert(a.set_filters(literals));
+    assert((a.native_handle()->filters == std::vector<std::string>{"SIX", "SEVEN"}));
+    assert(a.set_filters(collection | std::views::transform([](const auto& word) {
+        return word + "-VIEW"; // Each element is a temporary string, owned before increment.
+    })));
+    assert((a.native_handle()->filters == std::vector<std::string>{"MUTATED-VIEW", "FIVE-VIEW"}));
+    std::istringstream stream("EIGHT NINE");
+    assert(a.set_filters(std::ranges::istream_view<std::string>(stream)));
+    assert((a.native_handle()->filters == std::vector<std::string>{"EIGHT", "NINE"}));
+    auto failing_range = std::views::iota(0, 2) | std::views::transform([](int i) -> std::string {
+        if (i == 1) throw std::bad_alloc();
+        return "PARTIAL";
+    });
+    expect_error(IVY_ENOMEM, a.set_filters(failing_range));
+    assert((a.native_handle()->filters == std::vector<std::string>{"EIGHT", "NINE"}));
+    auto invalid_range = std::views::iota(0, 2) | std::views::transform([](int i) -> std::string {
+        if (i == 1) throw 42;
+        return "PARTIAL";
+    });
+    expect_error(IVY_EINVAL, a.set_filters(invalid_range));
+    assert((a.native_handle()->filters == std::vector<std::string>{"EIGHT", "NINE"}));
+    assert(a.set_filters() && a.native_handle()->filters.empty());
+    assert(a.set_filters("SINGLE") && a.native_handle()->filters == std::vector<std::string>{"SINGLE"});
+    assert(a.set_filters(std::vector<std::string>{}) && a.native_handle()->filters.empty());
+    assert(a.set_filters("STATUS", "EXTRA"));
+    filter_error = IVY_ENOMEM;
+    expect_error(IVY_ENOMEM, a.set_filters({"REPLACEMENT"}));
+    expect_error(IVY_ENOMEM, a.add_filter("NEW"));
+    expect_error(IVY_ENOMEM, a.remove_filter("STATUS"));
+    filter_error = IVY_OK;
+    assert((a.native_handle()->filters == std::vector<std::string>{"STATUS", "EXTRA"}));
+    assert(a.set_filters({}) && a.native_handle()->filters.empty());
+    assert(b.clear_filters() && b.native_handle()->filters.empty());
+    auto moved = std::move(a);
+    expect_error(IVY_ESTATE, a.set_filters({"A"}));
+    expect_error(IVY_ESTATE, a.add_filter("A"));
+    expect_error(IVY_ESTATE, a.remove_filter("A"));
+    expect_error(IVY_ESTATE, a.clear_filters());
+    assert(moved.stop());
+    expect_error(IVY_ESTOPPED, moved.set_filters({"A"}));
+    expect_error(IVY_ESTOPPED, moved.add_filter("A"));
+    expect_error(IVY_ESTOPPED, moved.remove_filter("A"));
+    expect_error(IVY_ESTOPPED, moved.clear_filters());
+    static_assert(noexcept(b.set_filters({"A", "B"})));
+    static_assert(noexcept(b.add_filter("A")));
+    static_assert(noexcept(b.remove_filter("A")));
+    static_assert(noexcept(b.clear_filters()));
+}
 
 void control_messages() {
     auto bus = require_bus(ivy::Bus::create("control"));
@@ -1380,6 +1454,7 @@ int main() {
     constexpr auto schedule = ivy::every(std::chrono::milliseconds(1000));
     static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto) {}, schedule)));
     control_messages();
+    bus_filters();
     event_subscriptions_and_ping();
     event_callback_lifetimes();
     limited_timers();

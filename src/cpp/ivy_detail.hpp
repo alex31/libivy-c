@@ -248,6 +248,35 @@ Bus::TimerBindResult Bus::bind(Callback&& callback, After schedule) noexcept {
     });
 }
 
+template<std::ranges::input_range Filters>
+    requires (!std::convertible_to<Filters, std::string_view> &&
+              std::convertible_to<std::ranges::range_reference_t<Filters>, std::string_view>)
+std::expected<void, std::error_code> Bus::set_filters(Filters&& classes) noexcept {
+    return detail::guard<std::expected<void, std::error_code>>(make_error_code(IVY_EINVAL), [&]() -> std::expected<void, std::error_code> {
+        std::vector<std::string> words;
+        if constexpr (std::ranges::sized_range<Filters>) {
+            const auto count = std::ranges::size(classes);
+            if (!std::in_range<int>(count)) return std::unexpected(make_error_code(IVY_EINVAL));
+            words.reserve(count);
+        }
+        for (auto&& word : classes) {
+            // Own each element before advancing a single-pass range or destroying
+            // a temporary string returned by a transform view.
+            if (!std::in_range<int>(words.size() + 1)) return std::unexpected(make_error_code(IVY_EINVAL));
+            words.emplace_back(std::string_view(std::forward<decltype(word)>(word)));
+        }
+        return set_filters_impl(words);
+    });
+}
 
+template<class... Filters> requires (std::convertible_to<Filters, std::string_view> && ...)
+std::expected<void, std::error_code> Bus::set_filters(Filters&&... classes) noexcept {
+    return detail::guard<std::expected<void, std::error_code>>(make_error_code(IVY_EINVAL), [&] {
+        const std::array<std::string_view, sizeof...(Filters)> words{
+            std::string_view(std::forward<Filters>(classes))...
+        };
+        return set_filters(std::span<const std::string_view>(words));
+    });
+}
 
 } // namespace ivy

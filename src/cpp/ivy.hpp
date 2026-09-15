@@ -59,6 +59,7 @@ public:
 #include "api/callbacks.hpp"
 #include "api/timers.hpp"
 #include "api/applications.hpp"
+#include "api/filters.hpp"
 
 #include "ivy_bus_private.hpp"
 };
