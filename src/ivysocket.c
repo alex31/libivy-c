@@ -54,6 +54,7 @@ typedef long ssize_t;
 #include "ivybuffer.h"
 #include "ivyfifo.h"
 #include "ivy.h"
+#include "ivy_query_internal.h"
 #include <limits.h>
 #include "ivythread.h"
 #include "ivydebug.h"
@@ -670,6 +671,25 @@ const char *SocketGetPeerHost (Client client )
 		return "can't translate addr";
 	}
 	return host;
+}
+
+int IvySocketCopyPeerAddressInternal(Client client, char *address, size_t size)
+{
+    struct sockaddr_storage peer;
+    socklen_t length = sizeof(peer);
+    int error;
+    if (!address || size == 0 || size > INT_MAX) return IVY_EINVAL;
+    address[0] = '\0';
+    if (!client) return IVY_EINVAL;
+    if (getpeername(client->fd, (struct sockaddr *)&peer, &length) < 0)
+        return IVY_EIO;
+    error = getnameinfo((struct sockaddr *)&peer, length, address, (socklen_t)size,
+                        NULL, 0, NI_NUMERICHOST);
+    if (error) {
+        address[0] = '\0';
+        return error == EAI_MEMORY ? IVY_ENOMEM : IVY_EIO;
+    }
+    return IVY_OK;
 }
 
 unsigned short int SocketGetLocalPort ( Client client )

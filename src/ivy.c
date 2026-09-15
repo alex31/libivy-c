@@ -48,6 +48,9 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#ifndef WIN32
+#include <netdb.h>
+#endif
 
 #include <fcntl.h>
 
@@ -65,6 +68,7 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #include "ivybind.h"
 #include "ivythread.h"
 #include "ivy.h"
+#include "ivy_query_internal.h"
 
 #define ARG_START "\002"
 #define ARG_END "\003"
@@ -2774,6 +2778,139 @@ static int IvyContextOwnsApplication(IvyContext *ctx, IvyClientPtr app)
 		return 0;
 	IVY_LIST_ITER(ctx->ivy_all_clients, found, found != app);
 	return found != NULL;
+}
+
+/* Private owned snapshots for libivy-cpp. All peer data is copied while the
+ * context's bindings read lock protects it against changes/disconnection. */
+void IvyStringSnapshotFreeInternal(IvyStringSnapshot *snapshot)
+{
+    size_t i;
+    if (!snapshot) return;
+    for (i = 0; i < snapshot->count; ++i) free(snapshot->items[i]);
+    free(snapshot->items);
+    snapshot->items = NULL;
+    snapshot->count = 0;
+}
+
+static int IvyStringSnapshotAllocate(IvyStringSnapshot *snapshot, size_t count)
+{
+    if (count == 0) return IVY_OK;
+    if (count > SIZE_MAX / sizeof(*snapshot->items)) return IVY_ENOMEM;
+    snapshot->items = calloc(count, sizeof(*snapshot->items));
+    if (!snapshot->items) return IVY_ENOMEM;
+    snapshot->count = count;
+    return IVY_OK;
+}
+
+int IvyContextCopyApplicationInternal(IvyContext *ctx, IvyClientPtr peer,
+    IvyStringSnapshot *snapshot)
+{
+    int status;
+    if (!snapshot) return IvyReturnStatus(IVY_EINVAL);
+    memset(snapshot, 0, sizeof(*snapshot));
+    status = IvyContextRejectIfStopped(ctx);
+    if (status != IVY_OK) return status;
+    IvyBindingsReadLock(ctx);
+    if (!IvyContextOwnsApplication(ctx, peer) || !peer->app_name || !peer->client) {
+        status = IVY_EINVAL;
+    } else {
+        status = IvyStringSnapshotAllocate(snapshot, 2);
+        if (status == IVY_OK) {
+            snapshot->items[0] = strdup(peer->app_name);
+            snapshot->items[1] = strdup(SocketGetPeerHost(peer->client));
+            if (!snapshot->items[0] || !snapshot->items[1]) status = IVY_ENOMEM;
+        }
+    }
+    IvyBindingsReadUnlock(ctx);
+    if (status != IVY_OK) IvyStringSnapshotFreeInternal(snapshot);
+    return IvyReturnStatus(status);
+}
+
+int IvyContextCopyApplicationInfoInternal(IvyContext *ctx, IvyClientPtr peer,
+    IvyStringSnapshot *snapshot, unsigned short *port)
+{
+    char address[NI_MAXHOST];
+    int status;
+    if (port) *port = 0;
+    if (snapshot) memset(snapshot, 0, sizeof(*snapshot));
+    if (!snapshot || !port) return IvyReturnStatus(IVY_EINVAL);
+    status = IvyContextRejectIfStopped(ctx);
+    if (status != IVY_OK) return status;
+    IvyBindingsReadLock(ctx);
+    if (!IvyContextOwnsApplication(ctx, peer) || !peer->app_name || !peer->client) {
+        status = IVY_EINVAL;
+    } else {
+        status = IvySocketCopyPeerAddressInternal(peer->client, address, sizeof(address));
+        if (status == IVY_OK) status = IvyStringSnapshotAllocate(snapshot, 2);
+        if (status == IVY_OK) {
+            snapshot->items[0] = strdup(peer->app_name);
+            snapshot->items[1] = strdup(address);
+            if (!snapshot->items[0] || !snapshot->items[1]) status = IVY_ENOMEM;
+            else *port = peer->app_port;
+        }
+    }
+    IvyBindingsReadUnlock(ctx);
+    if (status != IVY_OK) IvyStringSnapshotFreeInternal(snapshot);
+    return IvyReturnStatus(status);
+}
+
+int IvyContextCopyApplicationsInternal(IvyContext *ctx, IvyStringSnapshot *snapshot)
+{
+    IvyClientPtr peer;
+    size_t count = 0;
+    size_t i = 0;
+    int status;
+    if (!snapshot) return IvyReturnStatus(IVY_EINVAL);
+    memset(snapshot, 0, sizeof(*snapshot));
+    status = IvyContextRejectIfStopped(ctx);
+    if (status != IVY_OK) return status;
+    IvyBindingsReadLock(ctx);
+    for (peer = ctx->ivy_all_clients; peer; peer = peer->next) ++count;
+    status = IvyStringSnapshotAllocate(snapshot, count);
+    if (status == IVY_OK) {
+        for (peer = ctx->ivy_all_clients; peer; peer = peer->next) {
+            snapshot->items[i] = strdup(peer->app_name ? peer->app_name : "");
+            if (!snapshot->items[i++]) {
+                status = IVY_ENOMEM;
+                break;
+            }
+        }
+    }
+    IvyBindingsReadUnlock(ctx);
+    if (status != IVY_OK) IvyStringSnapshotFreeInternal(snapshot);
+    return IvyReturnStatus(status);
+}
+
+int IvyContextCopyApplicationRegexpsInternal(IvyContext *ctx, IvyClientPtr peer,
+    IvyStringSnapshot *snapshot)
+{
+    GlobRegPtr regexp;
+    size_t count = 0;
+    size_t i = 0;
+    int status;
+    if (!snapshot) return IvyReturnStatus(IVY_EINVAL);
+    memset(snapshot, 0, sizeof(*snapshot));
+    status = IvyContextRejectIfStopped(ctx);
+    if (status != IVY_OK) return status;
+    IvyBindingsReadLock(ctx);
+    if (!IvyContextOwnsApplication(ctx, peer)) {
+        status = IVY_EINVAL;
+    } else {
+        for (regexp = peer->srcRegList; regexp; regexp = regexp->next) ++count;
+        status = IvyStringSnapshotAllocate(snapshot, count);
+        if (status == IVY_OK) {
+            for (regexp = peer->srcRegList; regexp; regexp = regexp->next) {
+                snapshot->items[i] = strdup(regexp->str_regexp);
+                if (!snapshot->items[i++]) {
+                    status = IVY_ENOMEM;
+                    break;
+                }
+            }
+        }
+    }
+    IvyBindingsReadUnlock(ctx);
+    if (status != IVY_OK) IvyStringSnapshotFreeInternal(snapshot);
+    return IvyReturnStatus(status);
 }
 
 const char *IvyContextGetApplicationName(IvyContext *ctx, IvyClientPtr app)

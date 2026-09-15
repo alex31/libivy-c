@@ -172,6 +172,8 @@ install-cpp: cpp
 	$(MAKE) -C cpp install
 
 
+ivy.o ivy_omp.o givy.o ivysocket.o: ivy_query_internal.h
+
 ivybind.o: ivybind.c
 	$(CC) -c $(CFLAGS) $(REGEXP) $(PCREINC) ivybind.c
 
