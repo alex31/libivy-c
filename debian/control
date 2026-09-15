@@ -1,21 +1,40 @@
 Source: ivy-c
-Priority: extra
+Priority: optional
 Section: devel
 Maintainer: Alexandre Bustico <alexandre.bustico@cena.fr>
-Build-Depends: debhelper (>= 13), libxt-dev, libx11-dev, tcl-dev, libglib2.0-dev, libpcre2-dev, libreadline-dev
+Build-Depends: debhelper (>= 13), g++ (>= 4:13), pkg-config, libxt-dev, libx11-dev, tcl-dev, libglib2.0-dev, libpcre2-dev, libreadline-dev
+Rules-Requires-Root: no
 Standards-Version: 3.9.2
 Homepage: http://www2.tls.cena.fr/products/ivy/
 
 Package: ivy-c-dev
 Section: libdevel
 Architecture: any
-Depends: ivy-c (= ${binary:Version}), ${misc:Depends}, libc6-dev, libx11-dev, libglib2.0-dev
+Depends: ivy-c (= ${binary:Version}), ${misc:Depends}, libc6-dev, libx11-dev, libglib2.0-dev, libpcre2-dev
 Suggests: tclsh, wish
 Description: Ivy software bus. development Package
  This package is needed for compiling applications using ivy-c.
  Ivy is mostly a communication convention between processes, implemented
- through a collection of libraries in several languages and for several platforms,
- from  C to Perl, from Macintosh or WindowsNT to Linux or Unix.
+ through libraries in several languages and for several platforms,
+ from C to Perl, from Macintosh or WindowsNT to Linux or Unix.
+
+Package: ivy-cpp
+Section: libs
+Architecture: any
+Depends: ivy-c (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
+Description: Ivy software bus - C++23 runtime libraries
+ C++23 bindings for the Ivy software bus, with owned buses, scoped
+ subscriptions and checked error results.
+ This package contains the native and GLib shared library variants.
+
+Package: ivy-cpp-dev
+Section: libdevel
+Architecture: any
+Depends: ivy-cpp (= ${binary:Version}), ivy-c-dev (= ${binary:Version}), ${misc:Depends}
+Description: Ivy software bus - C++23 development files
+ Headers, static libraries, linker symlinks and pkg-config metadata for
+ building C++23 applications with Ivy. Both native and GLib variants
+ are included; select one variant per application.
 
 Package: ivy-c
 Section: libs
@@ -25,5 +44,5 @@ Suggests: tclsh, wish
 Conflicts: ivy-tcl
 Description: Ivy software bus. runtime Package
  Ivy is mostly a communication convention between processes, implemented
- through a collection of libraries in several languages and for several platforms:
- from  C to Perl, from Macintosh or WindowsNT to Linux or Unix.
+ through libraries in several languages and for several platforms,
+ from C to Perl, from Macintosh or WindowsNT to Linux or Unix.
