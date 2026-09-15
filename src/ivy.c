@@ -2672,10 +2672,17 @@ static void IvyContextTimerRepeatAfterInLoop(void *data)
 	TimerId timer;
 	IvyStatus status = IVY_OK;
 
-	timer = IvyContextTimerRepeatAfterDirect(request->ctx, request->count,
-		request->timeout, request->callback, request->user_data);
-	if (!timer)
-		status = IvyGetLastError();
+	IvyMutexLock(&request->ctx->ivy_mutex);
+	if (request->ctx->ivy_state == IVY_CTX_STOPPING || request->ctx->ivy_state == IVY_CTX_STOPPED) {
+		timer = NULL;
+		status = IVY_ESTOPPED;
+	} else {
+		timer = IvyContextTimerRepeatAfterDirect(request->ctx, request->count,
+			request->timeout, request->callback, request->user_data);
+		if (!timer)
+			status = IvyGetLastError();
+	}
+	IvyMutexUnlock(&request->ctx->ivy_mutex);
 
 	IvyMutexLock(&request->mutex);
 	request->timer = timer;
@@ -2692,19 +2699,23 @@ TimerId IvyContextTimerRepeatAfter(IvyContext *ctx, int count, long timeout,
 	TimerId timer;
 	int status;
 
-	status = IvyContextRejectIfStopped(ctx);
-	if (status != IVY_OK)
-		return NULL;
-	if (!cb || timeout < 0) {
+	if (!ctx || !cb || timeout < 0) {
 		IvySetLastError(IVY_EINVAL);
 		return NULL;
 	}
 
+	IvyMutexLock(&ctx->ivy_mutex);
+	if (ctx->ivy_state == IVY_CTX_STOPPING || ctx->ivy_state == IVY_CTX_STOPPED) {
+		IvyMutexUnlock(&ctx->ivy_mutex);
+		IvySetLastError(IVY_ESTOPPED);
+		return NULL;
+	}
 	if (!IvyChannelLoopIsActiveFor(ctx->ivy_loop) ||
 	    IvyChannelIsLoopThreadFor(ctx->ivy_loop)) {
 		timer = IvyContextTimerRepeatAfterDirect(ctx, count, timeout,
 			cb, user_data);
 		IvyChannelWakeFor(ctx->ivy_loop);
+		IvyMutexUnlock(&ctx->ivy_mutex);
 		return timer;
 	}
 
@@ -2716,11 +2727,13 @@ TimerId IvyContextTimerRepeatAfter(IvyContext *ctx, int count, long timeout,
 	request.user_data = user_data;
 	request.status = IVY_OK;
 	if (IvyMutexInit(&request.mutex) != 0) {
+		IvyMutexUnlock(&ctx->ivy_mutex);
 		IvySetLastError(IVY_ENOMEM);
 		return NULL;
 	}
 	if (IvyCondInit(&request.cond) != 0) {
 		IvyMutexDestroy(&request.mutex);
+		IvyMutexUnlock(&ctx->ivy_mutex);
 		IvySetLastError(IVY_ENOMEM);
 		return NULL;
 	}
@@ -2729,10 +2742,12 @@ TimerId IvyContextTimerRepeatAfter(IvyContext *ctx, int count, long timeout,
 		IvyContextTimerRepeatAfterInLoop, &request) != 0) {
 		IvyCondDestroy(&request.cond);
 		IvyMutexDestroy(&request.mutex);
+		IvyMutexUnlock(&ctx->ivy_mutex);
 		IvySetLastError(IVY_EIO);
 		return NULL;
 	}
 
+	IvyMutexUnlock(&ctx->ivy_mutex);
 	IvyMutexLock(&request.mutex);
 	while (!request.done)
 		IvyCondWait(&request.cond, &request.mutex);
