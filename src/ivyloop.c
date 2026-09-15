@@ -736,7 +736,8 @@ int IvyChannelInitFor (IvyChannelState *state)
   int error;
 #else
   /* pour eviter les plantages quand les autres applis font core-dump */
-  /* signal (SIGPIPE, SIG_IGN); removed: managed locally by sockets */#endif
+  /* signal (SIGPIPE, SIG_IGN); removed: managed locally by sockets */
+#endif
   state->MainLoop = 1;
   if (IvyTestingChannelInitShouldFail(IVY_TEST_CHANNEL_INIT_FAIL_CONTROL))
     return -1;
