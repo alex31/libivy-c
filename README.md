@@ -138,12 +138,56 @@ actual filtering and legacy callback routing on two independent buses.
 ## C++23 wrapper
 
 `src/cpp/ivy.hpp` provides `ivy::Bus`, a non-copyable, movable owner of an
-explicit `IvyContext`. Its constructor accepts an application name as
+explicit `IvyContext`. Its `Bus::create()` factory accepts an application name as
 `std::string_view`, an optional ready message as
 `std::optional<std::string_view>`, and optional application/die callbacks as
 `std::move_only_function`. Captures replace user-data arguments at the C++
 boundary, including captures of non-copyable objects such as `std::unique_ptr`.
 The peer and event arguments currently retain their C API types.
+
+`src/cpp/ivy.hpp` is the public entry point, reading map and complete annotated
+example. The example covers startup, subscriptions, direct/broadcast sends,
+callbacks, timers and application information, with a pointer to the relevant
+`api/*.hpp` beside each Ivy operation. It assembles smaller headers in `src/cpp/api/`, each retaining the complete documentation and examples
+for its subject:
+
+| Subject | Header to read |
+| --- | --- |
+| Creation, start/stop, state, callback errors and the complete first example | `api/lifecycle.hpp` |
+| Blocking execution and asynchronous stop request | `api/mainloop.hpp` |
+| Optional loop thread and checked join | `ivy_thread.hpp` |
+| Regexp and direct message subscriptions | `api/messages.hpp` |
+| Broadcasts, reports, direct messages and control sends | `api/send.hpp` |
+| Pong, remote subscriptions and transport errors | `api/callbacks.hpp` |
+| Periodic, limited and one-shot timers | `api/timers.hpp` |
+| Application lookup and owned snapshots | `api/applications.hpp` |
+| Application name, numeric IP and advertised TCP port | `api/application_types.hpp` |
+| Filter replacement and incremental changes | `api/filters.hpp` |
+| Error codes, result conventions and SendReport | `api/results.hpp` |
+| Regexp types, standalone validation and formatting | `api/regexp.hpp` |
+| Message/event subscription lifetimes | `api/subscriptions.hpp` |
+| Timer settings and token lifetime | `api/timer_types.hpp` |
+
+Applications still only need `#include <Ivy/ivy.hpp>` and use the same `Bus`
+methods. A direct include of an API section also assembles the complete API.
+The member sections are inserted inside the single `Bus` declaration; this
+avoids introducing inheritance or changing the API just to split its files.
+`ivy_detail.hpp`, included at the end, keeps template/constexpr implementations.
+`ivy_bus_private.hpp` contains Bus's private declarations, so the entry point
+shows the annotated example and public API map without exposing those details.
+
+The compiled implementation is split by responsibility: `ivy.cpp` handles bus
+lifecycle, errors and notifications, `ivy_subscription.cpp` handles subscriptions
+and their message callbacks, `ivy_events.cpp` handles single event callbacks,
+`ivy_timer.cpp` handles timers, `ivy_filters.cpp` configures filters, and
+`ivy_send.cpp` handles sending and `ivy_application.cpp` handles application queries.
+They share private state
+through `ivy_internal.hpp`, which is not installed. Run `doxygen Doxyfile` from
+the repository root to generate both C and C++ API documentation in
+`doc/doxygen/html/`. Documentation generation also requires Python 3:
+`doc/doxygen_cpp_filter.py` assembles the declarations for Doxygen, which does
+not inline headers inside class declarations. The compiler reads the original
+headers directly, and Doxygen reads each section's guide on its own file page.
 
 The Linux build has separate targets for the wrapper. Building the C library
 and tools does not enable C++23:
@@ -157,8 +201,9 @@ make -C src install-cpp PREFIX=/usr/local
 This produces `libivy-cpp.a` and `libivy-cpp.so.3.18` in `src/build/cpp/`,
 with `libivy-cpp.so` and `libivy-cpp.so.3` symlinks to the shared library.
 The shared wrapper links against the C shared library `libivy.so.3`.
-Installation adds both libraries and the symlinks, `Ivy/ivy.hpp`, and
-`ivy-cpp.pc`. Compile a consumer with C++23 enabled:
+Installation adds both libraries and the symlinks, `Ivy/ivy.hpp`,
+`Ivy/ivy_detail.hpp`, `Ivy/ivy_bus_private.hpp`, the public `Ivy/api/*.hpp`
+sections, and `ivy-cpp.pc`. Compile a consumer with C++23 enabled:
 
 ```sh
 c++ -std=c++23 examples/cpp/lifecycle.cpp \
@@ -169,10 +214,30 @@ The linker selects the shared libraries by default. Selecting the `.a` archives
 explicitly retains the static linking option; `pkg-config --static --libs ivy-cpp`
 supplies their additional dependencies but does not force static linking.
 
-Construction copies the input strings and creates the context. An absent ready
-message (`std::nullopt`) is distinct from an empty message. Embedded NUL bytes
-in constructor arguments throw `std::invalid_argument`; C context creation
-failures throw `std::system_error`.
+Creation returns `std::expected<ivy::Bus, std::error_code>` and copies the input
+strings. An absent ready message (`std::nullopt`) is distinct from an empty
+message. Embedded NUL bytes or invalid lengths return `IVY_EINVAL`; allocation
+failures return `IVY_ENOMEM`. Native creation/registration errors are returned
+without leaving a partially initialized bus.
+
+```cpp
+auto created = ivy::Bus::create("receiver", "receiver ready");
+if (!created) {
+    std::cerr << created.error().message() << '\n';
+    return 1;
+}
+auto& bus = *created;
+```
+
+The runtime wrapper operations are `noexcept`; errors are reported through
+`std::expected` or `SendReport`. Callback storage is constructed inside the
+checked calls, so pass lambdas/functors directly, or move an existing
+`std::move_only_function`. Allocations and other work performed by the caller
+while evaluating arguments happen before entering the wrapper.
+
+These changes replace the former throwing constructor with `Bus::create()`.
+Check `stop()`'s expected result and use `take_callback_error()` to collect
+callback failures without exception handling.
 
 `start()` uses `IVYBUS` or Ivy's default address; `start(address)` accepts a
 string view, copied before passing it to C. Both overloads are `noexcept` and
@@ -188,26 +253,119 @@ if (auto result = bus.start("127:2010"); !result) {
 }
 ```
 
-`stop()` requests an idempotent stop, and destruction releases the context.
+`stop()` requests an idempotent stop and returns
+`std::expected<void, std::error_code>`. Destruction releases the context.
 A moved-from object has a null `native_handle()` and reports
 `IVY_CTX_DESTROYED`; starting it returns an `IVY_ESTATE` error. Moving a bus preserves the
 context and callback storage addresses.
 
-The event-loop interface will be designed separately. For now,
-`native_handle()` provides borrowed access for C interoperation. Drive the
-loop through the contextual C API, and stop and join any external loop thread
+`bus.run()` runs the blocking event loop on the calling thread, after `start()`.
+It returns `std::expected<void, std::error_code>`: success after stop, `IVY_ESTATE`
+for an unstarted, moved-from, already-driven or recursively driven bus,
+`IVY_ESTOPPED` for a stopped bus, or a backend error. Callback failures stay
+separate and are retrieved with `take_callback_error()` after the loop returns.
+The new C entry point `IvyContextRun()` supplies checked native results; the old
+`IvyContextMainLoop()` remains available as a void facade.
+
+```cpp
+if (auto result = bus.run(); !result) {
+    std::cerr << result.error().message() << '\n';
+    return 1;
+}
+if (auto result = bus.take_callback_error(); !result) {
+    std::cerr << result.error().message() << '\n';
+    return 1;
+}
+```
+
+No loop thread is created automatically. The wrapper exposes no manual iteration
+(`idle()`/`poll()`). `native_handle()` remains available for C interoperation.
+Stop and join any separately created loop thread
 before destroying the bus or replacing it by move assignment. Do not destroy
 the native context, replace the wrapper's application/die/transport callbacks, or destroy
 the bus from an Ivy callback. A rejected C destruction terminates the process
 to avoid freeing callback storage that C can still use. Moving or destroying
 the bus must not race with operations on that object.
 
+### Optional loop thread and Qt6 example
+
+`<Ivy/ivy_thread.hpp>` provides `ivy::LoopThread::create(bus[, completion])` for
+an already started Bus. It returns `expected<LoopThread, error_code>` and
+translates native thread-creation failures into result values. The helper owns
+the thread and borrows the Bus, which must stay alive at the same address.
+Its destructor requests stop and joins as a fallback. It is available with
+both wrapper variants and has no Qt dependency.
+
+`bus.request_stop()` (also available on the helper) requests shutdown without
+waiting for the loop's stop-completion condition. `loop.join()` waits for the
+thread and returns its driver/completion error; Bus callback errors remain in
+`bus.take_callback_error()`. The optional completion callback runs on the Ivy
+thread after `run()` returns, potentially before `create()` returns, and can
+post a notification to a GUI. Its captures must already be valid.
+
+The native C counterpart is `IvyContextRequestStop()`; the existing `stop()` /
+`IvyContextStop()` synchronization contract is unchanged. Internal locks can
+briefly delay either request; a stop request is not proof that a thread has exited.
+
+[examples/ivyqt](examples/ivyqt/README.md) now uses C++23 throughout: direct sends
+from the Qt GUI and demo workers, one native Ivy thread, and queued Qt signals
+for incoming messages and completion. Its normal close path continues processing
+Qt events until the producers finish. Build it against pkg-config **ivy-cpp**;
+no Qt-specific Ivy library or backend is required. The example now subscribes
+to `(.*)` and displays full messages with numeric IP, advertised TCP port,
+application name and reception timestamp. It also accepts free-form messages
+via Send/Enter and measures Ivy ping RTT for every connected agent, including
+silent agents and agents sharing a name. Run `tests/cpp/run_qt.sh` for its
+offscreen integration test from a temporary installation.
+
+### GLib / GTK integration
+
+Include `<Ivy/ivy_glib.hpp>` and select **ivy-cpp-glib** instead of ivy-cpp at
+link time. This variant links to `libglibivy`; the normal wrapper links to
+`libivy`. The two C backends export the same symbols and must not be loaded
+in the same process. Choose one wrapper variant per application.
+
+```sh
+make -C src cpp-glib
+# After installing the C libraries with the same PREFIX:
+make -C src install-cpp-glib PREFIX=/usr/local
+c++ -std=c++23 examples/cpp/glib.cpp \
+    $(pkg-config --cflags --libs ivy-cpp-glib) -o glib-example
+```
+
+`ivy::glib::create_bus("app", "ready")` uses the current thread-default
+`GMainContext`, falling back to GLib's global default. For a private context,
+use `ivy::glib::create_bus(context, "app", "ready")`. Both return the same
+`Bus::CreateResult` as `Bus::create()`, accept move-only application/die callbacks,
+and preserve the usual Bus API. The helper restores the previous thread-default
+context on success and failure. Create on the context's owner thread or before
+starting its loop thread; another owner causes an `IVY_ESTATE` result.
+
+After `start()`, the application's GLib/GTK loop services Ivy's sources and
+timers directly. No periodic polling call is needed. Stopping a bus leaves the
+host loop and other buses running. The C backend keeps its own GLib context
+references. Finish dispatch before destroying the bus, and join a separately
+created loop thread first. `bus.run()` is also available with this variant and
+drives the whole associated GLib context, including other application sources.
+GLib's own allocation/error conventions apply to GLib operations.
+
+The optional header is the only public C++ entry point that includes GLib;
+ordinary `<Ivy/ivy.hpp>` consumers need no GLib headers. See `api/mainloop.hpp`
+for the run contract and `ivy_glib.hpp` for the host-loop guide.
+`./tests/cpp/run.sh` validates the native variant and
+`./tests/cpp/run_glib.sh` validates GLib, both in static/shared and installed builds.
+
+### Callback errors and subscriptions
+
 Callbacks retain Ivy's threading and borrowed-peer lifetime rules; captured
 references must remain valid, and shared mutable state needs synchronization.
-Callback exceptions are caught before returning to C. The wrapper stores the
-first exception and requests a stop. After servicing/joining the loop, call
-`rethrow_callback_exception()` to rethrow and clear it. `state()` and
-`native_handle()` are also available for lifecycle inspection.
+Callback failures are contained before returning to C. The wrapper stores the
+first error and requests a stop. After servicing/joining the loop, check
+`take_callback_error()`, which returns `std::expected<void, std::error_code>`
+and clears the stored error. Callback allocation failures use `IVY_ENOMEM`;
+other user callback failures use `ivy::Error::callback_failed` in the
+`"ivy-cpp"` error category. `state()` and `native_handle()` are also available
+for lifecycle inspection.
 
 Subscriptions use one overloaded `bind` name, with the callback first:
 
@@ -242,8 +400,8 @@ be processed separately and its resulting regexp passed through this route.
 `MessageCallback` is a `std::move_only_function` taking
 `(IvyClientPtr, std::span<const std::string_view>)`; `DirectCallback` takes
 `(IvyClientPtr, int, std::string_view)`. Captures and direct-message text are
-borrowed views valid only for the callback invocation. Callback exceptions
-follow the same stop-and-rethrow mechanism as application/die callbacks.
+borrowed views valid only for the callback invocation. Callback failures
+follow the same stop-and-record mechanism as application/die callbacks.
 
 Without formatting arguments, the regexp is passed unchanged, including braces
 and percent signs. With one or more arguments, the header's template uses
@@ -316,12 +474,169 @@ native change overtaken by cancellation reports `IVY_ESTATE`.
 
 Empty callables and embedded NUL bytes in regexps return `IVY_EINVAL`; stopped
 buses return `IVY_ESTOPPED`, and moved-from buses return `IVY_ESTATE`. Allocation
-failures return `IVY_ENOMEM`. The formatted overload maps `std::format_error` to
-`IVY_EINVAL`; other exceptions from user-defined formatters propagate to the caller.
+failures return `IVY_ENOMEM`. Formatted overloads map formatting/length errors to
+`IVY_EINVAL`; other custom formatter failures return
+`ivy::make_error_code(ivy::Error::formatter_failed)`.
 The anchoring policy has its own status, `IVY_EUNANCHORED`: the required leading
 `^` is missing or PCRE2 does not recognize the expanded regexp as anchored.
 Syntax errors remain `IVY_EINVAL`. The C++ error message for `IVY_EUNANCHORED` is
 "regexp must start with '^' and be anchored".
+
+### Application queries and standalone validation
+
+`bus.application_info(peer)` returns `expected<ivy::ApplicationInfo, error_code>`
+with owned `name`, numeric `address` and advertised Ivy TCP listening `port`.
+The copy is made under the C bindings lock without reverse DNS. The port is zero
+before the handshake has advertised it. The strings remain valid after peer
+changes/disconnection. The existing `application(peer)` pair of name/host remains
+available with its original hostname-resolution behavior.
+
+
+`find_application(name)` returns
+`std::expected<std::optional<IvyClientPtr>, std::error_code>`. An empty optional
+is a successful lookup with no matching application. The handle is borrowed and
+remains valid only while that peer is connected. Names need not be unique; the
+first match is returned, following the C API.
+
+`application(peer)` returns an owned `(name, host)` pair in an expected result.
+`applications()` returns an owned vector of connected application names, and
+`application_regexps(peer)` returns an owned vector of the regexps currently
+known and accepted from that peer. Empty vectors are valid results and order
+is unspecified. Each query captures one coherent snapshot; separate queries
+can observe changes to the bus in between.
+
+```cpp
+auto info = bus.application(peer);
+if (!info) {
+    std::cerr << info.error().message() << '\n';
+    return 1;
+}
+const auto& [name, host] = *info;
+std::cout << name << " on " << host << '\n';
+```
+
+The strings survive peer disconnection or Bus destruction. A private C bridge
+copies them under the context's bindings lock; the wrapper then constructs
+standard C++ values and frees the C snapshot through the same library that
+allocated it. `src/ivy_query_internal.h` is not installed and adds no public
+query declarations to `ivy.h`. Build the C library and wrapper from matching
+sources, because the wrapper uses these internal link symbols. Host resolution
+retains the C API's diagnostic strings if a hostname cannot be obtained.
+
+For validation without a subscription, use
+`ivy::validate_anchored_regexp(expression)` or the formatted form:
+
+```cpp
+auto valid = ivy::validate_anchored_regexp("^TRACK {} (.*)$", 42);
+if (!valid) {
+    std::cerr << valid.error().message() << '\n';
+    return 1;
+}
+```
+
+Both forms return `std::expected<void, std::error_code>` and do not need a Bus.
+Missing/effective unanchoring returns `IVY_EUNANCHORED`; invalid syntax, embedded
+NUL or interval expansion errors return `IVY_EINVAL`. Allocation failures return
+`IVY_ENOMEM`, and a C library without PCRE2 returns `IVY_ESTATE`. A literal missing
+`^` returns an error here, whereas bind() checks its constant regexp at compilation.
+
+### Configuring filters in C++23
+
+`Bus::set_filters()` accepts either a parameter pack or a collection/range whose
+elements convert to `std::string_view`. Each call replaces this bus's previous
+list; it never appends or affects another bus. All forms return
+`std::expected<void, std::error_code>` and are `noexcept`.
+
+```cpp
+auto configured = bus.set_filters("TRACK", "STATUS");
+if (!configured) {
+    std::cerr << configured.error().message() << '\n';
+    return 1;
+}
+
+std::vector<std::string> classes{"PING", "PONG"};
+if (auto changed = bus.set_filters(classes); !changed) {
+    std::cerr << changed.error().message() << '\n';
+    return 1;
+}
+```
+
+Arrays, spans, initializer lists (`set_filters({"A", "B"})`) and C++23 input
+ranges/views are supported. Single-pass ranges are consumed once and strings
+returned temporarily by a view are copied before iteration advances. The
+complete replacement is prepared before committing it; input/iteration failures
+return `IVY_EINVAL`, allocation failures `IVY_ENOMEM`, preserving the previous
+filters. Input storage need not survive the call.
+
+`bus.set_filters()`, an empty collection, or `bus.clear_filters()` clears this
+bus's filter list. `add_filter(word)` and `remove_filter(word)` provide checked
+incremental changes. As for the C API, updates affect future remote regexp
+advertisements. The original received-message subscriptions are unaffected.
+
+### Pong, remote subscriptions and timers
+
+`bind()` also accepts a selector after its callback:
+
+| Registration | Callback arguments | Returned token |
+| --- | --- | --- |
+| `bus.bind(callback, ivy::pong)` | `IvyClientPtr`, delay as `int` microseconds (negative on timeout) | `EventSubscription` |
+| `bus.bind(callback, ivy::remote_bindings)` | `IvyClientPtr`, regexp ID, `std::string_view`, `IvyBindEvent` | `EventSubscription` |
+| `bus.bind(callback, ivy::every(1s))` | `std::chrono::milliseconds` of lateness relative to scheduled expiry | `TimerSubscription` |
+
+All return `std::expected<Token, std::error_code>`. Selectors distinguish event
+kinds even with generic lambdas. Keep the result or its token alive. Tokens are
+movable, non-copyable, unsubscribe on destruction and may outlive their Bus.
+A successful pong bind replaces the previous pong callback; a successful remote
+observer bind replaces the previous observer. Old tokens become inactive and
+cannot cancel their replacements. The two registrations are independent.
+Remote observers report subsequent subscription advertisements/changes/removals;
+they do not replay subscriptions already known by the bus. Removal events can
+carry empty regexp text: use the `(peer, id)` pair to identify the subscription.
+
+`bus.send_ping(peer)` initiates a ping and returns
+`std::expected<void, std::error_code>`. The bus must be running, the peer must
+belong to it and a pong subscription must be active. Success means local
+acceptance; the reply or timeout is delivered later to the pong callback.
+
+```cpp
+using namespace std::chrono_literals;
+auto timer = bus.bind([](std::chrono::milliseconds lateness) {
+    std::cout << "Tick, " << lateness.count() << " ms late\n";
+}, ivy::every(1s));
+if (!timer) {
+    std::cerr << timer.error().message() << '\n';
+    return 1;
+}
+if (auto changed = timer->set_period(500ms); !changed) {
+    std::cerr << changed.error().message() << '\n';
+    return 1;
+}
+```
+
+`ivy::every(period)` repeats indefinitely; `ivy::every(period, count)` invokes
+the callback a positive number of times. `ivy::after(delay)` invokes it once.
+Periods must be positive milliseconds representable as a C `long`; after() also
+accepts zero to run at the next native loop opportunity, never synchronously
+inside bind(). Negative delays and zero/negative repetition counts are errors.
+Every registration creates an independent timer on the bus's event loop. Creation, `set_period()` and `unbind()` may be called from another thread
+or from within the callback. Changing the period starts a new schedule with the
+same captures and number of invocations remaining; it does not reset the count.
+A limited timer becomes inactive when its last callback is selected and releases
+its captures after that invocation finishes. An expired timer cannot be rearmed
+with set_period(), including from its own last callback. Failed rescheduling
+preserves the previous schedule, unless it independently expires or is cancelled.
+Cancellation disables
+future callbacks immediately; one already in progress may finish. Native timers
+are retired by the loop at their next expiry, or freed when the Bus is destroyed,
+so cancellation never mutates the C timer list from a foreign thread.
+
+Both event and timer tokens provide `unbind()` and `is_bound()`. Timer tokens
+also provide `set_period()`; regexp `change()` is not exposed on either type.
+Callback failures follow the same `take_callback_error()` contract as the other
+callbacks. `examples/cpp/callbacks.cpp` demonstrates all three registrations,
+ping initiation and detailed send reports without exception handling.
+`examples/cpp/inspection.cpp` demonstrates owned application snapshots, one-shot
+and limited timers, and stops its own bus after four seconds.
 
 ### Sending messages
 
@@ -350,8 +665,10 @@ bus return `IVY_ESTATE`; sends after stop return `IVY_ESTOPPED`.
 
 The successful count is the number of frames accepted locally, with zero a
 valid success. Any failure produces an error, even if other frames succeeded.
-Use `send_report()` **instead of** `send()` when the partial counts matter;
-this method sends the message once and returns `ivy::SendReport`:
+For broadcasts, use `send_report()` **instead of** `send()` when the partial
+counts matter. This method sends the message once to matching remote
+subscriptions and returns `ivy::SendReport`; it is not a direct-message send
+and does not retrieve a previous send's result:
 
 ```cpp
 auto report = bus.send_report("TRACK {} {:.2f}", 42, 1.25);
@@ -364,8 +681,18 @@ It supports the same raw and formatted overloads. The report holds `matched`,
 `accepted`, `failed`, the Ivy `error`, and an optional OS `system_error` as
 `std::error_code`. It retains the C API's partial-send and local-acceptance
 semantics. Allocation failures map to `IVY_ENOMEM`; `std::format_error` and
-unrepresentable lengths map to `IVY_EINVAL`. Other exceptions thrown by custom
-formatters propagate to the caller. The raw overloads are `noexcept`.
+unrepresentable lengths map to `IVY_EINVAL`. Other custom formatter failures return
+`ivy::make_error_code(ivy::Error::formatter_failed)`. Both raw and formatted
+overloads are `noexcept`.
+
+`send_die(peer)` asks one connected peer to terminate. `send_error(peer, id, text)`
+sends an Ivy protocol error frame, with a formatted overload such as
+`send_error(peer, id, "Unknown command: {}", command)`. Both return
+`std::expected<void, std::error_code>`, require a running bus and validate that
+the peer belongs to it. Error text follows the same restrictions and formatting
+rules as normal sends. Native control sends validate peer membership under the
+bindings lock as direct sends already do. Local acceptance is not confirmation
+that the peer has received the error or exited.
 
 An optional `std::move_only_function` receives transport failures:
 
@@ -381,7 +708,7 @@ auto configured = bus.set_transport_error_callback(
 The setter returns `std::expected<void, std::error_code>`; an empty callable
 disables notification. It may be called before start or from the callback.
 Replacing it keeps an invocation already in progress and its captures alive
-until it returns. Callback exceptions use the same stop-and-rethrow policy as
+until it returns. Callback failures use the same stop-and-record policy as
 the other wrapper callbacks. The C transport callback's threading and
 connection-level semantics apply.
 
