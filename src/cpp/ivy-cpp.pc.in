@@ -3,9 +3,9 @@ exec_prefix=${prefix}
 libdir=${exec_prefix}@LIB@
 includedir=${prefix}/include
 
-Name: ivy-cpp
+Name: @LIBNAME@
 Description: C++23 wrapper for the Ivy software bus
 Version: @MAJOR@.@MINOR@
-Requires: ivy-c >= 3.18
-Libs: -L${libdir} -livy-cpp @THREADLIB@
+Requires: @CORE_PACKAGE@ >= 3.18
+Libs: -L${libdir} -l@LIBNAME@ @THREADLIB@
 Cflags: -I${includedir}

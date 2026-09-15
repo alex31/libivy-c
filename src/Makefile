@@ -164,13 +164,18 @@ shared-libs: $(TARGETLIBS)
 # not yet need Modified Glut libglutivy.so.$(MAJOR).$(MINOR)
 
 # The C++23 wrapper is built and installed explicitly.
-.PHONY: cpp install-cpp
+.PHONY: cpp install-cpp cpp-glib install-cpp-glib
 cpp: libivy.a libivy.so.$(MAJOR).$(MINOR)
 	$(MAKE) -C cpp
 
 install-cpp: cpp
 	$(MAKE) -C cpp install
 
+cpp-glib: libglibivy.a libglibivy.so.$(MAJOR).$(MINOR)
+	$(MAKE) -C cpp BACKEND=glib
+
+install-cpp-glib: cpp-glib
+	$(MAKE) -C cpp BACKEND=glib install
 
 ivyloop.o timer.o: ivy_timer_internal.h
 ivy.o ivy_omp.o ivyloop.o ivyglibloop.o: ivy_loop_internal.h
