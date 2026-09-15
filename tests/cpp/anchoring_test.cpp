@@ -4,6 +4,11 @@
 #include <iostream>
 #include <string>
 
+ivy::Bus require_bus(ivy::Bus::CreateResult result) {
+    assert(result);
+    return std::move(*result);
+}
+
 void expect_status(const char* pattern, IvyStatus status) {
     assert(IvyValidateAnchoredRegexp(pattern) == status);
     assert(IvyGetLastError() == status);
@@ -30,7 +35,7 @@ int main() {
     std::string large = "^" + std::string(10000, 'X') + "(?I1#2i)$";
     expect_status(large.c_str(), IVY_OK);
 
-    ivy::Bus bus("anchoring");
+    auto bus = require_bus(ivy::Bus::create("anchoring"));
     auto callback = [](IvyClientPtr, auto) {};
     auto valid = bus.bind(callback, R"(^TRACK ([0-9]{2}) 100%$)");
     assert(valid);

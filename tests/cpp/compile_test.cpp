@@ -1,5 +1,6 @@
 #include "ivy.hpp"
 #include <string>
+#include <vector>
 
 #ifndef IVY_COMPILE_CASE
 #define IVY_COMPILE_CASE 0
@@ -9,6 +10,8 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     auto message = [](IvyClientPtr, std::span<const std::string_view>) {};
     int id = 42;
 #if IVY_COMPILE_CASE == 0
+    using namespace std::chrono_literals;
+    (void)bus.bind([](IvyClientPtr, auto args) { (void)args.size(); }, "^GENERIC (.*)");
     (void)bus.send(dynamic);
     (void)bus.send("100% {} unchanged");
     (void)bus.send("TRACK {} {:02d}", dynamic, id);

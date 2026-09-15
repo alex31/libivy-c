@@ -15,6 +15,10 @@ SONAME = libivy-cpp.so.$(MAJOR)
 SHARED_LINKS = $(BUILD_DIR)/libivy-cpp.so $(BUILD_DIR)/$(SONAME)
 CORE_SHARED = ../libivy.so.$(MAJOR).$(MINOR)
 PKGCONF = $(BUILD_DIR)/ivy-cpp.pc
+SOURCES = ivy.cpp ivy_subscription.cpp ivy_events.cpp ivy_send.cpp
+OBJECTS = $(SOURCES:%.cpp=$(BUILD_DIR)/%.o)
+HEADERS = ivy.hpp ivy_detail.hpp ivy_bus_private.hpp
+API_HEADERS = $(wildcard api/*.hpp)
 
 .PHONY: all static-libs shared-libs install clean FORCE
 all: static-libs shared-libs $(PKGCONF)
@@ -24,13 +28,13 @@ shared-libs: $(SHARED) $(SHARED_LINKS)
 $(BUILD_DIR):
 	mkdir -p $@
 
-$(BUILD_DIR)/ivy.o: ivy.cpp ivy.hpp ../ivy.h ../timer.h | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: %.cpp $(HEADERS) $(API_HEADERS) ivy_internal.hpp ../ivy.h ../timer.h ../timer.h | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) -I.. $(CXXFLAGS) -std=c++23 $(THREADLIB) -fPIC -MMD -MP -c $< -o $@
 
-$(ARCHIVE): $(BUILD_DIR)/ivy.o
+$(ARCHIVE): $(OBJECTS)
 	$(AR) rcs $@ $^
 
-$(SHARED): $(BUILD_DIR)/ivy.o $(CORE_SHARED)
+$(SHARED): $(OBJECTS) $(CORE_SHARED)
 	$(CXX) $(LDFLAGS) -shared -Wl,--no-undefined -Wl,-soname,$(SONAME) -o $@ $^ $(THREADLIB)
 
 $(SHARED_LINKS): $(SHARED)
@@ -41,14 +45,15 @@ $(PKGCONF): ivy-cpp.pc.in ../version.h FORCE | $(BUILD_DIR)
 	sed -e 's,@PREFIX@,$(PREFIX),g; s,@LIB@,$(LIB),g; s,@MAJOR@,$(MAJOR),g; s,@MINOR@,$(MINOR),g; s,@THREADLIB@,$(THREADLIB),g' $< > $@
 
 install: all
-	install -d $(DESTDIR)$(PREFIX)$(LIB) $(DESTDIR)$(PREFIX)/include/Ivy $(DESTDIR)$(PREFIX)/lib/pkgconfig
+	install -d $(DESTDIR)$(PREFIX)$(LIB) $(DESTDIR)$(PREFIX)/include/Ivy/api $(DESTDIR)$(PREFIX)/lib/pkgconfig
 	install -m644 $(ARCHIVE) $(SHARED) $(DESTDIR)$(PREFIX)$(LIB)/
 	ln -sf $(notdir $(SHARED)) $(DESTDIR)$(PREFIX)$(LIB)/libivy-cpp.so
 	ln -sf $(notdir $(SHARED)) $(DESTDIR)$(PREFIX)$(LIB)/$(SONAME)
-	install -m644 ivy.hpp $(DESTDIR)$(PREFIX)/include/Ivy/
+	install -m644 $(HEADERS) $(DESTDIR)$(PREFIX)/include/Ivy/
+	install -m644 $(API_HEADERS) $(DESTDIR)$(PREFIX)/include/Ivy/api/
 	install -m644 $(PKGCONF) $(DESTDIR)$(PREFIX)/lib/pkgconfig/
 
 clean:
-	rm -f $(BUILD_DIR)/ivy.o $(BUILD_DIR)/ivy.d $(ARCHIVE) $(PKGCONF) $(BUILD_DIR)/libivy-cpp.so $(BUILD_DIR)/libivy-cpp.so.*
+	rm -f $(OBJECTS) $(BUILD_DIR)/ivy.d $(ARCHIVE) $(PKGCONF) $(BUILD_DIR)/libivy-cpp.so $(BUILD_DIR)/libivy-cpp.so.*
 
 -include $(BUILD_DIR)/ivy.d

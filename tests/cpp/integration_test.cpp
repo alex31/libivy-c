@@ -1,5 +1,6 @@
 #include "ivy.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <barrier>
@@ -12,6 +13,11 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+ivy::Bus require_bus(ivy::Bus::CreateResult result) {
+    assert(result);
+    return std::move(*result);
+}
 
 using namespace std::chrono_literals;
 
@@ -27,9 +33,9 @@ T require_bind(std::expected<T, std::error_code> result) {
     return std::move(*result);
 }
 
-bool advertises(IvyContext* context, IvyClientPtr peer, std::string_view regexp) {
+bool advertises(const ivy::Bus& bus, IvyClientPtr peer, std::string_view regexp) {
     std::array<char, 16384> buffer{};
-    const int size = IvyContextGetApplicationMessagesBuffer(context, peer,
+    const int size = IvyContextGetApplicationMessagesBuffer(bus.native_handle(), peer,
         buffer.data(), buffer.size(), "\n");
     if (size < 0 || size > static_cast<int>(buffer.size()))
         throw std::runtime_error("query peer regexps failed");
@@ -74,7 +80,7 @@ int main(int argc, char** argv) {
         std::atomic<int> unexpected{0};
         IvyContext* context_a = nullptr;
         IvyContext* context_b = nullptr;
-        ivy::Bus bus_a("cpp-receiver-a", "cpp-a ready",
+        auto bus_a = require_bus(ivy::Bus::create("cpp-receiver-a", "cpp-a ready",
             [token = std::make_unique<int>(11), &connected_a, &unexpected, &context_a]
             (IvyClientPtr app, IvyApplicationEvent event) {
                 if (event == IvyApplicationConnected) {
@@ -88,8 +94,8 @@ int main(int argc, char** argv) {
                 if (*token != 22 || id != 0)
                     ++unexpected;
                 ++died_a;
-            });
-        ivy::Bus bus_b("cpp-receiver-b", std::nullopt,
+            }));
+        auto bus_b = require_bus(ivy::Bus::create("cpp-receiver-b", std::nullopt,
             [token = std::make_unique<int>(33), &connected_b, &unexpected, &context_b]
             (IvyClientPtr app, IvyApplicationEvent event) {
                 if (event == IvyApplicationConnected) {
@@ -104,9 +110,9 @@ int main(int argc, char** argv) {
                     ++unexpected;
                 ++died_b;
                 throw std::runtime_error("die callback failure");
-            });
-        ivy::Bus peer_a("cpp-peer-a");
-        ivy::Bus peer_b("cpp-peer-b");
+            }));
+        auto peer_a = require_bus(ivy::Bus::create("cpp-peer-a"));
+        auto peer_b = require_bus(ivy::Bus::create("cpp-peer-b"));
         std::atomic<int> messages_a{0}, messages_b{0}, direct_a{0}, direct_b{0}, once_count{0};
         std::atomic<int> anywhere_count{0}, interval_count{0};
         auto anywhere = require_bind(bus_a.bind_unanchored(
@@ -210,14 +216,18 @@ int main(int argc, char** argv) {
             return receiver_a && receiver_b;
         }, "peer lookup timed out");
 
+
+
+
+
         wait_for([&] {
-            return advertises(peer_a.native_handle(), receiver_a, "^ONCE$") &&
-                advertises(peer_b.native_handle(), receiver_b, R"(^CPP 23 ([0-9]{2}) 100%$)");
+            return advertises(peer_a, receiver_a, "^ONCE$") &&
+                advertises(peer_b, receiver_b, R"(^CPP 23 ([0-9]{2}) 100%$)");
         }, "subscription advertisement timed out");
         for (int worker = 0; worker < worker_count; ++worker)
             for (int item = 0; item < registrations; ++item) {
                 const auto pattern = std::format(R"(^PAR_CHANGED {} {} ([0-9]{{2}})$)", worker, item);
-                wait_for([&] { return advertises(peer_a.native_handle(), receiver_a, pattern); },
+                wait_for([&] { return advertises(peer_a, receiver_a, pattern); },
                          "concurrent registration corrupted a regexp");
             }
 
@@ -233,15 +243,15 @@ int main(int argc, char** argv) {
         wait_for([&] { return messages_a == 1 && messages_b == 1; }, "message callbacks timed out");
         require_start(message_a.change(R"(^UPDATED ([0-9]{2}) 100%$)"), "change regexp");
         wait_for([&] {
-            return advertises(peer_a.native_handle(), receiver_a, R"(^UPDATED ([0-9]{2}) 100%$)") &&
-                !advertises(peer_a.native_handle(), receiver_a, R"(^CPP ([0-9]{2}) 100%$)");
+            return advertises(peer_a, receiver_a, R"(^UPDATED ([0-9]{2}) 100%$)") &&
+                !advertises(peer_a, receiver_a, R"(^CPP ([0-9]{2}) 100%$)");
         }, "changed regexp advertisement timed out");
         assert(peer_a.send("CPP 42 100%").value() == 0);
         assert(peer_a.send("UPDATED 42 100%").value() == 1);
         wait_for([&] { return messages_a == 2; }, "callback after change timed out");
         require_start(message_a.change(R"(^UPDATED {} ([0-9]{{2}}) 100%$)", 77), "formatted change");
         wait_for([&] {
-            return advertises(peer_a.native_handle(), receiver_a, R"(^UPDATED 77 ([0-9]{2}) 100%$)");
+            return advertises(peer_a, receiver_a, R"(^UPDATED 77 ([0-9]{2}) 100%$)");
         }, "formatted change advertisement timed out");
         assert(peer_a.send("UPDATED 77 42 100%").value() == 1);
         wait_for([&] { return messages_a == 3; }, "callback after formatted change timed out");
@@ -252,7 +262,7 @@ int main(int argc, char** argv) {
         require_start(anywhere.change_unanchored(R"(UPDATED_NEEDLE ([0-9]{{2}}) {}$)", "tail"),
                       "unanchored formatted change");
         wait_for([&] {
-            return advertises(peer_a.native_handle(), receiver_a, R"(UPDATED_NEEDLE ([0-9]{2}) tail$)");
+            return advertises(peer_a, receiver_a, R"(UPDATED_NEEDLE ([0-9]{2}) tail$)");
         }, "unanchored change advertisement timed out");
         assert(peer_a.send("prefix UPDATED_NEEDLE 42 tail").value() == 1);
         wait_for([&] { return anywhere_count == 2; }, "unanchored change callback timed out");
@@ -280,7 +290,7 @@ int main(int argc, char** argv) {
         assert(!once);
         assert(message_a.unbind());
         wait_for([&] {
-            return !advertises(peer_a.native_handle(), receiver_a, R"(^UPDATED 77 ([0-9]{2}) 100%$)");
+            return !advertises(peer_a, receiver_a, R"(^UPDATED 77 ([0-9]{2}) 100%$)");
         }, "unsubscribe advertisement timed out");
         assert(peer_a.send("UPDATED 77 42 100%").value() == 0);
         assert(peer_b.send("CPP {} {} 100%", 23, 17).value() == 1);
@@ -290,20 +300,16 @@ int main(int argc, char** argv) {
         assert(IvyContextSendDieMsg(peer_a.native_handle(), receiver_a) == IVY_OK);
         wait_for([&] { return died_a == 1 && bus_a.state() == IVY_CTX_STOPPED; }, "die callback A timed out");
         loop_a.finish();
-        bus_a.rethrow_callback_exception();
+        assert(bus_a.take_callback_error());
         assert(moved_b.state() == IVY_CTX_RUNNING && died_b == 0);
 
         assert(IvyContextSendDieMsg(peer_b.native_handle(), receiver_b) == IVY_OK);
         wait_for([&] { return died_b == 1 && moved_b.state() == IVY_CTX_STOPPED; }, "die callback B timed out");
         loop_b.finish();
         assert(!message_b.is_bound() && message_b.unbind());
-        try {
-            moved_b.rethrow_callback_exception();
-            assert(false && "callback exception was lost");
-        } catch (const std::runtime_error& error) {
-            assert(std::string(error.what()) == "die callback failure");
-        }
-        moved_b.rethrow_callback_exception();
+        const auto callback_error = moved_b.take_callback_error();
+        assert(!callback_error && callback_error.error() == ivy::make_error_code(ivy::Error::callback_failed));
+        assert(moved_b.take_callback_error());
         assert(unexpected == 0);
         std::cout << "C++ multibus integration tests passed\n";
     } catch (const std::exception& error) {
