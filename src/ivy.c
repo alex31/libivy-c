@@ -2455,7 +2455,14 @@ static int IvyContextSendErrorV(IvyContext *ctx, IvyClientPtr app, int id,
 		free(buffer.data);
 		return IvyReturnStatus(IVY_ENOMEM);
 	}
+	IvyBindingsReadLock(ctx);
+	if (!IvyContextOwnsApplication(ctx, app)) {
+		IvyBindingsReadUnlock(ctx);
+		free(buffer.data);
+		return IvyReturnStatus(IVY_EINVAL);
+	}
 	send_state = MsgSendTo(app, Error, id, buffer.data);
+	IvyBindingsReadUnlock(ctx);
 	free(buffer.data);
 	IvyDispatchSendStateCallback(ctx, app, send_state);
 	return IvyReturnStatus(IvyStatusFromSendState(send_state));
@@ -2658,7 +2665,13 @@ int IvyContextSendDieMsg(IvyContext *ctx, IvyClientPtr app )
     return status;
   if (!app)
     return IvyReturnStatus(IVY_EINVAL);
+  IvyBindingsReadLock(ctx);
+  if (!IvyContextOwnsApplication(ctx, app)) {
+    IvyBindingsReadUnlock(ctx);
+    return IvyReturnStatus(IVY_EINVAL);
+  }
   send_state = MsgSendTo(app, Die, 0, "" );
+  IvyBindingsReadUnlock(ctx);
   IvyDispatchSendStateCallback(ctx, app, send_state);
   return IvyReturnStatus(IvyStatusFromSendState(send_state));
 }
