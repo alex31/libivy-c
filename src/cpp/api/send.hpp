@@ -131,6 +131,16 @@
     send(IvyClientPtr peer, int id, std::format_string<Args...> format, Args&&... args) noexcept;
 
     /**
+     * @brief Send a ping to one connected peer; the reply goes to the pong callback.
+     * @param peer Connected peer belonging to this bus, valid throughout the call.
+     * @return Empty success when accepted locally; IVY_ESTATE if not running or no
+     * pong subscription is installed, IVY_ESTOPPED after stop, IVY_EINVAL for an
+     * invalid peer, or a native send error. Success is not a received pong.
+     * @see bind(Callback&&,PongTag)
+     */
+    [[nodiscard]] std::expected<void, std::error_code> send_ping(IvyClientPtr peer) noexcept;
+
+    /**
      * @brief Ask a connected peer to terminate.
      * @param peer Connected peer belonging to this Bus, valid throughout the call.
      * @return Empty success on local acceptance, or lifecycle/peer/transport errors.

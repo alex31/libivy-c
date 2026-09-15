@@ -11,7 +11,13 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     int id = 42;
 #if IVY_COMPILE_CASE == 0
     using namespace std::chrono_literals;
+    (void)bus.bind([](IvyClientPtr, int) {}, ivy::pong);
+    (void)bus.bind([](IvyClientPtr, int, std::string_view, IvyBindEvent) {}, ivy::remote_bindings);
+    (void)bus.bind([](IvyClientPtr, auto delay) { (void)(delay < 0); }, ivy::pong);
     (void)bus.bind([](IvyClientPtr, auto args) { (void)args.size(); }, "^GENERIC (.*)");
+    (void)bus.bind([](auto...) {}, ivy::pong);
+    (void)bus.bind([](auto...) {}, ivy::remote_bindings);
+    (void)bus.send_ping(IvyClientPtr{});
     (void)bus.send_die(IvyClientPtr{});
     (void)bus.send_error(IvyClientPtr{}, id, dynamic);
     (void)bus.send_error(IvyClientPtr{}, id, "ERROR {}", id);
@@ -60,6 +66,12 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.send(IvyClientPtr{}, id, "DIRECT {:d}", "wrong type");
 #elif IVY_COMPILE_CASE == 12
     (void)bus.send_report("TRACK {:d}", "wrong type");
+#elif IVY_COMPILE_CASE == 13
+    (void)bus.bind([](IvyClientPtr, int, std::string_view) {}, ivy::pong);
+#elif IVY_COMPILE_CASE == 14
+    (void)bus.bind([](IvyClientPtr, int) {}, ivy::remote_bindings);
+#elif IVY_COMPILE_CASE == 16
+    (void)bus.bind(message, "TRACK {}", ivy::pong);
 #elif IVY_COMPILE_CASE == 19
     (void)bus.send_error(IvyClientPtr{}, id, "ERROR {:d}", "wrong type");
 #elif IVY_COMPILE_CASE == 20

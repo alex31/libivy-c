@@ -12,12 +12,16 @@
 namespace ivy {
 
 struct Subscription::State {
-    enum class Kind { regexp, direct };
+    enum class Kind { regexp, direct, pong, remote_bindings };
     struct Handler {
         Bus::MessageCallback message;
         Bus::DirectCallback direct;
+        Bus::PongCallback pong;
+        Bus::RemoteBindingsCallback remote_bindings;
         explicit Handler(Bus::MessageCallback callback) : message(std::move(callback)) {}
         explicit Handler(Bus::DirectCallback callback) : direct(std::move(callback)) {}
+        explicit Handler(Bus::PongCallback callback) : pong(std::move(callback)) {}
+        explicit Handler(Bus::RemoteBindingsCallback callback) : remote_bindings(std::move(callback)) {}
     };
 
     std::weak_ptr<Bus::Impl> owner;
@@ -33,6 +37,9 @@ struct Subscription::State {
 
     static void on_message(IvyClientPtr app, void* data, int argc, char** argv) noexcept;
     static void on_direct(IvyClientPtr app, void* data, int id, char* message) noexcept;
+    static void on_pong(IvyClientPtr app, void* data, int delay) noexcept;
+    static void on_remote_bindings(IvyClientPtr app, void* data, int id,
+        const char* regexp, IvyBindEvent event) noexcept;
 };
 
 struct Bus::Impl {
@@ -47,6 +54,8 @@ struct Bus::Impl {
     // small relay objects stay alive until the C context has been destroyed.
     std::vector<std::shared_ptr<Subscription::State>> subscriptions;
     Subscription::State* direct_subscription = nullptr;
+    Subscription::State* pong_subscription = nullptr;
+    Subscription::State* remote_bindings_subscription = nullptr;
 
     Impl(ApplicationCallback application, DieCallback die);
     ~Impl();

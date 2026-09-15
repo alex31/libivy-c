@@ -910,6 +910,8 @@ void nonthrowing_boundaries() {
         check(bus.bind_unanchored(failing, "regexp"));
         check(bus.bind_unanchored(failing, "regexp {}", 42));
         check(bus.bind(failing));
+        check(bus.bind(failing, ivy::pong));
+        check(bus.bind(failing, ivy::remote_bindings));
         check(bus.set_transport_error_callback(failing));
     }
     for (int kind : {0, 1, 2, 3}) {
@@ -951,7 +953,134 @@ void nonthrowing_boundaries() {
 }
 
 
+void event_subscriptions_and_ping() {
+    auto bus = require_bus(ivy::Bus::create("events"));
+    auto* ctx = bus.native_handle();
+    _clnt_lst_dict peer{ctx}, foreign{};
+    int pong_calls = 0, binding_calls = 0;
+    expect_error(IVY_ESTATE, bus.send_ping(&peer));
+    auto pong = bus.bind([counter = std::make_unique<int>(0), &pong_calls, &peer]
+        (IvyClientPtr app, int delay) {
+            assert(app == &peer && (delay == 250 || delay == -1000));
+            pong_calls = ++*counter;
+        }, ivy::pong);
+    auto bindings = bus.bind([&](IvyClientPtr app, int id, std::string_view pattern, IvyBindEvent event) {
+        assert(app == &peer && id == 4 && pattern == "^REMOTE$");
+        assert(event == IvyAddBind || event == IvyRemoveBind || event == IvyFilterBind || event == IvyChangeBind);
+        ++binding_calls;
+    }, ivy::remote_bindings);
+    assert(pong && bindings && pong->is_bound() && bindings->is_bound());
+    assert(bus.start());
+    ctx->pong(&peer, ctx->pong_data, 250);
+    ctx->pong(&peer, ctx->pong_data, -1000);
+    for (auto event : {IvyAddBind, IvyRemoveBind, IvyFilterBind, IvyChangeBind})
+        ctx->remote_bindings(&peer, ctx->remote_bindings_data, 4, "^REMOTE$", event);
+    assert(pong_calls == 2 && binding_calls == 4);
+    expect_error(IVY_EINVAL, bus.send_ping(nullptr));
+    expect_error(IVY_EINVAL, bus.send_ping(&foreign));
+    const int before = pings;
+    assert(bus.send_ping(&peer) && pings == before + 1);
+    ping_error = IVY_EIO;
+    expect_error(IVY_EIO, bus.send_ping(&peer));
+    ping_error = IVY_OK;
+    event_registration_error = IVY_ENOMEM;
+    expect_error(IVY_ENOMEM, bus.bind([](auto...) {}, ivy::pong));
+    expect_error(IVY_ENOMEM, bus.bind([](auto...) {}, ivy::remote_bindings));
+    event_registration_error = IVY_OK;
+    assert(pong->is_bound() && bindings->is_bound());
+    expect_error(IVY_EINVAL, bus.bind(ivy::Bus::PongCallback{}, ivy::pong));
+    expect_error(IVY_EINVAL, bus.bind(ivy::Bus::RemoteBindingsCallback{}, ivy::remote_bindings));
 
+    const auto old_pong = ctx->pong;
+    void* old_pong_data = ctx->pong_data;
+    auto replacement = bus.bind([](auto...) {}, ivy::pong);
+    assert(replacement && !pong->is_bound() && bindings->is_bound());
+    assert(pong->unbind());
+    old_pong(&peer, old_pong_data, 250);
+    assert(pong_calls == 2 && replacement->is_bound());
+    const auto old_bind = ctx->remote_bindings;
+    void* old_bind_data = ctx->remote_bindings_data;
+    auto replacement_bind = bus.bind([](auto...) {}, ivy::remote_bindings);
+    assert(replacement_bind && !bindings->is_bound() && bindings->unbind());
+    old_bind(&peer, old_bind_data, 4, "^REMOTE$", IvyAddBind);
+    assert(binding_calls == 4);
+
+    // Native sending may synchronously call application code that cancels pong.
+    during_ping = [&] { assert(replacement->unbind()); };
+    expect_error(IVY_ESTATE, bus.send_ping(&peer));
+    during_ping = {};
+    assert(!ctx->pong && replacement_bind->is_bound());
+    auto moved = std::move(bus);
+    assert(replacement_bind->is_bound());
+    expect_error(IVY_ESTATE, bus.bind([](auto...) {}, ivy::pong));
+    expect_error(IVY_ESTATE, bus.bind([](auto...) {}, ivy::remote_bindings));
+    expect_error(IVY_ESTATE, bus.send_ping(&peer));
+    assert(moved.stop());
+    assert(!replacement_bind->is_bound() && replacement_bind->unbind());
+    expect_error(IVY_ESTOPPED, moved.bind([](auto...) {}, ivy::pong));
+    expect_error(IVY_ESTOPPED, moved.bind([](auto...) {}, ivy::remote_bindings));
+    expect_error(IVY_ESTOPPED, moved.send_ping(&peer));
+}
+
+void event_callback_lifetimes() {
+    for (bool remote : {false, true}) {
+        ivy::EventSubscription survivor;
+        std::weak_ptr<int> weak;
+        {
+            auto bus = require_bus(ivy::Bus::create("event lifetimes"));
+            auto register_event = [&](auto callback) {
+                return remote ? bus.bind(std::move(callback), ivy::remote_bindings)
+                              : bus.bind(std::move(callback), ivy::pong);
+            };
+            auto fire = [&] {
+                auto* ctx = bus.native_handle();
+                if (remote) ctx->remote_bindings(nullptr, ctx->remote_bindings_data, 0, nullptr, IvyAddBind);
+                else ctx->pong(nullptr, ctx->pong_data, 0);
+            };
+            auto capture = std::make_shared<int>(42);
+            weak = capture;
+            std::latch entered(1), release(1);
+            auto result = register_event([value = std::move(capture), &entered, &release](auto...) {
+                entered.count_down();
+                release.wait();
+                assert(*value == 42);
+            });
+            assert(result);
+            std::thread callback_thread(fire);
+            entered.wait();
+            assert(result->unbind() && !result->is_bound() && !weak.expired());
+            release.count_down();
+            callback_thread.join();
+            assert(weak.expired());
+
+            std::optional<ivy::EventSubscription> self;
+            auto self_result = register_event([&self](auto...) { self.reset(); });
+            assert(self_result);
+            self.emplace(std::move(*self_result));
+            fire();
+            assert(!self);
+
+            auto failed = register_event([](auto...) { throw std::bad_alloc(); });
+            assert(failed);
+            fire();
+            assert(bus.state() == IVY_CTX_STOPPED);
+            expect_error(IVY_ENOMEM, bus.take_callback_error());
+            assert(bus.take_callback_error());
+        }
+        {
+            auto bus = require_bus(ivy::Bus::create("surviving event"));
+            auto capture = std::make_shared<int>(42);
+            weak = capture;
+            auto callback = [value = std::move(capture)](auto...) {};
+            auto result = remote ? bus.bind(std::move(callback), ivy::remote_bindings)
+                                 : bus.bind(std::move(callback), ivy::pong);
+            assert(result);
+            survivor = std::move(*result);
+            assert(!result->is_bound());
+        }
+        assert(weak.expired() && !survivor.is_bound() && survivor.unbind());
+    }
+}
 
 
 
@@ -1027,7 +1156,14 @@ int main() {
     static_assert(std::is_nothrow_move_constructible_v<ivy::Bus>);
     static_assert(std::is_nothrow_move_assignable_v<ivy::Bus>);
     static_assert(std::is_nothrow_destructible_v<ivy::Bus>);
+    static_assert(!HasChange<ivy::EventSubscription>);
+    static_assert(!std::is_copy_constructible_v<ivy::EventSubscription>);
+    static_assert(std::is_nothrow_move_constructible_v<ivy::EventSubscription>);
+    static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto...) {}, ivy::pong)));
+    static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto...) {}, ivy::remote_bindings)));
     control_messages();
+    event_subscriptions_and_ping();
+    event_callback_lifetimes();
     nonthrowing_boundaries();
     strings_and_lifecycle();
     move_only_callbacks();

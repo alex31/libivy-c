@@ -189,6 +189,56 @@ private:
     friend class Bus;
 };
 
+/// @brief Select the bus's pong callback in bind(callback, pong).
+struct PongTag {};
+/// @brief Pong callback selector.
+inline constexpr PongTag pong{};
+
+/// @brief Select notifications about other applications' regexp subscriptions.
+struct RemoteBindingsTag {};
+/// @brief Remote subscription callback selector.
+inline constexpr RemoteBindingsTag remote_bindings{};
+
+/**
+ * @brief Owns one pong or remote-subscription notification callback.
+ * Keep this token (or its expected) alive. Destruction or unbind() disables the
+ * callback. A successful bind of the same kind replaces the old registration;
+ * an old token cannot cancel its replacement. The two kinds are independent.
+ * Move, lifetime and concurrent cancellation rules match DirectSubscription.
+ */
+class EventSubscription {
+public:
+    /// @brief Create an inactive token.
+    EventSubscription() noexcept;
+    /// @brief Disable this callback automatically.
+    ~EventSubscription();
+    /// @brief Transfer ownership, leaving the source inactive.
+    EventSubscription(EventSubscription&&) noexcept;
+    /** @brief Cancel this registration and take ownership from the source.
+     * @return This token; self-assignment leaves it unchanged.
+     */
+    EventSubscription& operator=(EventSubscription&&) noexcept;
+    /// @brief Tokens cannot be copied.
+    EventSubscription(const EventSubscription&) = delete;
+    /// @brief Tokens cannot be copy-assigned.
+    EventSubscription& operator=(const EventSubscription&) = delete;
+
+    /** @brief Disable the callback; an invocation already in progress may finish.
+     * @return Empty success, including when inactive or its Bus has stopped or
+     * been destroyed; otherwise an Ivy error. Safe from within this callback.
+     */
+    [[nodiscard]] std::expected<void, std::error_code> unbind() noexcept;
+    /** @brief Inspect the registration.
+     * @return False after cancellation, replacement, move or bus stop/destruction.
+     */
+    [[nodiscard]] bool is_bound() const noexcept;
+
+private:
+    Subscription subscription_;
+    explicit EventSubscription(Subscription subscription) noexcept;
+    friend class Bus;
+};
+
 } // namespace ivy
 // IVY_CPP_API_END
 

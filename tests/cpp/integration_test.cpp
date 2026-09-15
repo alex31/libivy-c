@@ -113,6 +113,33 @@ int main(int argc, char** argv) {
             }));
         auto peer_a = require_bus(ivy::Bus::create("cpp-peer-a"));
         auto peer_b = require_bus(ivy::Bus::create("cpp-peer-b"));
+        std::atomic<int> pongs_a{0}, pongs_b{0}, remote_added{0}, remote_changed{0}, remote_removed{0};
+        std::atomic<int> replacement_pongs{0};
+        int observed_id = -1;
+        IvyClientPtr observed_peer = nullptr;
+        auto pong_a = require_bind(peer_a.bind([&](IvyClientPtr peer, int delay) {
+            if (!peer || delay < 0) ++unexpected;
+            ++pongs_a;
+        }, ivy::pong));
+        auto pong_b = require_bind(peer_b.bind([&](IvyClientPtr peer, int delay) {
+            if (!peer || delay < 0) ++unexpected;
+            ++pongs_b;
+        }, ivy::pong));
+        auto observer = require_bind(peer_a.bind(
+            [&](IvyClientPtr peer, int id, std::string_view regexp, IvyBindEvent event) {
+                if (!peer) ++unexpected;
+                if (regexp == "^OBSERVED$" && event == IvyAddBind) {
+                    observed_id = id;
+                    observed_peer = peer;
+                    ++remote_added;
+                }
+                if (regexp == "^OBSERVED_CHANGED$" && (event == IvyChangeBind || event == IvyAddBind))
+                    ++remote_changed;
+                if (peer == observed_peer && id == observed_id && event == IvyRemoveBind) {
+                    if (!regexp.empty()) ++unexpected; // Deletion carries only the peer-side ID.
+                    ++remote_removed;
+                }
+            }, ivy::remote_bindings));
         std::atomic<int> messages_a{0}, messages_b{0}, direct_a{0}, direct_b{0}, once_count{0};
         std::atomic<int> anywhere_count{0}, interval_count{0};
         auto anywhere = require_bind(bus_a.bind_unanchored(
@@ -219,6 +246,31 @@ int main(int argc, char** argv) {
         assert(!peer_a.send_die(receiver_b));
         assert(!peer_a.send_error(receiver_b, 7, "wrong context"));
         require_start(peer_a.send_error(receiver_a, 7, "expected test error {}", 42), "send error frame");
+
+        auto wrong_ping = peer_a.send_ping(receiver_b);
+        assert(!wrong_ping && wrong_ping.error() == ivy::make_error_code(IVY_EINVAL));
+        require_start(peer_a.send_ping(receiver_a), "ping A");
+        require_start(peer_b.send_ping(receiver_b), "ping B");
+        wait_for([&] { return pongs_a == 1 && pongs_b == 1; }, "pong callbacks timed out");
+        auto new_pong = require_bind(peer_a.bind([&](IvyClientPtr, int delay) {
+            if (delay < 0) ++unexpected;
+            ++replacement_pongs;
+        }, ivy::pong));
+        assert(!pong_a.is_bound() && pong_a.unbind());
+        require_start(peer_a.send_ping(receiver_a), "ping with replacement");
+        wait_for([&] { return replacement_pongs == 1; }, "replacement pong timed out");
+        assert(pongs_a == 1 && pong_b.is_bound());
+        assert(new_pong.unbind());
+        auto no_pong = peer_a.send_ping(receiver_a);
+        assert(!no_pong && no_pong.error() == ivy::make_error_code(IVY_ESTATE));
+
+        auto observed = require_bind(bus_a.bind([](auto...) {}, "^OBSERVED$"));
+        wait_for([&] { return remote_added > 0; }, "remote bind notification timed out");
+        require_start(observed.change("^OBSERVED_CHANGED$"), "observed change");
+        wait_for([&] { return remote_changed > 0; }, "remote change notification timed out");
+        assert(observed.unbind());
+        wait_for([&] { return remote_removed > 0; }, "remote unbind notification timed out");
+        assert(observer.unbind());
 
 
 

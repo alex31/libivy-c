@@ -53,6 +53,16 @@
 #pragma once
 
 // IVY_CPP_API_BEGIN
+    /// @brief Pong notification: borrowed peer and delay in microseconds (negative on timeout).
+    using PongCallback = std::move_only_function<void(IvyClientPtr, int)>;
+
+    /// @brief Remote subscription event: peer, regexp ID, borrowed text and event kind.
+    using RemoteBindingsCallback =
+        std::move_only_function<void(IvyClientPtr, int, std::string_view, IvyBindEvent)>;
+
+    /// @brief Scoped pong or remote subscription callback, or its registration error.
+    using EventBindResult = std::expected<EventSubscription, std::error_code>;
+
     /// @brief Transport notification: borrowed peer (possibly null), Ivy error and OS code.
     using TransportCallback = std::move_only_function<void(IvyClientPtr, std::error_code, int)>;
 
@@ -72,6 +82,34 @@
     [[nodiscard]] std::expected<void, std::error_code>
     set_transport_error_callback(Callback&& callback) noexcept;
 
+    /**
+     * @brief Register the single pong callback for this bus.
+     * @tparam Callback Callable compatible with PongCallback.
+     * @param callback Receives the peer and round-trip delay in microseconds;
+     * a negative value reports a ping timeout. Empty callables are invalid.
+     * @param selector Pass ivy::pong to distinguish this callback from other kinds.
+     * @return EventSubscription on success; IVY_ESTATE for a moved-from bus,
+     * IVY_ESTOPPED after stop, or an input/allocation/callback-construction error.
+     * Success replaces only the previous pong registration. Keep the result alive.
+     * @see send_ping() EventSubscription
+     */
+    template<class Callback>
+    [[nodiscard]] EventBindResult bind(Callback&& callback, PongTag selector) noexcept;
+
+    /**
+     * @brief Observe regexp subscriptions advertised by other applications.
+     * @tparam Callback Callable compatible with RemoteBindingsCallback.
+     * @param callback Receives peer, remote regexp ID, text valid during the call,
+     * and IvyAddBind/IvyRemoveBind/IvyFilterBind/IvyChangeBind. Regexp text can be
+     * empty on removal; identify subscriptions by (peer, id). Empty callables are invalid.
+     * @param selector Pass ivy::remote_bindings.
+     * @return EventSubscription, or the same registration errors as the pong overload.
+     * Success replaces only the previous remote-subscription observer. It reports
+     * subsequent events, not a snapshot of subscriptions already known to the bus.
+     * @see EventSubscription
+     */
+    template<class Callback>
+    [[nodiscard]] EventBindResult bind(Callback&& callback, RemoteBindingsTag selector) noexcept;
 // IVY_CPP_API_END
 
 #endif

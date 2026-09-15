@@ -217,7 +217,19 @@ Bus::BindResult Bus::bind_unanchored(Callback&& callback,
     });
 }
 
+template<class Callback>
+Bus::EventBindResult Bus::bind(Callback&& callback, PongTag) noexcept {
+    return detail::guard<EventBindResult>(make_error_code(Error::callback_failed), [&] {
+        return bind_pong_impl(PongCallback(std::forward<Callback>(callback)));
+    });
+}
 
+template<class Callback>
+Bus::EventBindResult Bus::bind(Callback&& callback, RemoteBindingsTag) noexcept {
+    return detail::guard<EventBindResult>(make_error_code(Error::callback_failed), [&] {
+        return bind_remote_bindings_impl(RemoteBindingsCallback(std::forward<Callback>(callback)));
+    });
+}
 
 
 

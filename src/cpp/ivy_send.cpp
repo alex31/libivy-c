@@ -64,6 +64,21 @@ std::expected<void, std::error_code> Bus::send(IvyClientPtr peer, int id, std::s
     }
 }
 
+std::expected<void, std::error_code> Bus::send_ping(IvyClientPtr peer) noexcept {
+    const auto owner = impl_;
+    const auto state = send_state(owner ? owner->context : nullptr);
+    if (state != IVY_OK) return detail::status_result(state);
+    if (!peer || !IvyContextGetApplicationName(owner->context, peer))
+        return detail::status_result(IVY_EINVAL);
+    {
+        std::lock_guard lock(owner->subscriptions_mutex);
+        if (!owner->pong_subscription || !owner->pong_subscription->handler)
+            return detail::status_result(IVY_ESTATE);
+    }
+    // Sending can synchronously invoke application callbacks. They may unbind
+    // or replace pong, so release the wrapper lock before entering C.
+    return detail::status_result(IvyContextSendPing(owner->context, peer));
+}
 
 std::expected<void, std::error_code> Bus::send_die(IvyClientPtr peer) noexcept {
     const auto owner = impl_;
