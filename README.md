@@ -824,6 +824,22 @@ Notes:
 - The Linux makefile now defaults x86-64 builds to `-march=x86-64-v3 -mtune=generic`.
 - If you want a different CPU target, override `X86_64_CFLAGS` when invoking `make`.
 
+### Debian / Ubuntu packages
+
+The Debian packaging builds four packages: `ivy-c`, `ivy-c-dev`, `ivy-cpp`
+and `ivy-cpp-dev`. Both C++ backends (native and GLib) are included, with
+runtime libraries and development files in separate packages.
+
+```bash
+./debian/build.sh
+python3 debian/check-packages.py build/debian
+```
+
+`make -C src deb` uses the same packaging rules. Builds run in a temporary
+source copy and write the packages to `build/debian/`. See
+[debian/README](debian/README) for Ubuntu prerequisites, dependencies and
+installation instructions.
+
 ### macOS
 
 The macOS makefiles are intended to use the official Apple compiler from Xcode / Command Line Tools, plus Homebrew for dependencies.

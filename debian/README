@@ -1,11 +1,81 @@
-Construction de ivy-c :
+Construction des paquets Debian / Ubuntu
+======================================
 
-  - Il faut installer au prealable le paquetage utils-c-dev qui
-    fournit list.h.
+La source produit quatre paquets binaires de même version :
 
-  - Pour construire les binaires outils de la source Debian (ivyprobe, etc.),
-    installer aussi la bibliotheque de developpement readline/history.
-    Sur Debian/Ubuntu, cela correspond a `libreadline-dev`.
+- ivy-c : bibliothèques C native et GLib, outils et pages de manuel.
+- ivy-c-dev : en-têtes C, archives statiques, liens de compilation et
+  fichiers pkg-config C.
+- ivy-cpp : bibliothèques partagées C++23 native et GLib.
+- ivy-cpp-dev : en-têtes C++, y compris Ivy/api/, archives statiques,
+  liens de compilation et fichiers pkg-config ivy-cpp et ivy-cpp-glib.
 
-  - Avec `make` cote src, si vous ne construisez que la bibliotheque
-    (`make static-libs shared-libs`), readline n'est pas necessaire.
+ivy-cpp dépend de la même version de ivy-c : le wrapper utilise un pont
+interne au cœur C. Chaque paquet de développement dépend du runtime de
+même version ; ivy-cpp-dev dépend aussi de ivy-c-dev.
+
+Prérequis
+---------
+
+La construction vise Ubuntu 24.04 ou une distribution disposant de GCC 13
+ou plus récent et de libstdc++ avec std::expected, std::move_only_function
+et std::format. Le backend GLib est inclus dans les quatre paquets.
+
+    sudo apt install build-essential debhelper pkg-config python3 \
+        libxt-dev libx11-dev tcl-dev libglib2.0-dev libpcre2-dev libreadline-dev
+
+list.h est fourni dans les sources ; aucun paquet utils-c-dev n'est requis.
+Qt n'est pas nécessaire pour construire les bibliothèques C++ ou les paquets.
+
+Construction et vérification
+----------------------------
+
+Depuis la racine du dépôt :
+
+    ./debian/build.sh
+    python3 debian/check-packages.py build/debian
+
+La commande historique utilise désormais les mêmes règles :
+
+    make -C src deb
+
+Le script construit une copie temporaire des sources. Le nettoyage Debian
+ne supprime donc pas les builds locaux. Les .deb, .buildinfo et .changes
+sont copiés dans build/debian/ après une construction réussie.
+IVY_DEB_OUTPUT_DIR permet de choisir un autre répertoire de sortie.
+Les arguments du script sont transmis à dpkg-buildpackage ; par exemple :
+
+    ./debian/build.sh -j4
+    make -C src deb DEB_BUILD_FLAGS=-j4
+
+Pour une construction Debian directe, qui nettoie les artefacts dans les
+sources et dépose les paquets dans le répertoire parent :
+
+    dpkg-buildpackage -b -us -uc
+
+La version vient de debian/changelog. Les règles utilisent les options de
+compilation Debian et leur cible CPU par défaut, sans imposer x86-64-v3.
+Elles vérifient que chaque fichier installé appartient à un paquet et
+produisent exactement quatre .deb, sans paquets dbgsym automatiques.
+Les dépendances système et les triggers ldconfig sont calculés par debhelper.
+
+Le vérificateur contrôle les noms, versions, dépendances, propriétaires,
+conflits de fichiers, liens de bibliothèques et en-têtes privés. Il extrait
+les paquets dans un répertoire temporaire, puis compile et exécute des
+consommateurs C et C++ avec les variantes native et GLib, en liaison
+partagée et en utilisant les archives Ivy statiques. Il n'installe aucun
+paquet sur la machine. Il s'exécute sur une machine de même architecture,
+avec les dépendances de compilation ci-dessus.
+
+Utilisation des paquets
+----------------------
+
+    sudo apt install ./build/debian/ivy-c_*.deb ./build/debian/ivy-c-dev_*.deb \
+        ./build/debian/ivy-cpp_*.deb ./build/debian/ivy-cpp-dev_*.deb
+
+Pour compiler un consommateur C++ :
+
+    c++ -std=c++23 application.cpp $(pkg-config --cflags --libs ivy-cpp)
+
+Pour GLib/GTK, choisir ivy-cpp-glib à la place de ivy-cpp. Les deux variantes
+sont distribuées ensemble mais une application doit en sélectionner une seule.
