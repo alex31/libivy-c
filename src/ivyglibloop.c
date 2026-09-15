@@ -4,8 +4,11 @@
  * See version.h for the copyright notice regarding this software.
  */
 #include <glib.h>
+#include <errno.h>
+#include "ivy.h"
 #include "ivychannel.h"
 #include "ivyloop.h"
+#include "ivy_loop_internal.h"
 #include "ivyglibloop.h"
 #include "ivyglibtimer.h"
 
@@ -43,6 +46,7 @@ struct _ivy_channel_state {
   gboolean stopped;
   gboolean destroying;
   gboolean dispatching;
+  gboolean run_active;
   IvyHookPtr before, after;
   void *before_data, *after_data;
 };
@@ -125,6 +129,25 @@ static void collect_removed(IvyChannelState *state)
   delete_channels(garbage);
 }
 
+static void drain_controls(IvyChannelState *state)
+{
+  for (;;) {
+    struct _control_event *event;
+    g_mutex_lock(&state->mutex);
+    event = state->control_head;
+    if (event) {
+      state->control_head = event->next;
+      if (!state->control_head)
+        state->control_tail = NULL;
+    }
+    g_mutex_unlock(&state->mutex);
+    if (!event)
+      break;
+    event->callback(event->data);
+    g_free(event);
+  }
+}
+
 static gboolean dispatch(GSource *source, GSourceFunc callback, gpointer data)
 {
   IvyChannelState *state = (IvyChannelState *)source;
@@ -141,21 +164,7 @@ static gboolean dispatch(GSource *source, GSourceFunc callback, gpointer data)
   g_mutex_unlock(&state->mutex);
   collect_removed(state);
 
-  for (;;) {
-    struct _control_event *event;
-    g_mutex_lock(&state->mutex);
-    event = state->control_head;
-    if (event) {
-      state->control_head = event->next;
-      if (!state->control_head)
-        state->control_tail = NULL;
-    }
-    g_mutex_unlock(&state->mutex);
-    if (!event)
-      break;
-    event->callback(event->data);
-    g_free(event);
-  }
+  drain_controls(state);
 
   g_mutex_lock(&state->mutex);
   channel = state->channels;
@@ -446,7 +455,7 @@ void IvyChannelStopFor(IvyChannelState *state)
 }
 void IvyChannelStop(void) { IvyChannelStopFor(NULL); }
 
-static gboolean iteration(IvyChannelState *state, gboolean block)
+static int iteration(IvyChannelState *state, gboolean block, gboolean checked)
 {
   IvyHookPtr before, after;
   void *before_data, *after_data;
@@ -460,48 +469,108 @@ static gboolean iteration(IvyChannelState *state, gboolean block)
   g_mutex_unlock(&state->mutex);
   if (stopped)
     return FALSE;
-  if (!before && !after) {
+  if (!before && !after && !checked) {
     g_main_context_iteration(state->context, block);
   } else if (g_main_context_acquire(state->context)) {
     GPollFD *fds = NULL;
-    gint priority, timeout, count, capacity = 0;
-    g_main_context_prepare(state->context, &priority);
+    gint priority, timeout, count, capacity = 0, ready, error;
+    gboolean prepared;
+    prepared = g_main_context_prepare(state->context, &priority);
     while ((count = g_main_context_query(state->context, priority, &timeout,
                                          fds, capacity)) > capacity) {
       capacity = count;
-      fds = g_renew(GPollFD, fds, capacity);
+      GPollFD *replacement = g_try_renew(GPollFD, fds, capacity);
+      if (!replacement) {
+        g_free(fds);
+        g_main_context_release(state->context);
+        return IVY_ENOMEM;
+      }
+      fds = replacement;
     }
-    if (!block)
+    if (!block || prepared)
       timeout = 0;
     /* Preserve the select backend's hook contract: reacquire the application's
      * lock after polling, before any Ivy or GLib callback is dispatched. */
     if (before)
       before(before_data);
-    g_main_context_get_poll_func(state->context)(fds, count, timeout);
+    ready = g_main_context_get_poll_func(state->context)(fds, count, timeout);
+    error = ready < 0 ? errno : 0;
     if (after)
       after(after_data);
-    if (g_main_context_check(state->context, priority, fds, count))
+    if (ready >= 0 && g_main_context_check(state->context, priority, fds, count))
       g_main_context_dispatch(state->context);
     g_free(fds);
     g_main_context_release(state->context);
+    if (ready < 0 && error != EINTR)
+      return IVY_EIO;
+  } else {
+    return IVY_ESTATE;
   }
   return TRUE;
 }
 
-void IvyMainLoopFor(IvyChannelState *state)
+int IvyLoopAcquireFor(IvyChannelState *state)
+{
+  gboolean initialized;
+  state = normalize(state);
+  g_mutex_lock(&state->mutex);
+  initialized = state->initialized;
+  g_mutex_unlock(&state->mutex);
+  if (!initialized && IvyChannelInitFor(state) != 0)
+    return IVY_EIO;
+  /* GLib context ownership is recursive. Reject entry from an existing
+   * dispatch as well as another Ivy run, including a different bus there. */
+  if (g_main_context_is_owner(state->context) && g_main_depth() > 0)
+    return IVY_ESTATE;
+  if (!g_main_context_acquire(state->context))
+    return IVY_ESTATE;
+  g_mutex_lock(&state->mutex);
+  if (state->run_active) {
+    g_mutex_unlock(&state->mutex);
+    g_main_context_release(state->context);
+    return IVY_ESTATE;
+  }
+  state->run_active = TRUE;
+  g_mutex_unlock(&state->mutex);
+  g_source_ref((GSource *)state);
+  return IVY_OK;
+}
+
+int IvyLoopRunOwnedFor(IvyChannelState *state)
+{
+  int result;
+  state = normalize(state);
+  while ((result = iteration(state, TRUE, TRUE)) > 0)
+    ;
+  return result;
+}
+
+void IvyLoopReleaseFor(IvyChannelState *state)
 {
   state = normalize(state);
-  if (IvyChannelInitFor(state) != 0)
-    return;
-  g_source_ref((GSource *)state);
-  /* Distinct loop threads must use distinct thread-default GMainContexts. */
-  if (g_main_context_acquire(state->context)) {
-    while (iteration(state, TRUE))
-      ;
-    g_main_context_release(state->context);
-  }
+  drain_controls(state);
+  g_mutex_lock(&state->mutex);
+  state->run_active = FALSE;
+  g_mutex_unlock(&state->mutex);
+  g_main_context_release(state->context);
   g_source_unref((GSource *)state);
 }
+
+int IvyMainLoopRunFor(IvyChannelState *state)
+{
+  int status = IvyLoopAcquireFor(state);
+  if (status != IVY_OK)
+    return status;
+  status = IvyLoopRunOwnedFor(state);
+  IvyLoopReleaseFor(state);
+  return status;
+}
+
+void IvyMainLoopFor(IvyChannelState *state)
+{
+  (void)IvyMainLoopRunFor(state);
+}
+
 void IvyMainLoop(void) { IvyMainLoopFor(NULL); }
 
 void IvyIdleFor(IvyChannelState *state)
@@ -516,7 +585,7 @@ void IvyIdleFor(IvyChannelState *state)
     g_mutex_unlock(&state->mutex);
   }
   g_source_ref((GSource *)state);
-  iteration(state, FALSE);
+  (void)iteration(state, FALSE, FALSE);
   g_source_unref((GSource *)state);
 }
 void IvyIdle(void) { IvyIdleFor(NULL); }

@@ -53,6 +53,8 @@ de la maniere suivante:
 */
 
 extern void IvyMainLoopFor(IvyChannelState *state);
+/* Checked backend entry point; returns an IvyStatus. */
+extern int IvyMainLoopRunFor(IvyChannelState *state);
 extern void IvyMainLoop(void);
 extern void IvyIdleFor(IvyChannelState *state);
 extern void IvyIdle(void);

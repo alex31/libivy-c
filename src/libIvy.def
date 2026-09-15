@@ -10,6 +10,7 @@ IvyContextStart
 IvyContextStop
 IvyContextDestroy
 IvyContextMainLoop
+IvyContextRun
 IvyContextIdle
 IvyContextSetBindCallback
 IvyContextSetPongCallback

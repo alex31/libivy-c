@@ -61,6 +61,7 @@ extern int WSAAPI inet_pton(int af, const char *src, void *dst);
 #include "intervalRegexp.h"
 #include "ivychannel.h"
 #include "ivyloop.h"
+#include "ivy_loop_internal.h"
 #include "ivysocket.h"
 #include "list.h"
 #include "ivybuffer.h"
@@ -181,6 +182,7 @@ struct IvyContext {
   IvyCond ivy_stop_done;
   IvyCond ivy_callbacks_done;
   int ivy_callbacks_active;
+  int ivy_run_active;
   IvyRwLock ivy_bindings_rwlock;
   IvyFilter ivy_filters;
   IvyThreadId ivy_owner_thread;
@@ -818,6 +820,13 @@ int IvyContextDestroy(IvyContext *ctx)
 
 	if (!ctx)
 		return IvyReturnStatus(IVY_EINVAL);
+
+	IvyMutexLock(&ctx->ivy_mutex);
+	if (ctx->ivy_run_active) {
+		IvyMutexUnlock(&ctx->ivy_mutex);
+		return IvyReturnStatus(IVY_ESTATE);
+	}
+	IvyMutexUnlock(&ctx->ivy_mutex);
 
 	if (IvyContextStateIs(ctx, IVY_CTX_RUNNING) || IvyContextStateIs(ctx, IVY_CTX_STARTING)) {
 		int status = IvyContextStop(ctx);
@@ -1951,9 +1960,40 @@ int IvyStop (void)
 
 void IvyContextMainLoop(IvyContext *ctx)
 {
+	(void)IvyContextRun(ctx);
+}
+
+int IvyContextRun(IvyContext *ctx)
+{
+	int status;
 	if (!ctx)
-		return;
-	IvyMainLoopFor(ctx->ivy_loop);
+		return IvyReturnStatus(IVY_EINVAL);
+	IvyMutexLock(&ctx->ivy_mutex);
+	if (ctx->ivy_run_active)
+		status = IVY_ESTATE;
+	else if (ctx->ivy_state == IVY_CTX_STOPPING || ctx->ivy_state == IVY_CTX_STOPPED)
+		status = IVY_ESTOPPED;
+	else if (ctx->ivy_state != IVY_CTX_RUNNING)
+		status = IVY_ESTATE;
+	else {
+		status = IvyLoopAcquireFor(ctx->ivy_loop);
+		if (status == IVY_OK)
+			ctx->ivy_run_active = 1;
+	}
+	IvyMutexUnlock(&ctx->ivy_mutex);
+	/* Acquisition failures must not stop an already-owned external loop. */
+	if (status != IVY_OK) {
+		if (status == IVY_EIO || status == IVY_ENOMEM)
+			(void)IvyContextStop(ctx);
+		return IvyReturnStatus(status);
+	}
+	status = IvyLoopRunOwnedFor(ctx->ivy_loop);
+	(void)IvyContextStop(ctx);
+	IvyLoopReleaseFor(ctx->ivy_loop);
+	IvyMutexLock(&ctx->ivy_mutex);
+	ctx->ivy_run_active = 0;
+	IvyMutexUnlock(&ctx->ivy_mutex);
+	return IvyReturnStatus(status);
 }
 
 void IvyContextIdle(IvyContext *ctx)

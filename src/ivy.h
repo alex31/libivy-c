@@ -447,12 +447,15 @@ int IvyContextStop(IvyContext *ctx);
  * @return ::IVY_OK on success, or a negative ::IvyStatus.
  *
  * @details
- * If the context is still running, destruction first requests a stop. Do not
- * use any ::IvyClientPtr or ::MsgRcvPtr obtained from this context after it is
- * destroyed.
+ * An active ::IvyContextRun() or ::IvyContextMainLoop() causes IVY_ESTATE;
+ * stop and join that loop thread before destruction. Otherwise, destruction
+ * requests stop if needed. Do not use any ::IvyClientPtr or ::MsgRcvPtr obtained
+ * from this context after it is destroyed. Destruction must not race with a
+ * new run or any other operation on the context.
  *
  * @code{.c}
  * IvyContextStop(ctx);
+ * // Join the event-loop thread here, if one was started.
  * IvyContextDestroy(ctx);
  * ctx = NULL;
  * @endcode
@@ -478,6 +481,21 @@ int IvyContextDestroy(IvyContext *ctx);
  * @endcode
  */
 void IvyContextMainLoop(IvyContext *ctx);
+
+/**
+ * @brief Run the context's blocking event loop with an explicit result.
+ * @param ctx Started context, kept alive until this call returns.
+ * @return IVY_OK after a stop, IVY_EINVAL for NULL, IVY_ESTOPPED if already
+ * stopped, IVY_ESTATE if not started or already driven, or a backend error
+ * (IVY_EIO / IVY_ENOMEM). Callback errors are independent of this result.
+ * @details Runs on the calling thread; no thread is created. Concurrent and
+ * recursive runs of the same context are rejected. A backend failure requests
+ * a stop before returning. Stop and join a loop thread before destruction;
+ * stop alone does not establish that the loop has returned.
+ * With GLib this also dispatches other sources on the associated GMainContext.
+ * An application-owned GLib/GTK loop can drive the bus directly instead.
+ */
+int IvyContextRun(IvyContext *ctx);
 
 /**
  * @brief Process pending events once without entering a permanent loop.

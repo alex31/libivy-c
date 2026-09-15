@@ -43,7 +43,10 @@
 #include "list.h"
 #include "ivychannel.h"
 #include "ivyloop.h"
+#include "ivy_loop_internal.h"
 #include "timer.h"
+#include "ivy.h"
+#include "ivy_timer_internal.h"
 #include "ivythread.h"
 
 struct _channel {
@@ -521,22 +524,49 @@ IvyChannelPostControl(IvyControlCallback callback, void *data)
   return IvyChannelPostControlFor(IvyChannelGetDefaultState(), callback, data);
 }
 
-static void
-IvyChannelSetLoopActive(IvyChannelState *state, int active)
+static int
+IvyChannelKeepRunning(void *data)
 {
-  state = IvyChannelNormalizeState(state);
-  if (IvyControlInit(state) != 0)
-    return;
-
+  IvyChannelState *state = data;
+  int running;
   IvyMutexLock(&state->control_mutex);
-  if (active) {
+  running = state->MainLoop;
+  IvyMutexUnlock(&state->control_mutex);
+  return running;
+}
+
+static int
+IvyChannelAcquireLoop(IvyChannelState *state)
+{
+  int status = IVY_OK;
+  IvyMutexLock(&state->control_mutex);
+  if (state->loop_active)
+    status = IVY_ESTATE;
+  else {
     state->loop_thread = IvyThreadCurrent();
     state->loop_thread_set = 1;
     state->loop_active = 1;
-  } else {
-    state->loop_active = 0;
   }
   IvyMutexUnlock(&state->control_mutex);
+  return status;
+}
+
+/* Drain accepted controls and clear ownership under the queue mutex so a
+ * control already enqueued at exit cannot be missed by the final drain. */
+static void
+IvyChannelReleaseLoop(IvyChannelState *state)
+{
+  for (;;) {
+    IvyChannelDrainControlFor(state);
+    IvyMutexLock(&state->control_mutex);
+    if (!state->control_head) {
+      state->loop_active = 0;
+      state->loop_thread_set = 0;
+      IvyMutexUnlock(&state->control_mutex);
+      return;
+    }
+    IvyMutexUnlock(&state->control_mutex);
+  }
 }
 
 int
@@ -696,7 +726,9 @@ IvyChannelHandleWrite (IvyChannelState *state, fd_set *current)
   Channel channel, next;
 
   IVY_LIST_EACH_SAFE (state->channels_list, channel, next) {
-    if (FD_ISSET (channel->fd, current)) {
+    if (!IvyChannelKeepRunning(state))
+      break;
+    if (!channel->tobedeleted && FD_ISSET (channel->fd, current)) {
       if (channel->handle_write)
 	(*channel->handle_write)(channel,channel->fd,channel->data);
     }
@@ -709,7 +741,9 @@ IvyChannelHandleRead (IvyChannelState *state, fd_set *current)
   Channel channel, next;
 
   IVY_LIST_EACH_SAFE (state->channels_list, channel, next) {
-    if (FD_ISSET (channel->fd, current)) {
+    if (!IvyChannelKeepRunning(state))
+      break;
+    if (!channel->tobedeleted && FD_ISSET (channel->fd, current)) {
       if (channel->handle_read)
 	(*channel->handle_read)(channel,channel->fd,channel->data);
     }
@@ -721,7 +755,9 @@ IvyChannelHandleExcpt (IvyChannelState *state, fd_set *current)
 {
   Channel channel,next;
   IVY_LIST_EACH_SAFE (state->channels_list, channel, next) {
-    if (FD_ISSET (channel->fd, current)) {
+    if (!IvyChannelKeepRunning(state))
+      break;
+    if (!channel->tobedeleted && FD_ISSET (channel->fd, current)) {
       if (channel->handle_delete)
 	(*channel->handle_delete)(channel->data);
       /*			IvyChannelClose (channel); */
@@ -738,11 +774,16 @@ int IvyChannelInitFor (IvyChannelState *state)
   /* pour eviter les plantages quand les autres applis font core-dump */
   /* signal (SIGPIPE, SIG_IGN); removed: managed locally by sockets */
 #endif
-  state->MainLoop = 1;
   if (IvyTestingChannelInitShouldFail(IVY_TEST_CHANNEL_INIT_FAIL_CONTROL))
     return -1;
   if (IvyControlInit(state) != 0)
     return -1;
+
+  /* Explicit initialization also prepares the reused legacy default state.
+   * Checked run entry skips initialization once the state is initialized. */
+  IvyMutexLock(&state->control_mutex);
+  state->MainLoop = 1;
+  IvyMutexUnlock(&state->control_mutex);
 
   if (state->channel_initialized) return 0;
 
@@ -777,7 +818,11 @@ void IvyChannelInit (void)
 void IvyChannelStopFor (IvyChannelState *state)
 {
   state = IvyChannelNormalizeState(state);
+  if (IvyControlInit(state) != 0)
+    return;
+  IvyMutexLock(&state->control_mutex);
   state->MainLoop = 0;
+  IvyMutexUnlock(&state->control_mutex);
   IvyChannelWakeFor(state);
 }
 
@@ -786,21 +831,28 @@ void IvyChannelStop (void)
   IvyChannelStopFor(IvyChannelGetDefaultState());
 }
 
-void IvyMainLoopFor(IvyChannelState *state)
+int IvyLoopAcquireFor(IvyChannelState *state)
 {
-
-  fd_set rdset, exset, wrset;
-  int ready;
-
   state = IvyChannelNormalizeState(state);
-  if (IvyChannelInitFor(state) != 0)
-    return;
-  IvyChannelSetLoopActive(state, 1);
-  while (state->MainLoop) {
+  if (!state->channel_initialized && IvyChannelInitFor(state) != 0)
+    return IVY_EIO;
+  return IvyChannelAcquireLoop(state);
+}
 
+void IvyLoopReleaseFor(IvyChannelState *state)
+{
+  IvyChannelReleaseLoop(IvyChannelNormalizeState(state));
+}
+
+int IvyLoopRunOwnedFor(IvyChannelState *state)
+{
+  fd_set rdset, exset, wrset;
+  int ready, error, status = IVY_OK;
+  state = IvyChannelNormalizeState(state);
+  while (IvyChannelKeepRunning(state)) {
     ChannelDefferedDeleteFor(state);
     IvyChannelDrainControlFor(state);
-    if (!state->MainLoop)
+    if (!IvyChannelKeepRunning(state))
       break;
 
     if (state->BeforeSelect)
@@ -809,35 +861,53 @@ void IvyMainLoopFor(IvyChannelState *state)
     rdset = state->open_fds;
     wrset = state->wrdy_fds;
     exset = state->open_fds;
-    ready = select(state->highestFd, &rdset, &wrset,  &exset,
-		   TimerGetSmallestTimeoutFor(IvyChannelGetTimerState(state)));
-
+    ready = select(state->highestFd, &rdset, &wrset, &exset,
+                   TimerGetSmallestTimeoutFor(IvyChannelGetTimerState(state)));
+#ifdef WIN32
+    error = ready < 0 ? WSAGetLastError() : 0;
+#else
+    error = ready < 0 ? errno : 0;
+#endif
     if (state->AfterSelect)
       (*state->AfterSelect)(state->AfterSelectData);
-
-    if (ready < 0 && (errno != EINTR)) {
-      fprintf (stderr, "select error %d\n",errno);
-      perror("select");
-      IvyChannelSetLoopActive(state, 0);
-      return;
+    if (ready < 0) {
+#ifdef WIN32
+      if (error == WSAEINTR)
+#else
+      if (error == EINTR)
+#endif
+        continue;
+      status = IVY_EIO;
+      break;
     }
-    if (ready > 0) {
-      if (IvyWakeupIsReady(state, &rdset)) {
-	IvyWakeupDrain(state);
-      }
-      IvyChannelDrainControlFor(state);
-      if (!state->MainLoop)
-	break;
-    }
-    TimerScanFor(IvyChannelGetTimerState(state)); /* should be spliited in two part ( next timeout & callbacks */
-    if (ready > 0) {
+    if (ready > 0 && IvyWakeupIsReady(state, &rdset))
+      IvyWakeupDrain(state);
+    IvyChannelDrainControlFor(state);
+    if (!IvyChannelKeepRunning(state))
+      break;
+    IvyTimerScanWhileFor(IvyChannelGetTimerState(state), IvyChannelKeepRunning, state);
+    if (ready > 0 && IvyChannelKeepRunning(state)) {
       IvyChannelHandleExcpt(state, &exset);
       IvyChannelHandleRead(state, &rdset);
       IvyChannelHandleWrite(state, &wrset);
     }
   }
-  IvyChannelDrainControlFor(state);
-  IvyChannelSetLoopActive(state, 0);
+  return status;
+}
+
+int IvyMainLoopRunFor(IvyChannelState *state)
+{
+  int status = IvyLoopAcquireFor(state);
+  if (status != IVY_OK)
+    return status;
+  status = IvyLoopRunOwnedFor(state);
+  IvyLoopReleaseFor(state);
+  return status;
+}
+
+void IvyMainLoopFor(IvyChannelState *state)
+{
+  (void)IvyMainLoopRunFor(state);
 }
 
 void IvyMainLoop(void)

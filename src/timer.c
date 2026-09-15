@@ -27,6 +27,7 @@
 #endif
 #include "list.h"
 #include "timer.h"
+#include "ivy_timer_internal.h"
 
 #define BIGVALUE 2147483647
 #define MILLISEC 1000
@@ -206,7 +207,8 @@ struct timeval *TimerGetSmallestTimeout()
 	return TimerGetSmallestTimeoutFor(TimerGetDefaultState());
 }
 
-void TimerScanFor(IvyTimerState *state)
+void IvyTimerScanWhileFor(IvyTimerState *state,
+                         int (*keep_running)(void *), void *data)
 {
 	unsigned long stamp;
 	TimerId timer;
@@ -219,6 +221,8 @@ void TimerScanFor(IvyTimerState *state)
 	/* recherche des timers echu dans la liste */
 	IVY_LIST_EACH_SAFE( state->timers , timer, next )
 	{
+	  if (keep_running && !keep_running(data))
+	    break;
 	  if ( timer->when <= stamp && (!timer->mark2Remove) )
 	    {
 	      delta = stamp - timer->when;
@@ -245,6 +249,11 @@ void TimerScanFor(IvyTimerState *state)
 	    }
 	}
 	
+}
+
+void TimerScanFor(IvyTimerState *state)
+{
+	IvyTimerScanWhileFor(state, NULL, NULL);
 }
 
 void TimerScan()

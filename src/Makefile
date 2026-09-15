@@ -172,6 +172,9 @@ install-cpp: cpp
 	$(MAKE) -C cpp install
 
 
+ivyloop.o timer.o: ivy_timer_internal.h
+ivy.o ivy_omp.o ivyloop.o ivyglibloop.o: ivy_loop_internal.h
+
 ivy.o ivy_omp.o givy.o ivysocket.o: ivy_query_internal.h
 
 ivybind.o: ivybind.c
