@@ -920,6 +920,7 @@ void nonthrowing_boundaries() {
         auto check = [&](auto result) { assert(!result && result.error() == expected); };
         check(bus.send("{}", failing));
         check(bus.send(&peer, 1, "{}", failing));
+        check(bus.send_error(&peer, 1, "{}", failing));
         const auto report = bus.send_report("{}", failing);
         assert(report.error == expected && !report.system_error);
         assert(report.matched == 0 && report.accepted == 0 && report.failed == 0);
@@ -954,6 +955,43 @@ void nonthrowing_boundaries() {
 
 
 
+void control_messages() {
+    auto bus = require_bus(ivy::Bus::create("control"));
+    _clnt_lst_dict peer{bus.native_handle()}, foreign{};
+    expect_error(IVY_ESTATE, bus.send_die(&peer));
+    expect_error(IVY_ESTATE, bus.send_error(&peer, 1, "error"));
+    assert(bus.start());
+    assert(bus.send_die(&peer) && control_kind == "die" && sent_peer == &peer);
+    assert(bus.send_error(&peer, 7, "100% {} unchanged"));
+    assert(control_kind == "error" && sent_id == 7 && sent_message == "100% {} unchanged");
+    assert(bus.send_error(&peer, 8, "Error {}", 42) && sent_message == "Error 42");
+    assert(bus.send_error(&peer, 9, std::string_view("slice-extra").substr(0, 5)));
+    assert(sent_message == "slice");
+    assert(bus.send_error(&peer, 0, std::string_view{}) && sent_message.empty());
+    expect_error(IVY_EINVAL, bus.send_die(nullptr));
+    expect_error(IVY_EINVAL, bus.send_die(&foreign));
+    expect_error(IVY_EINVAL, bus.send_error(nullptr, 1, "text"));
+    expect_error(IVY_EINVAL, bus.send_error(&foreign, 1, "text"));
+    for (char invalid : {'\0', '\n', '\002', '\003'}) {
+        std::string text = "bad";
+        text += invalid;
+        expect_error(IVY_EINVAL, bus.send_error(&peer, 1, text));
+    }
+    for (auto status : {IVY_EIO, IVY_ENOMEM, IVY_EFIFOFULL}) {
+        send_error = status;
+        expect_error(status, bus.send_die(&peer));
+        expect_error(status, bus.send_error(&peer, 1, "text"));
+    }
+    send_error = IVY_OK;
+    auto moved = std::move(bus);
+    expect_error(IVY_ESTATE, bus.send_die(&peer));
+    expect_error(IVY_ESTATE, bus.send_error(&peer, 1, "text"));
+    assert(moved.stop());
+    expect_error(IVY_ESTOPPED, moved.send_die(&peer));
+    expect_error(IVY_ESTOPPED, moved.send_error(&peer, 1, "text"));
+    static_assert(noexcept(moved.send_die(&peer)));
+    static_assert(noexcept(moved.send_error(&peer, 1, std::string_view{})));
+}
 
 
 int main() {
@@ -988,6 +1026,7 @@ int main() {
     static_assert(std::is_nothrow_move_constructible_v<ivy::Bus>);
     static_assert(std::is_nothrow_move_assignable_v<ivy::Bus>);
     static_assert(std::is_nothrow_destructible_v<ivy::Bus>);
+    control_messages();
     nonthrowing_boundaries();
     strings_and_lifecycle();
     move_only_callbacks();

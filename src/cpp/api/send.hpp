@@ -130,6 +130,37 @@
     [[nodiscard]] std::expected<void, std::error_code>
     send(IvyClientPtr peer, int id, std::format_string<Args...> format, Args&&... args) noexcept;
 
+    /**
+     * @brief Ask a connected peer to terminate.
+     * @param peer Connected peer belonging to this Bus, valid throughout the call.
+     * @return Empty success on local acceptance, or lifecycle/peer/transport errors.
+     * Requires a running bus. Success does not acknowledge the remote application's exit.
+     */
+    [[nodiscard]] std::expected<void, std::error_code> send_die(IvyClientPtr peer) noexcept;
+
+    /**
+     * @brief Send an Ivy protocol error to one connected peer.
+     * @param peer Connected peer belonging to this Bus, valid throughout the call.
+     * @param id Application/protocol identifier associated with the error.
+     * @param message Text consumed during the call, unchanged, including braces and percent signs.
+     * @return Empty success on local acceptance, or lifecycle/input/peer/transport errors.
+     * Requires a running bus; text restrictions match send(). This sends a protocol
+     * error frame, not a direct message or a local callback error notification.
+     */
+    [[nodiscard]] std::expected<void, std::error_code>
+    send_error(IvyClientPtr peer, int id, std::string_view message) noexcept;
+
+    /** @brief Format and send an Ivy protocol error to one connected peer.
+     * @tparam Args Types of the format arguments.
+     * @param peer Connected peer belonging to this Bus.
+     * @param id Application/protocol identifier.
+     * @param format Constant std::format string.
+     * @param args Values inserted into the message.
+     * @return Same result as the text overload, plus formatting errors.
+     */
+    template<class... Args> requires (sizeof...(Args) > 0)
+    [[nodiscard]] std::expected<void, std::error_code>
+    send_error(IvyClientPtr peer, int id, std::format_string<Args...> format, Args&&... args) noexcept;
 // IVY_CPP_API_END
 
 #endif

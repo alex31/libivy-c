@@ -12,7 +12,7 @@ archive=$repo_dir/src/build/cpp/libivy-cpp.a
 # The positive case must compile before any rejected cases are counted as passes.
 "$cxx" -std=c++23 -fsyntax-only -I"$repo_dir/src/cpp" -I"$repo_dir/src" \
     "$repo_dir/tests/cpp/compile_test.cpp"
-for compile_case in 1 2 3 4 5 6 7 8 9 10 11 12; do
+for compile_case in 1 2 3 4 5 6 7 8 9 10 11 12 19; do
     if "$cxx" -std=c++23 -fsyntax-only -DIVY_COMPILE_CASE="$compile_case" \
         -I"$repo_dir/src/cpp" -I"$repo_dir/src" "$repo_dir/tests/cpp/compile_test.cpp" \
         >"$tmp_dir/compile-$compile_case.log" 2>&1; then

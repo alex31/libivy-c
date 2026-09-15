@@ -65,5 +65,22 @@ std::expected<void, std::error_code> Bus::send(IvyClientPtr peer, int id, std::s
 }
 
 
+std::expected<void, std::error_code> Bus::send_die(IvyClientPtr peer) noexcept {
+    const auto owner = impl_;
+    const auto state = send_state(owner ? owner->context : nullptr);
+    if (state != IVY_OK) return detail::status_result(state);
+    if (!peer) return detail::status_result(IVY_EINVAL);
+    return detail::status_result(IvyContextSendDieMsg(owner->context, peer));
+}
+
+std::expected<void, std::error_code>
+Bus::send_error(IvyClientPtr peer, int id, std::string_view message) noexcept {
+    const auto owner = impl_;
+    const auto state = send_state(owner ? owner->context : nullptr);
+    if (state != IVY_OK) return detail::status_result(state);
+    if (!peer || !valid_message(message)) return detail::status_result(IVY_EINVAL);
+    return detail::status_result(IvyContextSendError(owner->context, peer, id, "%.*s",
+        static_cast<int>(message.size()), message.empty() ? "" : message.data()));
+}
 
 } // namespace ivy

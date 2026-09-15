@@ -12,6 +12,9 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
 #if IVY_COMPILE_CASE == 0
     using namespace std::chrono_literals;
     (void)bus.bind([](IvyClientPtr, auto args) { (void)args.size(); }, "^GENERIC (.*)");
+    (void)bus.send_die(IvyClientPtr{});
+    (void)bus.send_error(IvyClientPtr{}, id, dynamic);
+    (void)bus.send_error(IvyClientPtr{}, id, "ERROR {}", id);
     (void)bus.send(dynamic);
     (void)bus.send("100% {} unchanged");
     (void)bus.send("TRACK {} {:02d}", dynamic, id);
@@ -55,5 +58,7 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.send(IvyClientPtr{}, id, "DIRECT {:d}", "wrong type");
 #elif IVY_COMPILE_CASE == 12
     (void)bus.send_report("TRACK {:d}", "wrong type");
+#elif IVY_COMPILE_CASE == 19
+    (void)bus.send_error(IvyClientPtr{}, id, "ERROR {:d}", "wrong type");
 #endif
 }

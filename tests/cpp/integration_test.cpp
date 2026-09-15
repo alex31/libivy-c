@@ -216,6 +216,9 @@ int main(int argc, char** argv) {
             return receiver_a && receiver_b;
         }, "peer lookup timed out");
 
+        assert(!peer_a.send_die(receiver_b));
+        assert(!peer_a.send_error(receiver_b, 7, "wrong context"));
+        require_start(peer_a.send_error(receiver_a, 7, "expected test error {}", 42), "send error frame");
 
 
 
@@ -297,13 +300,13 @@ int main(int argc, char** argv) {
         wait_for([&] { return messages_b == 2; }, "other bus stopped receiving after unbind");
         assert(messages_a == 4 && unexpected == 0);
 
-        assert(IvyContextSendDieMsg(peer_a.native_handle(), receiver_a) == IVY_OK);
+        assert(peer_a.send_die(receiver_a));
         wait_for([&] { return died_a == 1 && bus_a.state() == IVY_CTX_STOPPED; }, "die callback A timed out");
         loop_a.finish();
         assert(bus_a.take_callback_error());
         assert(moved_b.state() == IVY_CTX_RUNNING && died_b == 0);
 
-        assert(IvyContextSendDieMsg(peer_b.native_handle(), receiver_b) == IVY_OK);
+        assert(peer_b.send_die(receiver_b));
         wait_for([&] { return died_b == 1 && moved_b.state() == IVY_CTX_STOPPED; }, "die callback B timed out");
         loop_b.finish();
         assert(!message_b.is_bound() && message_b.unbind());
