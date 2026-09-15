@@ -16,11 +16,11 @@ for compile_case in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21; do
     if "$cxx" -std=c++23 -fsyntax-only -DIVY_COMPILE_CASE="$compile_case" \
         -I"$repo_dir/src/cpp" -I"$repo_dir/src" "$repo_dir/tests/cpp/compile_test.cpp" \
         >"$tmp_dir/compile-$compile_case.log" 2>&1; then
-        echo "Invalid anchoring/format case $compile_case unexpectedly compiled" >&2
+        echo "Invalid C++ API case $compile_case unexpectedly compiled" >&2
         exit 1
     fi
 done
-echo "Anchoring and send-format compile-time checks passed"
+echo "C++ API argument, anchoring and formatting checks passed"
 
 "$cxx" -std=c++23 -O2 -g -Wall -Wextra -Wpedantic -UNDEBUG \
     -I"$repo_dir/src/cpp" -I"$repo_dir/src" \
@@ -48,6 +48,7 @@ echo "Anchoring and send-format compile-time checks passed"
 # Check the installed header layout and pkg-config link flags in a private prefix.
 stage=$tmp_dir/stage
 make -C "$repo_dir/src" includes installpkgconf install-cpp DESTDIR="$stage" PREFIX=/usr
+test ! -e "$stage/usr/include/Ivy/ivy_query_internal.h"
 version=$(pkg-config --modversion "$repo_dir/src/ivy-c.pc")
 major=${version%%.*}
 install -m644 "$repo_dir/src/libivy.a" "$repo_dir/src/libivy.so.$version" "$stage/usr/lib/"
@@ -65,9 +66,33 @@ esac
 export PKG_CONFIG_LIBDIR=$stage/usr/lib/pkgconfig
 export PKG_CONFIG_SYSROOT_DIR=$stage
 unset PKG_CONFIG_PATH
-"$cxx" -std=c++23 -Wall -Wextra -Wpedantic \
-    $(pkg-config --cflags ivy-cpp) "$repo_dir/examples/cpp/lifecycle.cpp" \
-    $(pkg-config --libs ivy-cpp) -o "$tmp_dir/lifecycle_example"
+# Every documented API section can be opened/included directly, and repeated
+# includes must still assemble exactly one complete Bus definition.
+for api_header in "$stage/usr/include/Ivy/api/"*.hpp; do
+    "$cxx" -std=c++23 -Wall -Wextra -Wpedantic -fsyntax-only -x c++ \
+        $(pkg-config --cflags ivy-cpp) - <<EOF
+#include <Ivy/api/${api_header##*/}>
+#if defined(IVY_CPP_API_HEADERS)
+#error "The API assembly macro must not escape the header."
+#endif
+static_assert(std::is_move_constructible_v<ivy::Bus>);
+void header_check(ivy::Bus& bus) {
+    (void)bus.bind([](IvyClientPtr, auto) {}, "^HEADER (.*)$");
+    (void)bus.send("HEADER {}", 42);
+    (void)bus.set_filters("HEADER");
+}
+#include <Ivy/ivy.hpp>
+#include <Ivy/api/send.hpp>
+#include <Ivy/api/lifecycle.hpp>
+EOF
+done
+echo "Installed API sections and repeated includes compile"
+
+for example in lifecycle callbacks inspection; do
+    "$cxx" -std=c++23 -Wall -Wextra -Wpedantic \
+        $(pkg-config --cflags ivy-cpp) "$repo_dir/examples/cpp/$example.cpp" \
+        $(pkg-config --libs ivy-cpp) -o "$tmp_dir/${example}_example"
+done
 
 "$cxx" -std=c++23 -O2 -g -Wall -Wextra -Wpedantic -UNDEBUG \
     -I"$stage/usr/include/Ivy" $(pkg-config --cflags ivy-cpp) \
@@ -90,4 +115,18 @@ timeout 20s "$tmp_dir/mainloop_test" "127.255.255.255:$((port + 4))"
     -o "$tmp_dir/mainloop_shared_test"
 LD_LIBRARY_PATH="$stage/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     timeout 20s "$tmp_dir/mainloop_shared_test" "127.255.255.255:$((port + 5))"
+"$cxx" -std=c++23 -O2 -g -Wall -Wextra -Wpedantic -UNDEBUG \
+    -I"$repo_dir/src/cpp" -I"$repo_dir/src" \
+    "$repo_dir/tests/cpp/thread_test.cpp" "$archive" "$repo_dir/src/libivy.a" \
+    $(pcre2-config --libs8) -pthread -o "$tmp_dir/thread_test"
+timeout 20s "$tmp_dir/thread_test" "127.255.255.255:$((port + 6))"
+cc -shared -fPIC "$repo_dir/tests/cpp/thread_failure.c" -o "$tmp_dir/thread_failure.so"
+LD_PRELOAD="$tmp_dir/thread_failure.so" \
+    timeout 20s "$tmp_dir/thread_test" "127.255.255.255:$((port + 7))" --thread-failure
+"$cxx" -std=c++23 -O2 -g -Wall -Wextra -Wpedantic -UNDEBUG \
+    -I"$stage/usr/include/Ivy" $(pkg-config --cflags ivy-cpp) \
+    "$repo_dir/tests/cpp/thread_test.cpp" $(pkg-config --libs ivy-cpp) \
+    -o "$tmp_dir/thread_shared_test"
+LD_LIBRARY_PATH="$stage/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    timeout 20s "$tmp_dir/thread_shared_test" "127.255.255.255:$((port + 8))"
 echo "C++23 static/shared wrapper and installed consumer checks passed"

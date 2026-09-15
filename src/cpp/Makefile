@@ -15,9 +15,9 @@ SONAME = libivy-cpp.so.$(MAJOR)
 SHARED_LINKS = $(BUILD_DIR)/libivy-cpp.so $(BUILD_DIR)/$(SONAME)
 CORE_SHARED = ../libivy.so.$(MAJOR).$(MINOR)
 PKGCONF = $(BUILD_DIR)/ivy-cpp.pc
-SOURCES = ivy.cpp ivy_subscription.cpp ivy_events.cpp ivy_send.cpp ivy_timer.cpp ivy_filters.cpp ivy_application.cpp ivy_mainloop.cpp
+SOURCES = ivy.cpp ivy_subscription.cpp ivy_events.cpp ivy_send.cpp ivy_timer.cpp ivy_filters.cpp ivy_application.cpp ivy_mainloop.cpp ivy_thread.cpp
 OBJECTS = $(SOURCES:%.cpp=$(BUILD_DIR)/%.o)
-HEADERS = ivy.hpp ivy_detail.hpp ivy_bus_private.hpp
+HEADERS = ivy.hpp ivy_detail.hpp ivy_bus_private.hpp ivy_thread.hpp
 API_HEADERS = $(wildcard api/*.hpp)
 
 .PHONY: all static-libs shared-libs install clean FORCE
