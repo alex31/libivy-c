@@ -1,5 +1,26 @@
 # libivy
-ivy software bus
+
+Ivy is a software bus for exchanging text messages between applications.
+This library provides both a C API and a C++23 API, using the same Ivy protocol
+and supporting several independent buses in one process.
+
+| API | Public header | Entry point |
+| --- | --- | --- |
+| C++23 | `<Ivy/ivy.hpp>` | `ivy::Bus::create()` |
+| C with explicit contexts | `<Ivy/ivy.h>` | `IvyContextCreate()` |
+| Legacy C | `<Ivy/ivy.h>` | `IvyInit()` |
+
+The C++ API manages bus and subscription lifetimes with RAII, accepts lambdas
+and move-only callbacks, and reports errors with `std::expected`. It supports
+raw or typed message subscriptions, formatted sends, direct messages, timers,
+peer information and filters. Native and GLib/GTK event loops are available;
+the [Qt6 example](examples/ivyqt/README.md) uses the optional `ivy::LoopThread`.
+
+Start with the [C++ quick start](#quick-start), then use the
+[C++23 API guide](#c23-wrapper) below. For C applications, see the
+[context API guidance](#current-development-status). Both APIs are included
+in the [Debian/Ubuntu packages](#debian--ubuntu-packages) and the
+[Doxygen reference](#api-reference-and-source-layout).
 
 ## Current development status
 
@@ -137,6 +158,77 @@ actual filtering and legacy callback routing on two independent buses.
 
 ## C++23 wrapper
 
+Include `<Ivy/ivy.hpp>` to use `ivy::Bus`. The wrapper owns its C context and
+releases it when the Bus is destroyed. Each subscription is an owned token:
+keep it alive to keep receiving messages. Use `bind_raw()` for capture views
+or `bind_convert()` for conversion to `long`, `double`, `std::string_view` and
+`bool`. Both accept an optional sender as the first callback argument;
+`bind_convert()` then passes `ivy::ConvertStatus` before the converted values.
+
+### Quick start
+
+This complete listener receives `TRACK <id> <altitude>` messages and stops on
+`STOP`. Save it as `cpp-listener.cpp`:
+
+```cpp
+#include <Ivy/ivy.hpp>
+#include <iostream>
+
+int main() {
+    const auto check = [](const auto& result) {
+        if (!result) std::cerr << result.error().message() << '\n';
+        return result.has_value();
+    };
+    auto created = ivy::Bus::create("cpp-listener", "cpp-listener ready");
+    if (!check(created)) return 1;
+    auto& bus = *created;
+
+    auto tracks = bus.bind_convert(
+        [&bus, &check](IvyClientPtr peer, ivy::ConvertStatus status,
+                      long id, double altitude) {
+            if (status != ivy::ConvertStatus::OK) {
+                std::cerr << bus.conversion_error() << '\n';
+                return;
+            }
+            auto sender = bus.application(peer);
+            if (!check(sender)) return;
+            std::cout << sender->first << ": track " << id
+                      << " at " << altitude << '\n';
+        }, R"(^TRACK (\S+) (\S+)$)");
+
+    // The sender can be omitted when only the message matters.
+    auto stop = bus.bind_raw([&bus, &check](auto) {
+        check(bus.request_stop());
+    }, "^STOP$");
+
+    if (!check(tracks) || !check(stop) || !check(bus.start())) return 1;
+    if (!check(bus.run())) return 1;
+    return check(bus.take_callback_error()) ? 0 : 1;
+}
+```
+
+With `ivy-c-dev` installed, compile using a C++23 compiler and standard library
+(GCC 13 or newer is supported):
+
+```sh
+c++ -std=c++23 cpp-listener.cpp $(pkg-config --cflags --libs ivy-cpp) -o cpp-listener
+IVYBUS=127.255.255.255:2010 ./cpp-listener
+```
+
+From another terminal, run `IVYBUS=127.255.255.255:2010 ivyprobe` and send
+`TRACK 42 123.5`, then `STOP`. A message such as `TRACK bad 123.5` demonstrates
+the conversion diagnostic while leaving the listener running.
+
+`start()` connects the bus; `run()` services callbacks on the calling thread
+until a stop request. It creates no background thread. The `tracks` and `stop`
+tokens stay alive throughout the loop, and the sender and capture views are
+borrowed for the duration of each callback. See
+[callback errors and subscriptions](#callback-errors-and-subscriptions) for
+the complete conversion and lifetime rules, and
+[building and linking](#building-and-linking) to build from source.
+
+### API reference and source layout
+
 `src/cpp/ivy.hpp` provides `ivy::Bus`, a non-copyable, movable owner of an
 explicit `IvyContext`. Its `Bus::create()` factory accepts an application name as
 `std::string_view`, an optional ready message as
@@ -221,6 +313,8 @@ pkg-config files and the PDF at `/usr/share/doc/ivy-c-dev/ivy-api.pdf`.
 The PDF is rebuilt from source when packaging; Doxygen and LaTeX are build
 requirements only. See [the packaging instructions](debian/README).
 
+### Building and linking
+
 The Linux build has separate targets for the wrapper. Building the C library
 and tools does not enable C++23:
 
@@ -245,6 +339,8 @@ c++ -std=c++23 examples/cpp/lifecycle.cpp \
 The linker selects the shared libraries by default. Selecting the `.a` archives
 explicitly retains the static linking option; `pkg-config --static --libs ivy-cpp`
 supplies their additional dependencies but does not force static linking.
+
+### Creating and running a bus
 
 Creation returns `std::expected<ivy::Bus, std::error_code>` and copies the input
 strings. An absent ready message (`std::nullopt`) is distinct from an empty
