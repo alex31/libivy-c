@@ -95,7 +95,7 @@ EOF
 done
 echo "Installed API sections and repeated includes compile"
 
-for example in lifecycle callbacks inspection; do
+for example in lifecycle callbacks inspection ivytranslater; do
     "$cxx" -std=c++23 -Wall -Wextra -Wpedantic \
         $(pkg-config --cflags ivy-cpp) "$repo_dir/examples/cpp/$example.cpp" \
         $(pkg-config --libs ivy-cpp) -o "$tmp_dir/${example}_example"

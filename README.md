@@ -933,7 +933,8 @@ the other wrapper callbacks. The C transport callback's threading and
 connection-level semantics apply.
 
 `examples/cpp/lifecycle.cpp` demonstrates subscriptions and sending. It runs until
-another Ivy application sends a die request. Run the wrapper tests with:
+another Ivy application sends a die request. `examples/cpp/ivytranslater.cpp`
+provides the modern C++23 counterpart to `tools/ivytranslater.c`. Run the wrapper tests with:
 
 ```sh
 ./tests/cpp/run.sh
