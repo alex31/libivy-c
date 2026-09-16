@@ -8,6 +8,7 @@
 #include <exception>
 #include <iostream>
 #include <latch>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -482,7 +483,7 @@ void subscriptions_and_formats() {
             received.assign(args.begin(), args.end());
         };
     std::string pattern = R"(^TRACK ([0-9]{2}) 100%$-suffix)";
-    auto result = bus.bind(std::move(callback), ivy::runtime_regexp(std::string_view(pattern).substr(0, pattern.size() - 7)));
+    auto result = bus.bind_raw(std::move(callback), ivy::runtime_regexp(std::string_view(pattern).substr(0, pattern.size() - 7)));
     assert(result && result->is_bound());
     auto* binding = ctx->bindings.back();
     assert(binding->regexp == R"(^TRACK ([0-9]{2}) 100%$)");
@@ -496,27 +497,27 @@ void subscriptions_and_formats() {
     assert(calls == 2 && received.empty());
 
     auto ignore = [](IvyClientPtr, std::span<const std::string_view>) {};
-    auto formatted = bus.bind(ignore, R"(^TRACK {} ([0-9]{{2}}) 100%$)", 42);
+    auto formatted = bus.bind_raw(ignore, R"(^TRACK {} ([0-9]{{2}}) 100%$)", 42);
     assert(formatted);
     assert(ctx->bindings.back()->regexp == R"(^TRACK 42 ([0-9]{2}) 100%$)");
-    auto braces = bus.bind_unanchored(ignore, "{}");
+    auto braces = bus.bind_raw_unanchored(ignore, "{}");
     assert(braces && ctx->bindings.back()->regexp == "{}");
     const auto count = ctx->bindings.size();
-    auto invalid_format = bus.bind(ignore, "^{:{}d}", 42, -1);
+    auto invalid_format = bus.bind_raw(ignore, "^{:{}d}", 42, -1);
     assert(!invalid_format && invalid_format.error() == ivy::make_error_code(IVY_EINVAL));
-    assert(!bus.bind(ignore, ivy::runtime_regexp(std::string_view("a\0b", 3))));
-    assert(!bus.bind(ivy::Bus::MessageCallback{}, "^regexp"));
-    assert(!bus.bind(ivy::Bus::DirectCallback{}));
+    assert(!bus.bind_raw(ignore, ivy::runtime_regexp(std::string_view("a\0b", 3))));
+    assert(!bus.bind_raw(ivy::Bus::MessageCallback{}, "^regexp"));
+    assert(!bus.bind_direct(ivy::Bus::DirectCallback{}));
     assert(ctx->bindings.size() == count);
 
     bind_error = IVY_ENOMEM;
-    auto failed = bus.bind(ignore, "^failed");
+    auto failed = bus.bind_raw(ignore, "^failed");
     bind_error = IVY_OK;
     assert(!failed && failed.error() == ivy::make_error_code(IVY_ENOMEM));
     assert(ctx->bindings.size() == count);
     ivy::Bus moved(std::move(bus));
     assert(result->is_bound());
-    auto from_moved = bus.bind(ignore, "^failed");
+    auto from_moved = bus.bind_raw(ignore, "^failed");
     assert(!from_moved && from_moved.error() == ivy::make_error_code(IVY_ESTATE));
 
     const int before = unbind_count;
@@ -530,7 +531,7 @@ void subscriptions_and_formats() {
     assert(moved.stop());
     assert(!formatted->is_bound());
     assert(formatted->unbind());
-    auto after_stop = moved.bind(ignore, "^failed");
+    auto after_stop = moved.bind_raw(ignore, "^failed");
     assert(!after_stop && after_stop.error() == ivy::make_error_code(IVY_ESTOPPED));
 }
 
@@ -540,7 +541,7 @@ void direct_subscriptions() {
     _clnt_lst_dict peer;
     int old_calls = 0;
     int new_calls = 0;
-    auto old = bus.bind([value = std::make_unique<int>(7), &old_calls, &peer]
+    auto old = bus.bind_direct([value = std::make_unique<int>(7), &old_calls, &peer]
                        (IvyClientPtr app, int id, std::string_view message) {
         assert(app == &peer && id == *value && message == "payload");
         ++old_calls;
@@ -552,7 +553,7 @@ void direct_subscriptions() {
     old_callback(&peer, old_data, 7, message);
     assert(old_calls == 1);
 
-    auto replacement = bus.bind([&](IvyClientPtr, int id, std::string_view text) {
+    auto replacement = bus.bind_direct([&](IvyClientPtr, int id, std::string_view text) {
         assert(id == 8 && text == "payload");
         ++new_calls;
     });
@@ -563,7 +564,7 @@ void direct_subscriptions() {
     ctx->direct(&peer, ctx->direct_data, 8, message);
     assert(new_calls == 1);
     bind_error = IVY_EIO;
-    auto failed = bus.bind([](IvyClientPtr, int, std::string_view) {});
+    auto failed = bus.bind_direct([](IvyClientPtr, int, std::string_view) {});
     bind_error = IVY_OK;
     assert(!failed && replacement->is_bound());
     ctx->direct(&peer, ctx->direct_data, 8, message);
@@ -580,12 +581,12 @@ void subscription_lifetimes() {
         auto bus = require_bus(ivy::Bus::create("lifetimes"));
         auto capture = std::make_shared<int>(42);
         weak_capture = capture;
-        auto result = bus.bind([capture = std::move(capture)](IvyClientPtr, auto) {}, "^first");
+        auto result = bus.bind_raw([capture = std::move(capture)](IvyClientPtr, auto) {}, "^first");
         assert(result);
         survivor = std::move(*result);
         const int before = unbind_count;
         {
-            auto scoped = bus.bind([](IvyClientPtr, auto) {}, "^scoped");
+            auto scoped = bus.bind_raw([](IvyClientPtr, auto) {}, "^scoped");
             assert(scoped);
         }
         assert(unbind_count == before + 1);
@@ -598,7 +599,7 @@ void subscription_lifetimes() {
     std::optional<ivy::Subscription> self;
     auto capture = std::make_shared<int>(42);
     weak_capture = capture;
-    auto result = bus.bind([capture = std::move(capture), &self, &weak_capture](IvyClientPtr, auto) {
+    auto result = bus.bind_raw([capture = std::move(capture), &self, &weak_capture](IvyClientPtr, auto) {
         self.reset();
         assert(!weak_capture.expired() && *capture == 42);
     }, "^self");
@@ -617,7 +618,7 @@ void concurrent_unbind() {
     std::latch entered(1), release(1);
     auto capture = std::make_shared<int>(42);
     std::weak_ptr<int> weak_capture = capture;
-    auto result = bus.bind([capture = std::move(capture), &entered, &release](IvyClientPtr, auto) {
+    auto result = bus.bind_raw([capture = std::move(capture), &entered, &release](IvyClientPtr, auto) {
         entered.count_down();
         release.wait();
         assert(*capture == 42);
@@ -637,7 +638,7 @@ void concurrent_unbind() {
 
 void subscription_exceptions() {
     auto messages = require_bus(ivy::Bus::create("message exception"));
-    auto subscription = messages.bind([](IvyClientPtr, auto) { throw 41; }, "^exception");
+    auto subscription = messages.bind_raw([](IvyClientPtr, auto) { throw 41; }, "^exception");
     assert(subscription);
     auto* binding = messages.native_handle()->bindings.back();
     binding->callback(nullptr, binding->data, 0, nullptr);
@@ -645,11 +646,306 @@ void subscription_exceptions() {
     expect_error(ivy::Error::callback_failed, messages.take_callback_error());
 
     auto direct = require_bus(ivy::Bus::create("direct exception"));
-    auto direct_subscription = direct.bind([](IvyClientPtr, int, std::string_view) { throw 42; });
+    auto direct_subscription = direct.bind_direct([](IvyClientPtr, int, std::string_view) { throw 42; });
     assert(direct_subscription);
     direct.native_handle()->direct(nullptr, direct.native_handle()->direct_data, 0, nullptr);
     assert(direct.state() == IVY_CTX_STOPPED);
     expect_error(ivy::Error::callback_failed, direct.take_callback_error());
+}
+
+void dispatch_captures(MsgRcvPtr binding, std::initializer_list<std::string> captures) {
+    std::vector<std::string> values(captures);
+    std::vector<char*> arguments;
+    for (auto& value : values) arguments.push_back(value.data());
+    binding->callback(nullptr, binding->data, static_cast<int>(arguments.size()), arguments.data());
+}
+
+template<class T>
+void accepts_capture(std::string text, T expected) {
+    auto bus = require_bus(ivy::Bus::create("valid conversion"));
+    std::optional<T> received;
+    auto subscription = bus.bind_convert([&](ivy::ConvertStatus status, T value) {
+        assert(status == ivy::ConvertStatus::OK && bus.conversion_error().empty());
+        received = value;
+    }, "^VALUE (.*)$");
+    assert(subscription);
+    dispatch_captures(bus.native_handle()->bindings.back(), {text});
+    assert(received && *received == expected && bus.take_callback_error());
+}
+
+template<class T>
+void rejects_captures(std::initializer_list<std::string> texts) {
+    for (const auto& text : texts) {
+        auto bus = require_bus(ivy::Bus::create("invalid conversion"));
+        assert(bus.start());
+        bool called = false;
+        auto subscription = bus.bind_convert([&](ivy::ConvertStatus status, T value) {
+            assert(status == ivy::ConvertStatus::CONVERT_ERROR && value == T{});
+            const auto error = bus.conversion_error();
+            assert(error.starts_with("capture 1: cannot convert "));
+            assert(error.find(std::format("\"{}\"", text)) != std::string_view::npos);
+            assert(bus.conversion_error() == error);
+            called = true;
+        }, "^VALUE (.*)$");
+        assert(subscription);
+        dispatch_captures(bus.native_handle()->bindings.back(), {text});
+        assert(called && bus.state() == IVY_CTX_RUNNING && subscription->is_bound());
+        assert(bus.take_callback_error() && bus.conversion_error().empty());
+    }
+}
+
+void converted_subscriptions() {
+    accepts_capture("-42", -42L);
+    accepts_capture("+42", 42L);
+    accepts_capture("00042", 42L);
+    accepts_capture("-0", 0L);
+    accepts_capture(std::to_string(std::numeric_limits<long>::min()), std::numeric_limits<long>::min());
+    accepts_capture(std::to_string(std::numeric_limits<long>::max()), std::numeric_limits<long>::max());
+    rejects_captures<long>({"", "+", "-", "+-1", "++1", " 42", "42 ", "42x", "1.5", "1e2", "0x10",
+        std::to_string(std::numeric_limits<long>::min()) + "0",
+        std::to_string(std::numeric_limits<long>::max()) + "0"});
+    accepts_capture("+1.25e2", 125.0);
+    accepts_capture("-2.5E-1", -0.25);
+    accepts_capture(".5", 0.5);
+    accepts_capture("42", 42.0);
+    accepts_capture("-0.0", -0.0);
+    accepts_capture(std::format("{}", std::numeric_limits<double>::max()), std::numeric_limits<double>::max());
+    accepts_capture(std::format("{}", std::numeric_limits<double>::min()), std::numeric_limits<double>::min());
+    accepts_capture(std::format("{}", std::numeric_limits<double>::denorm_min()), std::numeric_limits<double>::denorm_min());
+    rejects_captures<double>({"", "+", "-", "+-1", "++1", " 1.5", "1.5 ", "1.5x", "1,5", "1e",
+        "0x1p2", "1e9999", "1e-9999", "nan", "NaN", "nan(1)", "inf", "-inf", "+inf", "infinity"});
+    accepts_capture("true", true);
+    accepts_capture("false", false);
+    accepts_capture("1", true);
+    accepts_capture("0", false);
+    for (const char* text : {"2", "-1", "+1", "01", "-0001", "+0002",
+                            "99999999999999999999999999999999999999999",
+                            "-99999999999999999999999999999999999999999",
+                            "TRUE", "true", "t", "T", "v", "V", "vrai", "Vrai", "true suffix", "t0"})
+        accepts_capture(text, true);
+    for (const char* text : {"+0", "-0", "000", "-000", "+000", "00000000000000000000000000000000000",
+                            "False", "FALSE", "f", "F", "faux", "false ", "F1"})
+        accepts_capture(text, false);
+    rejects_captures<bool>({"", "yes", "no", " true", " 1", "1 ", "0.0", "1e2", "1x", "0x1", "+", "-", "+-1"});
+
+    auto bus = require_bus(ivy::Bus::create("typed subscription"));
+    _clnt_lst_dict peer;
+    int calls = 0;
+    char id[] = "-42", altitude[] = "+125.5", label[] = "name with spaces", active[] = "true";
+    char* arguments[] = {id, altitude, label, active};
+    auto subscription = bus.bind_convert(
+        [count = std::make_unique<int>(0), &calls, &peer, &label]
+        (ivy::ConvertStatus status, IvyClientPtr sender, long number, double height, std::string_view name, bool enabled) mutable {
+            assert(status == ivy::ConvertStatus::OK);
+            assert(sender == &peer && number == -42 && height == 125.5 && enabled);
+            assert(name == "name with spaces" && name.data() == label);
+            calls = ++*count;
+        }, R"(^TRACK ([^ ]+) ([^ ]+) (.*) ([^ ]+)$)");
+    assert(subscription && subscription->is_bound());
+    auto* binding = bus.native_handle()->bindings.back();
+    binding->callback(&peer, binding->data, 4, arguments);
+    assert(calls == 1);
+    assert(subscription->change("^UPDATED (.*) (.*) (.*) (.*)$"));
+    auto moved_bus = std::move(bus);
+    auto moved_subscription = std::move(*subscription);
+    binding->callback(&peer, binding->data, 4, arguments);
+    assert(calls == 2 && moved_subscription.is_bound() && !subscription->is_bound());
+    assert(moved_subscription.unbind());
+
+    auto dynamic = moved_bus.bind_convert([](ivy::ConvertStatus status, long value) {
+        assert(status == ivy::ConvertStatus::OK && value == 42);
+    },
+        ivy::runtime_regexp(std::string("^DYNAMIC (.*)$")));
+    assert(dynamic);
+    dispatch_captures(moved_bus.native_handle()->bindings.back(), {"42"});
+    auto formatted = moved_bus.bind_convert([](ivy::ConvertStatus status, long value) {
+        assert(status == ivy::ConvertStatus::OK && value == 42);
+    },
+        R"(^TRACK {} ([0-9]{{2}}) 100%$)", 7);
+    assert(formatted && moved_bus.native_handle()->bindings.back()->regexp == R"(^TRACK 7 ([0-9]{2}) 100%$)");
+    dispatch_captures(moved_bus.native_handle()->bindings.back(), {"42"});
+
+    int empty_calls = 0;
+    auto empty = moved_bus.bind_convert([&](ivy::ConvertStatus status) noexcept {
+        assert(status == ivy::ConvertStatus::OK); ++empty_calls;
+    }, "^EMPTY$");
+    assert(empty);
+    dispatch_captures(moved_bus.native_handle()->bindings.back(), {});
+    auto peer_only = moved_bus.bind_convert([&](ivy::ConvertStatus status, IvyClientPtr) {
+        assert(status == ivy::ConvertStatus::OK); ++empty_calls;
+    }, "^PEER$");
+    assert(peer_only);
+    dispatch_captures(moved_bus.native_handle()->bindings.back(), {});
+    auto empty_view = moved_bus.bind_convert([&](ivy::ConvertStatus status, std::string_view text) {
+        assert(status == ivy::ConvertStatus::OK && text.empty()); ++empty_calls;
+    }, "^TEXT (.*)$");
+    assert(empty_view);
+    dispatch_captures(moved_bus.native_handle()->bindings.back(), {""});
+    assert(empty_calls == 3);
+
+    for (auto captures : {std::initializer_list<std::string>{}, {"42", "extra"}}) {
+        auto mismatch = require_bus(ivy::Bus::create("capture count"));
+        int count_calls = 0;
+        auto typed = mismatch.bind_convert([&](ivy::ConvertStatus status, long value) {
+            assert(status == ivy::ConvertStatus::COUNT_ERROR && value == 0);
+            assert(mismatch.conversion_error() == std::format(
+                "capture count mismatch: expected 1, received {}", captures.size()));
+            ++count_calls;
+        }, "^ONE (.*)$");
+        assert(typed && typed->change("^CHANGED$"));
+        dispatch_captures(mismatch.native_handle()->bindings.back(), captures);
+        assert(count_calls == 1 && mismatch.take_callback_error() && typed->is_bound());
+    }
+    // Discard all partial conversions, preserving the sender and reporting the first failure.
+    auto partial = require_bus(ivy::Bus::create("partial conversion"));
+    int partial_calls = 0;
+    auto mixed = partial.bind_convert([&](ivy::ConvertStatus status, IvyClientPtr sender,
+                                          long id, double altitude, std::string_view name, bool enabled) {
+        ++partial_calls;
+        assert(status == ivy::ConvertStatus::CONVERT_ERROR && sender == &peer);
+        assert(id == 0 && altitude == 0.0 && name.empty() && !enabled);
+        assert(partial.conversion_error() ==
+            "capture 4: cannot convert \"bad\" to bool: expected an integer or a value starting with f/F, t/T or v/V");
+    }, "^MIXED (.*) (.*) (.*) (.*)$");
+    assert(mixed);
+    char bad_bool[] = "bad";
+    arguments[3] = bad_bool;
+    auto* mixed_binding = partial.native_handle()->bindings.back();
+    mixed_binding->callback(&peer, mixed_binding->data, 4, arguments);
+    assert(partial_calls == 1 && partial.take_callback_error() && partial.conversion_error().empty());
+
+    auto throwing = require_bus(ivy::Bus::create("typed callback exception"));
+    auto failed = throwing.bind_convert([](ivy::ConvertStatus, long) { throw 42; }, "^THROW (.*)$");
+    assert(failed);
+    dispatch_captures(throwing.native_handle()->bindings.back(), {"42"});
+    expect_error(ivy::Error::callback_failed, throwing.take_callback_error());
+
+    expect_error(IVY_EINVAL, moved_bus.bind_convert(std::function<void(ivy::ConvertStatus, long)>{}, "^EMPTY"));
+    expect_error(IVY_EINVAL, moved_bus.bind_convert(std::move_only_function<void(ivy::ConvertStatus, long)>{}, "^EMPTY"));
+    expect_error(IVY_EINVAL, moved_bus.bind_convert(static_cast<void(*)(ivy::ConvertStatus, long)>(nullptr), "^EMPTY"));
+    expect_error(IVY_EINVAL, moved_bus.bind_convert([](ivy::ConvertStatus, long) {}, ivy::runtime_regexp(std::string_view("^A\0B", 4))));
+    expect_error(IVY_ESTATE, bus.bind_convert([](ivy::ConvertStatus, long) {}, "^MOVED"));
+    assert(moved_bus.stop());
+    expect_error(IVY_ESTOPPED, moved_bus.bind_convert([](ivy::ConvertStatus, long) {}, "^STOPPED"));
+}
+
+void conversion_diagnostics() {
+    auto original = require_bus(ivy::Bus::create("conversion diagnostics"));
+    ivy::Bus* current_bus = &original;
+    std::vector<ivy::ConvertStatus> statuses;
+    std::vector<std::string> errors;
+    auto subscription = original.bind_convert([&](ivy::ConvertStatus status, double value) {
+        statuses.push_back(status);
+        errors.emplace_back(current_bus->conversion_error());
+        assert(value == (status == ivy::ConvertStatus::OK ? 42.5 : 0.0));
+    }, "^VALUE (.*)$");
+    assert(subscription && original.start());
+    auto bus = std::move(original);
+    current_bus = &bus;
+    auto* binding = bus.native_handle()->bindings.back();
+    for (const char* text : {"", "bad", "1.5x", "1e9999", "nan", "42.5"})
+        dispatch_captures(binding, {text});
+    assert(statuses == std::vector<ivy::ConvertStatus>({
+        ivy::ConvertStatus::CONVERT_ERROR, ivy::ConvertStatus::CONVERT_ERROR,
+        ivy::ConvertStatus::CONVERT_ERROR, ivy::ConvertStatus::CONVERT_ERROR,
+        ivy::ConvertStatus::CONVERT_ERROR, ivy::ConvertStatus::OK}));
+    assert(errors == std::vector<std::string>({
+        "capture 1: cannot convert \"\" to double: empty numeric capture",
+        "capture 1: cannot convert \"bad\" to double: invalid numeric syntax",
+        "capture 1: cannot convert \"1.5x\" to double: trailing characters in numeric capture",
+        "capture 1: cannot convert \"1e9999\" to double: numeric value out of range",
+        "capture 1: cannot convert \"nan\" to double: expected a finite number", ""}));
+    assert(bus.state() == IVY_CTX_RUNNING && subscription->is_bound() && bus.take_callback_error());
+    assert(bus.conversion_error().empty() && original.conversion_error().empty());
+
+    // Two bad captures still report the first one and default all values.
+    auto first = bus.bind_convert([&](ivy::ConvertStatus status, long id, bool active) {
+        assert(status == ivy::ConvertStatus::CONVERT_ERROR && id == 0 && !active);
+        assert(bus.conversion_error() == "capture 1: cannot convert \"bad\" to long: invalid numeric syntax");
+    }, "^FIRST (.*) (.*)$");
+    assert(first);
+    dispatch_captures(bus.native_handle()->bindings.back(), {"bad", "also bad"});
+
+    auto other = require_bus(ivy::Bus::create("other conversion bus"));
+    std::string_view outer_view;
+    std::string outer_copy;
+    auto nested = bus.bind_convert([&](ivy::ConvertStatus status, long) {
+        assert(status == ivy::ConvertStatus::COUNT_ERROR);
+        assert(bus.conversion_error() == "capture count mismatch: expected 1, received 0");
+        assert(outer_view == outer_copy);
+    }, "^NESTED (.*)$");
+    assert(nested);
+    auto* nested_binding = bus.native_handle()->bindings.back();
+    auto nested_ok = bus.bind_convert([&](ivy::ConvertStatus status) {
+        assert(status == ivy::ConvertStatus::OK && bus.conversion_error().empty());
+        assert(outer_view == outer_copy);
+    }, "^NESTED_OK$");
+    assert(nested_ok);
+    auto* nested_ok_binding = bus.native_handle()->bindings.back();
+    auto other_subscription = other.bind_convert([&](ivy::ConvertStatus status, bool) {
+        assert(status == ivy::ConvertStatus::CONVERT_ERROR);
+        assert(other.conversion_error() ==
+            "capture 1: cannot convert \"no\" to bool: expected an integer or a value starting with f/F, t/T or v/V");
+        assert(bus.conversion_error() == outer_copy);
+    }, "^OTHER (.*)$");
+    assert(other_subscription);
+    auto* other_binding = other.native_handle()->bindings.back();
+    auto outer = bus.bind_convert([&](ivy::ConvertStatus status, long) {
+        assert(status == ivy::ConvertStatus::CONVERT_ERROR && other.conversion_error().empty());
+        outer_view = bus.conversion_error();
+        outer_copy = outer_view;
+        dispatch_captures(nested_binding, {});
+        dispatch_captures(nested_ok_binding, {});
+        dispatch_captures(other_binding, {"no"});
+        assert(bus.conversion_error() == outer_copy && outer_view == outer_copy);
+        assert(other.conversion_error().empty());
+    }, "^OUTER (.*)$");
+    assert(outer);
+    dispatch_captures(bus.native_handle()->bindings.back(), {"outer failure"});
+    assert(bus.conversion_error().empty() && other.conversion_error().empty());
+
+    // Exceptions restore the diagnostic context before the existing C boundary handles them.
+    auto throwing = require_bus(ivy::Bus::create("conversion context unwind"));
+    auto throws = throwing.bind_convert([&](ivy::ConvertStatus status, long) {
+        assert(status == ivy::ConvertStatus::CONVERT_ERROR && !throwing.conversion_error().empty());
+        throw 42;
+    }, "^THROW (.*)$");
+    assert(throws);
+    dispatch_captures(throwing.native_handle()->bindings.back(), {"bad"});
+    assert(throwing.conversion_error().empty());
+    expect_error(ivy::Error::callback_failed, throwing.take_callback_error());
+    static_assert(noexcept(bus.conversion_error()));
+}
+
+void concurrent_conversion_diagnostics() {
+    auto bus = require_bus(ivy::Bus::create("concurrent conversion diagnostics"));
+    std::latch entered(2), release(1);
+    auto make_callback = [&](std::string expected) {
+        return [&, expected = std::move(expected)](ivy::ConvertStatus status, long) {
+            assert(status == ivy::ConvertStatus::CONVERT_ERROR);
+            const auto error = bus.conversion_error();
+            assert(error == expected);
+            entered.count_down();
+            release.wait();
+            assert(error == expected && bus.conversion_error() == expected);
+        };
+    };
+    auto first = bus.bind_convert(make_callback(
+        "capture 1: cannot convert \"one\" to long: invalid numeric syntax"), "^ONE (.*)$");
+    assert(first);
+    auto* first_binding = bus.native_handle()->bindings.back();
+    auto second = bus.bind_convert(make_callback(
+        "capture 1: cannot convert \"two\" to long: invalid numeric syntax"), "^TWO (.*)$");
+    assert(second);
+    auto* second_binding = bus.native_handle()->bindings.back();
+    std::thread one([&] { dispatch_captures(first_binding, {"one"}); });
+    std::thread two([&] { dispatch_captures(second_binding, {"two"}); });
+    entered.wait();
+    assert(bus.conversion_error().empty());
+    release.count_down();
+    one.join();
+    two.join();
+    assert(bus.take_callback_error());
 }
 
 void change_preserves_subscription() {
@@ -659,7 +955,7 @@ void change_preserves_subscription() {
     {
         auto bus = require_bus(ivy::Bus::create("change"));
         int calls = 0;
-        auto result = bus.bind([count = std::make_unique<int>(0), &calls](IvyClientPtr, auto) {
+        auto result = bus.bind_raw([count = std::make_unique<int>(0), &calls](IvyClientPtr, auto) {
             calls = ++*count;
         }, "^OLD$");
         assert(result);
@@ -702,7 +998,7 @@ void change_preserves_subscription() {
 
 void change_and_unbind() {
     auto bus = require_bus(ivy::Bus::create("change and unbind"));
-    auto result = bus.bind([](IvyClientPtr, auto) {}, "^initial");
+    auto result = bus.bind_raw([](IvyClientPtr, auto) {}, "^initial");
     assert(result);
     const int before = unbind_count;
     during_change = [&] {
@@ -716,7 +1012,7 @@ void change_and_unbind() {
     expect_error(IVY_ESTATE, result->change("^unbound"));
     assert(result->unbind());
 
-    auto concurrent = bus.bind([](IvyClientPtr, auto) {}, "^concurrent");
+    auto concurrent = bus.bind_raw([](IvyClientPtr, auto) {}, "^concurrent");
     assert(concurrent);
     std::latch entered(1), release(1);
     during_change = [&] { entered.count_down(); release.wait(); };
@@ -733,7 +1029,7 @@ void change_and_unbind() {
 
     // Destruction from a C callback dispatched by change must also defer removal.
     std::optional<ivy::Subscription> self;
-    auto self_result = bus.bind([](IvyClientPtr, auto) {}, "^self");
+    auto self_result = bus.bind_raw([](IvyClientPtr, auto) {}, "^self");
     assert(self_result);
     self.emplace(std::move(*self_result));
     during_change = [&] { self.reset(); };
@@ -751,8 +1047,8 @@ void direct_token_lifetimes() {
         auto second = require_bus(ivy::Bus::create("second direct"));
         auto capture = std::make_shared<int>(42);
         weak_capture = capture;
-        auto a = first.bind([](IvyClientPtr, int, std::string_view) {});
-        auto b = second.bind([capture = std::move(capture)](IvyClientPtr, int, std::string_view) {});
+        auto a = first.bind_direct([](IvyClientPtr, int, std::string_view) {});
+        auto b = second.bind_direct([capture = std::move(capture)](IvyClientPtr, int, std::string_view) {});
         assert(a && b);
         *a = std::move(*b);
         assert(!b->is_bound() && a->is_bound());
@@ -767,26 +1063,26 @@ void direct_token_lifetimes() {
 void anchoring_boundary() {
     auto bus = require_bus(ivy::Bus::create("anchoring policy"));
     auto callback = [](IvyClientPtr, auto) {};
-    auto result = bus.bind(callback, "^PREFIX {}", 42);
+    auto result = bus.bind_raw(callback, "^PREFIX {}", 42);
     assert(result && validated_regexp == "^PREFIX 42");
     assert(result->change("^CHANGED {}", 43));
     assert(validated_regexp == "^CHANGED 43");
 
     std::string dynamic = "^DYNAMIC [0-9]{2}";
-    assert(bus.bind(callback, ivy::runtime_regexp(dynamic)));
+    assert(bus.bind_raw(callback, ivy::runtime_regexp(dynamic)));
     assert(validated_regexp == dynamic);
-    auto missing_anchor = bus.bind(callback, ivy::runtime_regexp("DYNAMIC"));
+    auto missing_anchor = bus.bind_raw(callback, ivy::runtime_regexp("DYNAMIC"));
     assert(!missing_anchor && missing_anchor.error() == ivy::make_error_code(IVY_EUNANCHORED));
 
     validation_error = IVY_ENOMEM;
-    auto failed = bus.bind(callback, "^REJECTED");
+    auto failed = bus.bind_raw(callback, "^REJECTED");
     assert(!failed && failed.error() == ivy::make_error_code(IVY_ENOMEM));
     expect_error(IVY_ENOMEM, result->change("^REJECTED"));
     assert(bus.native_handle()->bindings.front()->regexp == "^CHANGED 43");
     validation_error = IVY_OK;
 
     const int before = validations;
-    auto unanchored = bus.bind_unanchored(callback, "ANYWHERE {}", 44);
+    auto unanchored = bus.bind_raw_unanchored(callback, "ANYWHERE {}", 44);
     assert(unanchored && validations == before);
     assert(unanchored->change_unanchored("ELSEWHERE {}", 45));
     assert(validations == before);
@@ -877,6 +1173,11 @@ struct FailingCallback {
 
 struct FailingFormat { int kind; };
 
+struct FailingTypedCallback : FailingCallback {
+    using FailingCallback::FailingCallback;
+    void operator()(ivy::ConvertStatus, long) const {}
+};
+
 template<> struct std::formatter<FailingFormat> {
     constexpr auto parse(std::format_parse_context& context) { return context.begin(); }
     auto format(const FailingFormat& value, std::format_context& context) const {
@@ -894,7 +1195,7 @@ void nonthrowing_boundaries() {
     auto bus = require_bus(ivy::Bus::create("nonthrowing"));
     assert(bus.start());
     auto callback = [](IvyClientPtr, std::span<const std::string_view>) {};
-    auto subscription = bus.bind(callback, "^original");
+    auto subscription = bus.bind_raw(callback, "^original");
     assert(subscription);
     _clnt_lst_dict peer;
     for (bool allocation : {false, true}) {
@@ -904,18 +1205,22 @@ void nonthrowing_boundaries() {
         auto check = [&](auto result) { assert(!result && result.error() == expected); };
         check(ivy::Bus::create("bad application callback", std::nullopt, failing));
         check(ivy::Bus::create("bad die callback", std::nullopt, {}, failing));
-        check(bus.bind(failing, "^regexp"));
-        check(bus.bind(failing, ivy::runtime_regexp("^regexp")));
-        check(bus.bind(failing, "^regexp {}", 42));
-        check(bus.bind_unanchored(failing, "regexp"));
-        check(bus.bind_unanchored(failing, "regexp {}", 42));
-        check(bus.bind(failing));
-        check(bus.bind(failing, ivy::pong));
-        check(bus.bind(failing, ivy::remote_bindings));
-        check(bus.bind(failing, ivy::every(std::chrono::milliseconds(10))));
-        check(bus.bind(failing, ivy::every(std::chrono::milliseconds(10), 2)));
-        check(bus.bind(failing, ivy::after(std::chrono::milliseconds(0))));
+        check(bus.bind_raw(failing, "^regexp"));
+        check(bus.bind_raw(failing, ivy::runtime_regexp("^regexp")));
+        check(bus.bind_raw(failing, "^regexp {}", 42));
+        check(bus.bind_raw_unanchored(failing, "regexp"));
+        check(bus.bind_raw_unanchored(failing, "regexp {}", 42));
+        check(bus.bind_direct(failing));
+        check(bus.bind_event(failing, ivy::pong));
+        check(bus.bind_event(failing, ivy::remote_bindings));
+        check(bus.bind_event(failing, ivy::every(std::chrono::milliseconds(10))));
+        check(bus.bind_event(failing, ivy::every(std::chrono::milliseconds(10), 2)));
+        check(bus.bind_event(failing, ivy::after(std::chrono::milliseconds(0))));
         check(bus.set_transport_error_callback(failing));
+        FailingTypedCallback typed(allocation);
+        check(bus.bind_convert(typed, "^TYPED (.*)$"));
+        check(bus.bind_convert(typed, ivy::runtime_regexp("^TYPED (.*)$")));
+        check(bus.bind_convert(typed, "^TYPED {} (.*)$", 42));
     }
     for (int kind : {0, 1, 2, 3}) {
         FailingFormat failing{kind};
@@ -930,8 +1235,9 @@ void nonthrowing_boundaries() {
         const auto report = bus.send_report("{}", failing);
         assert(report.error == expected && !report.system_error);
         assert(report.matched == 0 && report.accepted == 0 && report.failed == 0);
-        check(bus.bind(callback, "^{}", failing));
-        check(bus.bind_unanchored(callback, "{}", failing));
+        check(bus.bind_raw(callback, "^{}", failing));
+        check(bus.bind_convert([](ivy::ConvertStatus, long) {}, "^{} (.*)$", failing));
+        check(bus.bind_raw_unanchored(callback, "{}", failing));
         check(subscription->change("^{}", failing));
         check(subscription->change_unanchored("{}", failing));
         assert(subscription->is_bound());
@@ -950,8 +1256,8 @@ void nonthrowing_boundaries() {
     static_assert(noexcept(bus.send(format, 42)));
     static_assert(noexcept(bus.send_report(format, 42)));
     static_assert(noexcept(bus.send(&peer, 1, format, 42)));
-    static_assert(noexcept(bus.bind(callback, "^regexp")));
-    static_assert(noexcept(bus.bind(callback, "^{}", 42)));
+    static_assert(noexcept(bus.bind_raw(callback, "^regexp")));
+    static_assert(noexcept(bus.bind_raw(callback, "^{}", 42)));
     static_assert(noexcept(subscription->change("^{}", 42)));
 }
 
@@ -968,12 +1274,12 @@ void event_subscriptions_and_ping() {
     _clnt_lst_dict peer{ctx}, foreign{};
     int pong_calls = 0, binding_calls = 0;
     expect_error(IVY_ESTATE, bus.send_ping(&peer));
-    auto pong = bus.bind([counter = std::make_unique<int>(0), &pong_calls, &peer]
+    auto pong = bus.bind_event([counter = std::make_unique<int>(0), &pong_calls, &peer]
         (IvyClientPtr app, int delay) {
             assert(app == &peer && (delay == 250 || delay == -1000));
             pong_calls = ++*counter;
         }, ivy::pong);
-    auto bindings = bus.bind([&](IvyClientPtr app, int id, std::string_view pattern, IvyBindEvent event) {
+    auto bindings = bus.bind_event([&](IvyClientPtr app, int id, std::string_view pattern, IvyBindEvent event) {
         assert(app == &peer && id == 4 && pattern == "^REMOTE$");
         assert(event == IvyAddBind || event == IvyRemoveBind || event == IvyFilterBind || event == IvyChangeBind);
         ++binding_calls;
@@ -993,23 +1299,23 @@ void event_subscriptions_and_ping() {
     expect_error(IVY_EIO, bus.send_ping(&peer));
     ping_error = IVY_OK;
     event_registration_error = IVY_ENOMEM;
-    expect_error(IVY_ENOMEM, bus.bind([](auto...) {}, ivy::pong));
-    expect_error(IVY_ENOMEM, bus.bind([](auto...) {}, ivy::remote_bindings));
+    expect_error(IVY_ENOMEM, bus.bind_event([](auto...) {}, ivy::pong));
+    expect_error(IVY_ENOMEM, bus.bind_event([](auto...) {}, ivy::remote_bindings));
     event_registration_error = IVY_OK;
     assert(pong->is_bound() && bindings->is_bound());
-    expect_error(IVY_EINVAL, bus.bind(ivy::Bus::PongCallback{}, ivy::pong));
-    expect_error(IVY_EINVAL, bus.bind(ivy::Bus::RemoteBindingsCallback{}, ivy::remote_bindings));
+    expect_error(IVY_EINVAL, bus.bind_event(ivy::Bus::PongCallback{}, ivy::pong));
+    expect_error(IVY_EINVAL, bus.bind_event(ivy::Bus::RemoteBindingsCallback{}, ivy::remote_bindings));
 
     const auto old_pong = ctx->pong;
     void* old_pong_data = ctx->pong_data;
-    auto replacement = bus.bind([](auto...) {}, ivy::pong);
+    auto replacement = bus.bind_event([](auto...) {}, ivy::pong);
     assert(replacement && !pong->is_bound() && bindings->is_bound());
     assert(pong->unbind());
     old_pong(&peer, old_pong_data, 250);
     assert(pong_calls == 2 && replacement->is_bound());
     const auto old_bind = ctx->remote_bindings;
     void* old_bind_data = ctx->remote_bindings_data;
-    auto replacement_bind = bus.bind([](auto...) {}, ivy::remote_bindings);
+    auto replacement_bind = bus.bind_event([](auto...) {}, ivy::remote_bindings);
     assert(replacement_bind && !bindings->is_bound() && bindings->unbind());
     old_bind(&peer, old_bind_data, 4, "^REMOTE$", IvyAddBind);
     assert(binding_calls == 4);
@@ -1021,13 +1327,13 @@ void event_subscriptions_and_ping() {
     assert(!ctx->pong && replacement_bind->is_bound());
     auto moved = std::move(bus);
     assert(replacement_bind->is_bound());
-    expect_error(IVY_ESTATE, bus.bind([](auto...) {}, ivy::pong));
-    expect_error(IVY_ESTATE, bus.bind([](auto...) {}, ivy::remote_bindings));
+    expect_error(IVY_ESTATE, bus.bind_event([](auto...) {}, ivy::pong));
+    expect_error(IVY_ESTATE, bus.bind_event([](auto...) {}, ivy::remote_bindings));
     expect_error(IVY_ESTATE, bus.send_ping(&peer));
     assert(moved.stop());
     assert(!replacement_bind->is_bound() && replacement_bind->unbind());
-    expect_error(IVY_ESTOPPED, moved.bind([](auto...) {}, ivy::pong));
-    expect_error(IVY_ESTOPPED, moved.bind([](auto...) {}, ivy::remote_bindings));
+    expect_error(IVY_ESTOPPED, moved.bind_event([](auto...) {}, ivy::pong));
+    expect_error(IVY_ESTOPPED, moved.bind_event([](auto...) {}, ivy::remote_bindings));
     expect_error(IVY_ESTOPPED, moved.send_ping(&peer));
 }
 
@@ -1038,8 +1344,8 @@ void event_callback_lifetimes() {
         {
             auto bus = require_bus(ivy::Bus::create("event lifetimes"));
             auto register_event = [&](auto callback) {
-                return remote ? bus.bind(std::move(callback), ivy::remote_bindings)
-                              : bus.bind(std::move(callback), ivy::pong);
+                return remote ? bus.bind_event(std::move(callback), ivy::remote_bindings)
+                              : bus.bind_event(std::move(callback), ivy::pong);
             };
             auto fire = [&] {
                 auto* ctx = bus.native_handle();
@@ -1081,8 +1387,8 @@ void event_callback_lifetimes() {
             auto capture = std::make_shared<int>(42);
             weak = capture;
             auto callback = [value = std::move(capture)](auto...) {};
-            auto result = remote ? bus.bind(std::move(callback), ivy::remote_bindings)
-                                 : bus.bind(std::move(callback), ivy::pong);
+            auto result = remote ? bus.bind_event(std::move(callback), ivy::remote_bindings)
+                                 : bus.bind_event(std::move(callback), ivy::pong);
             assert(result);
             survivor = std::move(*result);
             assert(!result->is_bound());
@@ -1100,7 +1406,7 @@ void timer_subscriptions() {
         assert(late == 3ms);
         calls = ++*counter;
     };
-    auto timer = bus.bind(std::move(callback), ivy::every(1s));
+    auto timer = bus.bind_event(std::move(callback), ivy::every(1s));
     assert(timer && timer->is_bound());
     auto* original = ctx->timers.back();
     assert(original->period == 1000);
@@ -1108,11 +1414,11 @@ void timer_subscriptions() {
     assert(calls == 1);
     expect_error(IVY_EINVAL, timer->set_period(0ms));
     expect_error(IVY_EINVAL, timer->set_period(-1ms));
-    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::every(0ms)));
-    expect_error(IVY_EINVAL, bus.bind(ivy::Bus::TimerCallback{}, ivy::every(1s)));
+    expect_error(IVY_EINVAL, bus.bind_event([](auto) {}, ivy::every(0ms)));
+    expect_error(IVY_EINVAL, bus.bind_event(ivy::Bus::TimerCallback{}, ivy::every(1s)));
     timer_error = IVY_ENOMEM;
     expect_error(IVY_ENOMEM, timer->set_period(20ms));
-    expect_error(IVY_ENOMEM, bus.bind([](auto) {}, ivy::every(20ms)));
+    expect_error(IVY_ENOMEM, bus.bind_event([](auto) {}, ivy::every(20ms)));
     timer_error = IVY_OK;
     timer_event(original, 3);
     assert(calls == 2 && !original->removed);
@@ -1128,11 +1434,11 @@ void timer_subscriptions() {
     timer_event(replacement, 3);
     assert(calls == 3);
 
-    auto other = bus.bind([](auto) {}, ivy::every(40ms));
+    auto other = bus.bind_event([](auto) {}, ivy::every(40ms));
     assert(other && timer->is_bound());
     auto moved = std::move(bus);
     assert(timer->is_bound() && other->is_bound());
-    expect_error(IVY_ESTATE, bus.bind([](auto) {}, ivy::every(1s)));
+    expect_error(IVY_ESTATE, bus.bind_event([](auto) {}, ivy::every(1s)));
     during_timer_create = [&] { assert(timer->unbind()); };
     expect_error(IVY_ESTATE, timer->set_period(30ms));
     during_timer_create = {};
@@ -1144,7 +1450,7 @@ void timer_subscriptions() {
     assert(moved.stop());
     assert(!other->is_bound());
     expect_error(IVY_ESTOPPED, other->set_period(1s));
-    expect_error(IVY_ESTOPPED, moved.bind([](auto) {}, ivy::every(1s)));
+    expect_error(IVY_ESTOPPED, moved.bind_event([](auto) {}, ivy::every(1s)));
     assert(other->unbind());
 }
 
@@ -1158,7 +1464,7 @@ void timer_callback_lifetimes() {
         auto capture = std::make_shared<int>(42);
         weak = capture;
         std::latch entered(1), release(1);
-        auto timer = bus.bind([value = std::move(capture), &entered, &release](auto) {
+        auto timer = bus.bind_event([value = std::move(capture), &entered, &release](auto) {
             entered.count_down();
             release.wait();
             assert(*value == 42);
@@ -1173,7 +1479,7 @@ void timer_callback_lifetimes() {
         assert(weak.expired() && native->removed);
 
         std::optional<ivy::TimerSubscription> self;
-        auto self_result = bus.bind([&](auto) { self.reset(); }, ivy::every(1s));
+        auto self_result = bus.bind_event([&](auto) { self.reset(); }, ivy::every(1s));
         assert(self_result);
         self.emplace(std::move(*self_result));
         native = ctx->timers.back();
@@ -1181,7 +1487,7 @@ void timer_callback_lifetimes() {
         assert(!self && native->removed);
 
         std::optional<ivy::TimerSubscription> changing;
-        auto changed = bus.bind([&](auto) { assert(changing->set_period(20ms)); }, ivy::every(1s));
+        auto changed = bus.bind_event([&](auto) { assert(changing->set_period(20ms)); }, ivy::every(1s));
         assert(changed);
         changing.emplace(std::move(*changed));
         native = ctx->timers.back();
@@ -1189,7 +1495,7 @@ void timer_callback_lifetimes() {
         assert(native->removed && ctx->timers.back()->period == 20 && changing->is_bound());
         assert(changing->unbind());
 
-        auto failing = bus.bind([](auto) { throw 42; }, ivy::every(1s));
+        auto failing = bus.bind_event([](auto) { throw 42; }, ivy::every(1s));
         assert(failing);
         timer_event(ctx->timers.back());
         expect_error(ivy::Error::callback_failed, bus.take_callback_error());
@@ -1199,7 +1505,7 @@ void timer_callback_lifetimes() {
         auto bus = require_bus(ivy::Bus::create("surviving timer"));
         auto capture = std::make_shared<int>(42);
         weak = capture;
-        auto timer = bus.bind([value = std::move(capture)](auto) {}, ivy::every(1s));
+        auto timer = bus.bind_event([value = std::move(capture)](auto) {}, ivy::every(1s));
         assert(timer);
         survivor = std::move(*timer);
         assert(!timer->is_bound());
@@ -1325,16 +1631,16 @@ void limited_timers() {
     using namespace std::chrono_literals;
     auto bus = require_bus(ivy::Bus::create("limited timers"));
     auto* ctx = bus.native_handle();
-    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::every(1ms, 0)));
-    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::every(1ms, -1)));
-    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::every(0ms, 1)));
-    expect_error(IVY_EINVAL, bus.bind([](auto) {}, ivy::after(-1ms)));
+    expect_error(IVY_EINVAL, bus.bind_event([](auto) {}, ivy::every(1ms, 0)));
+    expect_error(IVY_EINVAL, bus.bind_event([](auto) {}, ivy::every(1ms, -1)));
+    expect_error(IVY_EINVAL, bus.bind_event([](auto) {}, ivy::every(0ms, 1)));
+    expect_error(IVY_EINVAL, bus.bind_event([](auto) {}, ivy::after(-1ms)));
     assert(ctx->timers.empty());
 
     int calls = 0;
     auto capture = std::make_shared<int>(42);
     std::weak_ptr<int> weak = capture;
-    auto finite = bus.bind([value = std::move(capture), &calls](auto) {
+    auto finite = bus.bind_event([value = std::move(capture), &calls](auto) {
         assert(*value == 42);
         ++calls;
     }, ivy::every(1s, 3));
@@ -1359,7 +1665,7 @@ void limited_timers() {
 
     int once_calls = 0;
     during_timer_create = [&] { timer_event(ctx->timers.back()); };
-    auto once = bus.bind([&](auto) { ++once_calls; }, ivy::after(0ms));
+    auto once = bus.bind_event([&](auto) { ++once_calls; }, ivy::after(0ms));
     during_timer_create = {};
     assert(once && once->is_bound() && once_calls == 0);
     auto* immediate = ctx->timers.back();
@@ -1372,7 +1678,7 @@ void limited_timers() {
     assert(once_calls == 1 && !once->is_bound() && rescheduled->removed);
     expect_error(IVY_ESTATE, once->set_period(0ms));
 
-    auto expiring = bus.bind([&](auto) { ++once_calls; }, ivy::every(1ms, 1));
+    auto expiring = bus.bind_event([&](auto) { ++once_calls; }, ivy::every(1ms, 1));
     assert(expiring);
     auto* last = ctx->timers.back();
     during_timer_create = [&] { timer_event(last); };
@@ -1384,7 +1690,7 @@ void limited_timers() {
 
     TimerId cancelled;
     {
-        auto token = bus.bind([&](auto) { ++once_calls; }, ivy::after(1ms));
+        auto token = bus.bind_event([&](auto) { ++once_calls; }, ivy::after(1ms));
         assert(token);
         cancelled = ctx->timers.back();
     }
@@ -1394,7 +1700,7 @@ void limited_timers() {
     std::latch entered(1), release(1);
     capture = std::make_shared<int>(43);
     weak = capture;
-    auto in_progress = bus.bind([value = std::move(capture), &entered, &release](auto) {
+    auto in_progress = bus.bind_event([value = std::move(capture), &entered, &release](auto) {
         entered.count_down();
         release.wait();
         assert(*value == 43);
@@ -1433,13 +1739,13 @@ int main() {
     static_assert(!std::is_copy_assignable_v<ivy::DirectSubscription>);
     static_assert(std::is_nothrow_move_constructible_v<ivy::DirectSubscription>);
     static_assert(std::is_nothrow_move_assignable_v<ivy::DirectSubscription>);
-    static_assert(std::is_same_v<decltype(std::declval<ivy::Bus&>().bind(
+    static_assert(std::is_same_v<decltype(std::declval<ivy::Bus&>().bind_raw(
         std::declval<ivy::Bus::MessageCallback>(), "^regexp")),
         std::expected<ivy::Subscription, std::error_code>>);
-    static_assert(std::is_same_v<decltype(std::declval<ivy::Bus&>().bind(
+    static_assert(std::is_same_v<decltype(std::declval<ivy::Bus&>().bind_raw(
         std::declval<ivy::Bus::MessageCallback>(), "^{}", 42)),
         std::expected<ivy::Subscription, std::error_code>>);
-    static_assert(std::is_same_v<decltype(std::declval<ivy::Bus&>().bind(
+    static_assert(std::is_same_v<decltype(std::declval<ivy::Bus&>().bind_direct(
         std::declval<ivy::Bus::DirectCallback>())),
         std::expected<ivy::DirectSubscription, std::error_code>>);
     static_assert(!std::is_copy_constructible_v<ivy::Subscription>);
@@ -1463,10 +1769,10 @@ int main() {
     static_assert(!std::is_copy_constructible_v<ivy::TimerSubscription>);
     static_assert(std::is_nothrow_move_constructible_v<ivy::EventSubscription>);
     static_assert(std::is_nothrow_move_constructible_v<ivy::TimerSubscription>);
-    static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto...) {}, ivy::pong)));
-    static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto...) {}, ivy::remote_bindings)));
+    static_assert(noexcept(std::declval<ivy::Bus&>().bind_event([](auto...) {}, ivy::pong)));
+    static_assert(noexcept(std::declval<ivy::Bus&>().bind_event([](auto...) {}, ivy::remote_bindings)));
     constexpr auto schedule = ivy::every(std::chrono::milliseconds(1000));
-    static_assert(noexcept(std::declval<ivy::Bus&>().bind([](auto) {}, schedule)));
+    static_assert(noexcept(std::declval<ivy::Bus&>().bind_event([](auto) {}, schedule)));
     control_messages();
     bus_filters();
     event_subscriptions_and_ping();
@@ -1483,6 +1789,9 @@ int main() {
     subscription_lifetimes();
     concurrent_unbind();
     subscription_exceptions();
+    converted_subscriptions();
+    conversion_diagnostics();
+    concurrent_conversion_diagnostics();
     change_preserves_subscription();
     change_and_unbind();
     direct_token_lifetimes();

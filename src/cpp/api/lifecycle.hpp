@@ -22,7 +22,7 @@
  *         return 1;
  *     }
  *     auto& bus = *created;
- *     auto messages = bus.bind(
+ *     auto messages = bus.bind_raw(
  *         [](IvyClientPtr, std::span<const std::string_view> args) {
  *             std::cout << args[0] << '\n';
  *         }, R"(^HELLO (.*)$)");

@@ -18,14 +18,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto pongs = bus.bind([](IvyClientPtr, int delay_us) {
+    auto pongs = bus.bind_event([](IvyClientPtr, int delay_us) {
         if (delay_us < 0)
             std::cout << "Ping timed out: " << delay_us << " us\n";
         else
             std::cout << "Pong received in " << delay_us << " us\n";
     }, ivy::pong);
 
-    auto changes = bus.bind([&bus, ping_sent = false]
+    auto changes = bus.bind_event([&bus, ping_sent = false]
         (IvyClientPtr peer, int id, std::string_view regexp, IvyBindEvent event) mutable {
             std::cout << "Remote subscription " << id << ": " << regexp
                       << " (event " << event << ")\n";
@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
             }
         }, ivy::remote_bindings);
 
-    auto timer = bus.bind([&bus, ticks = 0U](std::chrono::milliseconds late) mutable {
+    auto timer = bus.bind_event([&bus, ticks = 0U](std::chrono::milliseconds late) mutable {
         const auto report = bus.send_report("TICK {}", ++ticks);
         std::cout << "Tick " << ticks << ", " << late.count() << " ms late, "
                   << report.accepted << '/' << report.matched << " frames accepted\n";

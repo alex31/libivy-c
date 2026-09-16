@@ -141,8 +141,8 @@ int main() {
     if (!created) return 1;
     auto& bus = *created;
     if (!bus.set_filters("CHECK")) return 2;
-    auto messages = bus.bind([](IvyClientPtr, auto) {}, "^CHECK (.*)$");
-    auto timer = bus.bind([](auto) {}, ivy::after(std::chrono::milliseconds(1)));
+    auto messages = bus.bind_raw([](IvyClientPtr, auto) {}, "^CHECK (.*)$");
+    auto timer = bus.bind_event([](auto) {}, ivy::after(std::chrono::milliseconds(1)));
     auto applications = bus.applications();
     if (!messages || !timer || !applications || !applications->empty()) return 3;
     if (!ivy::validate_anchored_regexp("^CHECK {}$", 42)) return 4;

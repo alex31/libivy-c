@@ -189,7 +189,7 @@ private:
     friend class Bus;
 };
 
-/// @brief Select the bus's pong callback in bind(callback, pong).
+/// @brief Select the bus's pong callback in bind_event(callback, pong).
 struct PongTag {};
 /// @brief Pong callback selector.
 inline constexpr PongTag pong{};

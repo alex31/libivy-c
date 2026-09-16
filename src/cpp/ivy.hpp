@@ -29,7 +29,8 @@
  * templates are included automatically from ivy_detail.hpp.
  *
  * Read the API by responsibility; every linked header retains its complete
- * contracts and examples. The original Bus call syntax is unchanged.
+ * contracts and examples. Subscriptions use bind_raw(), bind_convert(),
+ * bind_direct() or bind_event() according to the callback's purpose.
  *
  * Topic | Public header to read
  * ----- | ---------------------
@@ -80,8 +81,8 @@
  *     // set_filters(): api/filters.hpp. Filters this bus's remote regexp advertisements.
  *     if (!check(bus.set_filters("HELLO"))) return 1;
  *
- *     // bind(callback, regexp): api/messages.hpp; token lifetime: api/subscriptions.hpp.
- *     auto messages = bus.bind([&](IvyClientPtr peer, std::span<const std::string_view> args) {
+ *     // bind_raw(callback, regexp): api/messages.hpp; token lifetime: api/subscriptions.hpp.
+ *     auto messages = bus.bind_raw([&](IvyClientPtr peer, std::span<const std::string_view> args) {
  *         const auto info = bus.application(peer); // api/applications.hpp: owned (name, host).
  *         if (!check(info)) return;
  *         const auto& [name, host] = *info;
@@ -90,18 +91,18 @@
  *         check(bus.send_ping(peer));                 // api/send.hpp: reply goes to pongs.
  *     }, R"(^HELLO (.*)$)"); // Anchoring and format rules: api/regexp.hpp.
  *
- *     // bind(direct callback): api/messages.hpp. Text is borrowed during this call.
- *     auto direct = bus.bind([](IvyClientPtr, int id, std::string_view text) {
+ *     // bind_direct(direct callback): api/messages.hpp. Text is borrowed during this call.
+ *     auto direct = bus.bind_direct([](IvyClientPtr, int id, std::string_view text) {
  *         std::cout << "Direct " << id << ": " << text << '\n';
  *     });
  *
- *     // bind(callback, ivy::pong): api/callbacks.hpp.
- *     auto pongs = bus.bind([](IvyClientPtr, int delay_us) {
+ *     // bind_event(callback, ivy::pong): api/callbacks.hpp.
+ *     auto pongs = bus.bind_event([](IvyClientPtr, int delay_us) {
  *         std::cout << (delay_us < 0 ? "Ping timeout: " : "Pong: ") << delay_us << " us\n";
  *     }, ivy::pong);
  *
- *     // bind(callback, ivy::remote_bindings): api/callbacks.hpp.
- *     auto bindings = bus.bind([](IvyClientPtr, int id, std::string_view regexp, IvyBindEvent event) {
+ *     // bind_event(callback, ivy::remote_bindings): api/callbacks.hpp.
+ *     auto bindings = bus.bind_event([](IvyClientPtr, int id, std::string_view regexp, IvyBindEvent event) {
  *         std::cout << "Remote regexp " << id << ": " << regexp << " (event " << event << ")\n";
  *     }, ivy::remote_bindings);
  *
@@ -111,8 +112,8 @@
  *                 std::cerr << error.message() << " (OS " << os_error << ")\n";
  *             }))) return 1;
  *
- *     // bind(timer): api/timers.hpp; every(period, count): api/timer_types.hpp.
- *     auto sender = bus.bind([&bus, sequence = 0](std::chrono::milliseconds) mutable {
+ *     // bind_event(timer): api/timers.hpp; every(period, count): api/timer_types.hpp.
+ *     auto sender = bus.bind_event([&bus, sequence = 0](std::chrono::milliseconds) mutable {
  *         const auto report = bus.send_report("HELLO {}", ++sequence); // api/send.hpp: broadcast.
  *         // SendReport fields and partial failures: api/results.hpp.
  *         std::cout << report.accepted << '/' << report.matched << " accepted, "
@@ -121,8 +122,8 @@
  *         if (report.system_error) std::cerr << report.system_error.message() << '\n';
  *     }, ivy::every(1s, 3));
  *
- *     // bind(timer): api/timers.hpp; after(delay): api/timer_types.hpp.
- *     auto finish = bus.bind([&](std::chrono::milliseconds) {
+ *     // bind_event(timer): api/timers.hpp; after(delay): api/timer_types.hpp.
+ *     auto finish = bus.bind_event([&](std::chrono::milliseconds) {
  *         check(bus.stop()); // api/lifecycle.hpp: stop this bus after five seconds.
  *     }, ivy::after(5s));
  *

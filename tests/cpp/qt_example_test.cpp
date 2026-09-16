@@ -52,16 +52,16 @@ private slots:
         auto peer = ivy::Bus::create("qt-test-peer", "AGENT_READY");
         QVERIFY(peer);
         std::atomic<int> state_messages = 0, worker_messages = 0, typed_messages = 0, answers = 0;
-        auto states = peer->bind([&](IvyClientPtr, auto) { ++state_messages; }, "^qtdemo (ON|OFF)$");
-        auto workers = peer->bind([&](IvyClientPtr, auto) { ++worker_messages; },
+        auto states = peer->bind_raw([&](IvyClientPtr, auto) { ++state_messages; }, "^qtdemo (ON|OFF)$");
+        auto workers = peer->bind_raw([&](IvyClientPtr, auto) { ++worker_messages; },
                                   "^qtdemo worker thread ([0-9]+) seq ([0-9]+)$");
-        auto typed = peer->bind_unanchored([&](IvyClientPtr, auto args) {
+        auto typed = peer->bind_raw_unanchored([&](IvyClientPtr, auto args) {
             if (!args.empty() && (args[0] == "HELLO été 🌍 100%" || args[0] == "  message avec espaces 100%  "))
                 ++typed_messages;
         }, "(.*)");
-        auto pongs = peer->bind([&](IvyClientPtr, int delay) { if (delay >= 0) ++answers; }, ivy::pong);
+        auto pongs = peer->bind_event([&](IvyClientPtr, int delay) { if (delay >= 0) ++answers; }, ivy::pong);
         bool ping_sent = false;
-        auto ping = peer->bind([&](auto) {
+        auto ping = peer->bind_event([&](auto) {
             if (ping_sent) return;
             auto target = peer->find_application("QtDemo");
             if (target && target->has_value()) ping_sent = peer->send_ping(**target).has_value();
@@ -181,7 +181,7 @@ private slots:
         } block;
         auto peer = ivy::Bus::create("slow-peer");
         QVERIFY(peer);
-        auto blocker = peer->bind([&](auto) {
+        auto blocker = peer->bind_event([&](auto) {
             if (!block.requested) return;
             std::unique_lock lock(block.mutex);
             block.changed.wait_for(lock, 10s, [&] { return block.release; });

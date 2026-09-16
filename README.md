@@ -367,13 +367,26 @@ other user callback failures use `ivy::Error::callback_failed` in the
 `"ivy-cpp"` error category. `state()` and `native_handle()` are also available
 for lifecycle inspection.
 
-Subscriptions use one overloaded `bind` name, with the callback first:
+Subscriptions use explicit method names, with the callback first:
+
+| Method | Subscription |
+| --- | --- |
+| `bind_raw(callback, regexp)` | Regexp captures as `std::string_view` values |
+| `bind_convert(callback, regexp)` | Conversion status and typed regexp captures |
+| `bind_direct(callback)` | Direct message: sender, identifier and text |
+| `bind_event(callback, selector)` | Pong, remote subscription changes or timers |
 
 ```cpp
-auto messages = bus.bind(on_message, R"(^TRACK ([0-9]{2}) 100%$)");
-auto filtered = bus.bind(on_message, R"(^TRACK {} ([0-9]{{2}})$)", aircraft_id);
-auto direct = bus.bind(on_direct);
+auto messages = bus.bind_raw(on_message, R"(^TRACK ([0-9]{2}) 100%$)");
+auto filtered = bus.bind_raw(on_message, R"(^TRACK {} ([0-9]{{2}})$)", aircraft_id);
+auto direct = bus.bind_direct(on_direct);
 ```
+
+Migration: the former `bind(callback, regexp)`, `bind(callback)` and
+`bind(callback, selector)` calls become `bind_raw`, `bind_direct` and
+`bind_event`, respectively. `bind_unanchored` becomes `bind_raw_unanchored`.
+The old names are removed. Callback signatures, result types and subscription
+ownership retain their existing contracts.
 
 Regexp subscriptions are start-anchored by default. A `consteval` parameter
 type requires constant regexps and format strings to begin with `^`; missing
@@ -387,12 +400,12 @@ It does not add anchors or groups, preserving Ivy's `^MESSAGE_CLASS` filtering.
 Unanchored search requires an explicit operation:
 
 ```cpp
-auto anywhere = bus.bind_unanchored(on_message, R"(TRACK ([0-9]{2})$)");
-auto formatted_anywhere = bus.bind_unanchored(on_message, "TRACK {} (.*)", aircraft_id);
+auto anywhere = bus.bind_raw_unanchored(on_message, R"(TRACK ([0-9]{2})$)");
+auto formatted_anywhere = bus.bind_raw_unanchored(on_message, "TRACK {} (.*)", aircraft_id);
 ```
 
 For a dynamically constructed regexp that must remain anchored, use
-`bus.bind(on_message, ivy::runtime_regexp(expression))`. `runtime_regexp` borrows
+`bus.bind_raw(on_message, ivy::runtime_regexp(expression))`. `runtime_regexp` borrows
 the string for this call and does not opt out of validation: it still must
 start with `^`, and PCRE2 must recognize it as anchored. A dynamic format can
 be processed separately and its resulting regexp passed through this route.
@@ -402,6 +415,70 @@ be processed separately and its resulting regexp passed through this route.
 `(IvyClientPtr, int, std::string_view)`. Captures and direct-message text are
 borrowed views valid only for the callback invocation. Callback failures
 follow the same stop-and-record mechanism as application/die callbacks.
+
+Use `bind_convert(callback, regexp)` to receive converted captures directly:
+
+```cpp
+auto tracks = bus.bind_convert(
+    [&bus](ivy::ConvertStatus status, long id, double altitude, std::string_view name, bool active) {
+        if (status != ivy::ConvertStatus::OK) {
+            std::cerr << bus.conversion_error() << '\n';
+            return;
+        }
+        std::cout << id << ": " << name << " at " << altitude
+                  << (active ? " (active)\n" : " (inactive)\n");
+    }, R"(^TRACK (\S+) (\S+) (\S+) (\S+)$)");
+if (!tracks) {
+    std::cerr << tracks.error().message() << '\n';
+    return 1;
+}
+// Keep tracks alive while servicing the loop.
+```
+
+The first callback parameter must be `ivy::ConvertStatus`. The remaining
+signature determines the conversions, in capture order: only `long`, `double`,
+`std::string_view` and `bool`, passed by value, are accepted for captures.
+An optional `IvyClientPtr` immediately after the status receives the sender. The callback must return
+`void` and have an explicit, unambiguous signature: generic lambdas, overloaded
+call operators and other parameter types are rejected at compile time.
+Move-only captures, mutable/noexcept lambdas and function pointers work as with
+`bind_raw`. Dynamic expressions use `ivy::runtime_regexp(text)`; formatting uses
+`bind_convert(callback, "^TRACK {} (.*)$", id)` with the same rules as `bind_raw`.
+
+Integers are decimal and doubles accept decimal/scientific notation with a dot,
+independently of the current locale. Both accept a leading `+` or `-` and require
+the entire capture: whitespace, trailing text, empty numbers and out-of-range
+values are rejected. Doubles must be finite (`nan`/`inf` are rejected).
+Booleans first recognize complete decimal integers with an optional sign:
+zero (`0`, `-0`, `+000`) is false and every nonzero integer is true, including
+integers too large for `long`. Otherwise the first character decides:
+`f`/`F` is false, `t`/`T`/`v`/`V` is true (`false`, `TRUE`, `vrai`, etc.).
+Other initial characters and empty captures produce `CONVERT_ERROR`.
+No whitespace is trimmed; `0.0`, `1e2`, `yes` and ` true` are invalid booleans.
+String views preserve the capture without copying, including an empty string,
+and remain valid only during the callback.
+
+The callback runs for every received message, with `ivy::ConvertStatus::OK`,
+`COUNT_ERROR` if the number of captures differs, or `CONVERT_ERROR` if a capture
+cannot be converted. On either error, all capture parameters are default values
+(`0`, `0.0`, an empty view, `false`), including captures that converted successfully;
+the optional sender is preserved. The bus continues listening and
+`take_callback_error()` remains clear. Exceptions thrown by the user callback
+retain the usual callback error behavior.
+
+During the callback, `bus.conversion_error()` returns a `std::string_view` with
+the exact diagnostic, for example `capture count mismatch: expected 4, received 3`
+or `capture 2: cannot convert "bad" to double: invalid numeric syntax`.
+Conversion diagnostics identify the first failing capture (numbered from 1),
+its text, expected type and failure reason. The view remains valid until the
+callback returns; copy it to retain it. Repeated reads and nested callbacks
+preserve it, and each thread has its own callback context. The method returns
+an empty view on success or outside a typed callback on this bus and thread.
+If allocating the diagnostic fails, a fixed fallback message is used and the
+callback still runs.
+
+These checks happen on receipt, including after `subscription.change()`;
+registration validates the regexp but does not check its capture count.
 
 Without formatting arguments, the regexp is passed unchanged, including braces
 and percent signs. With one or more arguments, the header's template uses
@@ -428,7 +505,7 @@ while accessing that same token from another thread.
 Only `Subscription` provides `change()`, which retains the same native handle,
 callback and captured state while replacing the regexp. `DirectSubscription`
 provides only `unbind()` and `is_bound()` because a direct registration has no
-regexp. Change follows the same raw/formatted distinction as bind:
+regexp. Change follows the same raw/formatted distinction as bind_raw:
 
 ```cpp
 if (messages) {
@@ -449,7 +526,7 @@ if (filtered) {
 ```
 
 `change()` enforces anchoring even on a subscription originally created with
-`bind_unanchored`. Use `change_unanchored(regexp)` or
+`bind_raw_unanchored`. Use `change_unanchored(regexp)` or
 `change_unanchored(format, arguments...)` to explicitly allow search away from
 the start, or `change(ivy::runtime_regexp(expression))` to check a dynamic
 anchored regexp. The default forms deliberately have no implicit runtime
@@ -457,7 +534,7 @@ anchored regexp. The default forms deliberately have no implicit runtime
 
 Both change overloads return `std::expected<void, std::error_code>`. An inactive
 token returns `IVY_ESTATE`, and a stopped bus returns `IVY_ESTOPPED`. Input,
-formatting and allocation errors use the same conventions as bind. A failed
+formatting and allocation errors use the same conventions as bind_raw. A failed
 native change leaves the old regexp in place. Peer updates are asynchronous;
 messages already in flight may still reflect the old regexp.
 
@@ -538,7 +615,7 @@ Both forms return `std::expected<void, std::error_code>` and do not need a Bus.
 Missing/effective unanchoring returns `IVY_EUNANCHORED`; invalid syntax, embedded
 NUL or interval expansion errors return `IVY_EINVAL`. Allocation failures return
 `IVY_ENOMEM`, and a C library without PCRE2 returns `IVY_ESTATE`. A literal missing
-`^` returns an error here, whereas bind() checks its constant regexp at compilation.
+`^` returns an error here, whereas bind_raw() checks its constant regexp at compilation.
 
 ### Configuring filters in C++23
 
@@ -575,13 +652,13 @@ advertisements. The original received-message subscriptions are unaffected.
 
 ### Pong, remote subscriptions and timers
 
-`bind()` also accepts a selector after its callback:
+`bind_event()` accepts a selector after its callback:
 
 | Registration | Callback arguments | Returned token |
 | --- | --- | --- |
-| `bus.bind(callback, ivy::pong)` | `IvyClientPtr`, delay as `int` microseconds (negative on timeout) | `EventSubscription` |
-| `bus.bind(callback, ivy::remote_bindings)` | `IvyClientPtr`, regexp ID, `std::string_view`, `IvyBindEvent` | `EventSubscription` |
-| `bus.bind(callback, ivy::every(1s))` | `std::chrono::milliseconds` of lateness relative to scheduled expiry | `TimerSubscription` |
+| `bus.bind_event(callback, ivy::pong)` | `IvyClientPtr`, delay as `int` microseconds (negative on timeout) | `EventSubscription` |
+| `bus.bind_event(callback, ivy::remote_bindings)` | `IvyClientPtr`, regexp ID, `std::string_view`, `IvyBindEvent` | `EventSubscription` |
+| `bus.bind_event(callback, ivy::every(1s))` | `std::chrono::milliseconds` of lateness relative to scheduled expiry | `TimerSubscription` |
 
 All return `std::expected<Token, std::error_code>`. Selectors distinguish event
 kinds even with generic lambdas. Keep the result or its token alive. Tokens are
@@ -600,7 +677,7 @@ acceptance; the reply or timeout is delivered later to the pong callback.
 
 ```cpp
 using namespace std::chrono_literals;
-auto timer = bus.bind([](std::chrono::milliseconds lateness) {
+auto timer = bus.bind_event([](std::chrono::milliseconds lateness) {
     std::cout << "Tick, " << lateness.count() << " ms late\n";
 }, ivy::every(1s));
 if (!timer) {
@@ -617,7 +694,7 @@ if (auto changed = timer->set_period(500ms); !changed) {
 the callback a positive number of times. `ivy::after(delay)` invokes it once.
 Periods must be positive milliseconds representable as a C `long`; after() also
 accepts zero to run at the next native loop opportunity, never synchronously
-inside bind(). Negative delays and zero/negative repetition counts are errors.
+inside bind_event(). Negative delays and zero/negative repetition counts are errors.
 Every registration creates an independent timer on the bus's event loop. Creation, `set_period()` and `unbind()` may be called from another thread
 or from within the callback. Changing the period starts a new schedule with the
 same captures and number of invocations remaining; it does not reset the count.

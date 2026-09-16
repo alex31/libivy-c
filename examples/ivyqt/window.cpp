@@ -225,20 +225,20 @@ std::expected<void, std::error_code> MainWindow::start(std::optional<std::string
         [this](IvyClientPtr, int) { emit closeRequested(); });
     if (!created) return std::unexpected(created.error());
     bus_.emplace(std::move(*created));
-    auto subscription = bus_->bind_unanchored([this](IvyClientPtr peer, std::span<const std::string_view> args) {
+    auto subscription = bus_->bind_raw_unanchored([this](IvyClientPtr peer, std::span<const std::string_view> args) {
         receive(peer, args.empty() ? std::string_view{} : args[0], "Message");
     }, "(.*)");
     if (!subscription) return std::unexpected(subscription.error());
     messages_.emplace(std::move(*subscription));
-    auto direct = bus_->bind([this](IvyClientPtr peer, int id, std::string_view message) {
+    auto direct = bus_->bind_direct([this](IvyClientPtr peer, int id, std::string_view message) {
         receive(peer, message, QString("Direct %1").arg(id));
     });
     if (!direct) return std::unexpected(direct.error());
     direct_.emplace(std::move(*direct));
-    auto pongs = bus_->bind([this](IvyClientPtr peer, int delay) { receivePong(peer, delay); }, ivy::pong);
+    auto pongs = bus_->bind_event([this](IvyClientPtr peer, int delay) { receivePong(peer, delay); }, ivy::pong);
     if (!pongs) return std::unexpected(pongs.error());
     pongs_.emplace(std::move(*pongs));
-    auto timer = bus_->bind([this](auto) { scanPings(); }, ivy::every(250ms));
+    auto timer = bus_->bind_event([this](auto) { scanPings(); }, ivy::every(250ms));
     if (!timer) return std::unexpected(timer.error());
     ping_timer_.emplace(std::move(*timer));
 

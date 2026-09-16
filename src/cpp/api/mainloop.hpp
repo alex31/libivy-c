@@ -12,7 +12,7 @@
  * auto created = ivy::Bus::create("loop-example", "ready");
  * if (!created) return 1;
  * auto& bus = *created;
- * auto finish = bus.bind([&bus](std::chrono::milliseconds) {
+ * auto finish = bus.bind_event([&bus](std::chrono::milliseconds) {
  *     (void)bus.stop();
  * }, ivy::after(std::chrono::seconds(1)));
  * if (!finish || !bus.start()) return 1;

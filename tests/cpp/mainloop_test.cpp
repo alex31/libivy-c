@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
         auto bus = create();
         const auto owner = std::this_thread::get_id();
         int calls = 0;
-        auto timer = bus.bind([&, capture = std::make_unique<int>(42)](auto) {
+        auto timer = bus.bind_event([&, capture = std::make_unique<int>(42)](auto) {
             assert(*capture == 42);
             assert(std::this_thread::get_id() == owner);
             ++calls;
@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
     }
     {
         auto bus = create();
-        auto timer = bus.bind([](auto) { throw std::runtime_error("callback"); }, ivy::after(0ms));
+        auto timer = bus.bind_event([](auto) { throw std::runtime_error("callback"); }, ivy::after(0ms));
         assert(timer && bus.start(argv[1]));
         assert(bus.run()); // Callback errors are not driver errors and are not consumed.
         assert(bus.take_callback_error().error() == ivy::make_error_code(ivy::Error::callback_failed));
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
         std::mutex mutex;
         std::condition_variable changed;
         bool entered = false, release = false;
-        auto timer = bus.bind([&](auto) {
+        auto timer = bus.bind_event([&](auto) {
             std::unique_lock lock(mutex);
             entered = true;
             changed.notify_all();
@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
         std::thread creator([&] {
             begin.arrive_and_wait();
             for (int j = 0; j < 8; ++j) {
-                auto timer = bus.bind([](auto) {}, ivy::after(1ms));
+                auto timer = bus.bind_event([](auto) {}, ivy::after(1ms));
                 assert(timer || timer.error() == ivy::make_error_code(IVY_ESTOPPED));
             }
         });

@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
         bool entered = false, release = false;
         std::atomic<int> completed = 0;
         std::thread::id callback_thread;
-        auto timer = bus.bind([&](auto) {
+        auto timer = bus.bind_event([&](auto) {
             std::unique_lock lock(mutex);
             callback_thread = std::this_thread::get_id();
             entered = true; changed.notify_all();
@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
         auto bus = create();
         std::latch published(1), checked(1);
         ivy::LoopThread* owner = nullptr;
-        auto timer = bus.bind([&](auto) {
+        auto timer = bus.bind_event([&](auto) {
             published.wait();
             assert(owner->join().error() == ivy::make_error_code(IVY_ESTATE));
             assert(bus.request_stop());
@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
     }
     {
         auto bus = create();
-        auto timer = bus.bind([](auto) { throw std::runtime_error("Ivy callback"); }, ivy::after(0ms));
+        auto timer = bus.bind_event([](auto) { throw std::runtime_error("Ivy callback"); }, ivy::after(0ms));
         assert(timer && bus.start(argv[1]));
         auto loop = ivy::LoopThread::create(bus);
         assert(loop && loop->join());
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     }
     {
         auto bus = create();
-        auto timer = bus.bind([&](auto) { assert(bus.request_stop()); }, ivy::after(0ms));
+        auto timer = bus.bind_event([&](auto) { assert(bus.request_stop()); }, ivy::after(0ms));
         assert(timer && bus.start(argv[1]));
         auto loop = ivy::LoopThread::create(bus, [] { throw std::runtime_error("completion"); });
         assert(loop);

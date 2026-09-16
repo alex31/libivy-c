@@ -15,13 +15,13 @@ int main(int argc, char** argv) {
     auto created = ivy::glib::create_bus("cpp-glib", "ready");
     if (!check(created)) return 1;
     auto& bus = *created;
-    auto messages = bus.bind([](IvyClientPtr, std::span<const std::string_view> args) {
+    auto messages = bus.bind_raw([](IvyClientPtr, std::span<const std::string_view> args) {
         std::cout << "Received: " << args[0] << '\n';
     }, "^HELLO (.*)$");
-    auto sender = bus.bind([&](auto) {
+    auto sender = bus.bind_event([&](auto) {
         check(bus.send("HELLO from GLib"));
     }, ivy::every(200ms));
-    auto stop = bus.bind([&](auto) {
+    auto stop = bus.bind_event([&](auto) {
         check(bus.stop());
         std::cout << "Ivy stopped; the GLib application loop continues\n";
     }, ivy::after(1s));

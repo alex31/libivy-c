@@ -8,6 +8,21 @@
 
 namespace ivy {
 
+thread_local detail::ConversionContext* detail::ConversionContext::current = nullptr;
+
+detail::ConversionContext::ConversionContext(const void* owner, std::string_view error) noexcept
+    : owner(owner), error(error), previous(current) { current = this; }
+
+detail::ConversionContext::~ConversionContext() { current = previous; }
+
+std::string_view Bus::conversion_error() const noexcept {
+    if (!impl_) return {};
+    for (auto* context = detail::ConversionContext::current; context; context = context->previous) {
+        if (context->owner == impl_.get()) return context->error;
+    }
+    return {};
+}
+
 std::expected<void, std::error_code> validate_anchored_regexp(std::string_view expression) noexcept {
     if (expression.find('\0') != std::string_view::npos) return detail::status_result(IVY_EINVAL);
     return detail::guard<std::expected<void, std::error_code>>(make_error_code(IVY_EINVAL), [&] {

@@ -136,7 +136,7 @@
      * @return Empty success when accepted locally; IVY_ESTATE if not running or no
      * pong subscription is installed, IVY_ESTOPPED after stop, IVY_EINVAL for an
      * invalid peer, or a native send error. Success is not a received pong.
-     * @see bind(Callback&&,PongTag)
+     * @see bind_event(Callback&&,PongTag)
      */
     [[nodiscard]] std::expected<void, std::error_code> send_ping(IvyClientPtr peer) noexcept;
 

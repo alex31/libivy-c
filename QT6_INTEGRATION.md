@@ -46,7 +46,7 @@ d’un benchmark.
 
 ## Moniteur de messages et de pings livré
 
-L’exemple souscrit à `(.*)` avec `bind_unanchored()` et reçoit également les
+L’exemple souscrit à `(.*)` avec `bind_raw_unanchored()` et reçoit également les
 messages directs. Son journal conserve le texte complet, l’adresse numérique,
 le port TCP annoncé, le nom du pair et le timestamp pris avant la mise en file
 Qt. `Bus::application_info()` ajoute le snapshot C++ possédé correspondant,

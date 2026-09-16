@@ -51,30 +51,39 @@ int main() {
 
     auto bus = require_bus(ivy::Bus::create("anchoring"));
     auto callback = [](IvyClientPtr, auto) {};
-    auto valid = bus.bind(callback, R"(^TRACK ([0-9]{2}) 100%$)");
+    auto valid = bus.bind_raw(callback, R"(^TRACK ([0-9]{2}) 100%$)");
     assert(valid);
-    auto alternative = bus.bind(callback, "^FOO|BAR");
+    auto alternative = bus.bind_raw(callback, "^FOO|BAR");
     assert(!alternative && alternative.error() == ivy::make_error_code(IVY_EUNANCHORED));
     assert(alternative.error().message() == "regexp must start with '^' and be anchored");
-    auto injected = bus.bind(callback, "^FOO {}", "X|BAR");
+    auto injected = bus.bind_raw(callback, "^FOO {}", "X|BAR");
     assert(!injected && injected.error() == ivy::make_error_code(IVY_EUNANCHORED));
-    auto interval = bus.bind(callback, "^RANGE (?I{}#{}i)$", -10, 20);
+    auto interval = bus.bind_raw(callback, "^RANGE (?I{}#{}i)$", -10, 20);
     assert(interval);
-    auto malformed_interval = bus.bind(callback, "^RANGE (?Ibad)");
+    auto malformed_interval = bus.bind_raw(callback, "^RANGE (?Ibad)");
     assert(!malformed_interval && malformed_interval.error() == ivy::make_error_code(IVY_EINVAL));
     auto invalid_change = valid->change("^FOO|BAR");
     assert(!invalid_change && invalid_change.error() == ivy::make_error_code(IVY_EUNANCHORED));
     assert(valid->is_bound());
     std::string dynamic = "^DYNAMIC ([0-9]{2})$";
     assert(valid->change(ivy::runtime_regexp(dynamic)));
-    auto dynamic_missing = bus.bind(callback, ivy::runtime_regexp("DYNAMIC"));
+    auto dynamic_missing = bus.bind_raw(callback, ivy::runtime_regexp("DYNAMIC"));
     assert(!dynamic_missing && dynamic_missing.error() == ivy::make_error_code(IVY_EUNANCHORED));
-    auto invalid_syntax = bus.bind(callback, "^(");
+    auto invalid_syntax = bus.bind_raw(callback, "^(");
     assert(!invalid_syntax && invalid_syntax.error() == ivy::make_error_code(IVY_EINVAL));
 
-    auto unanchored = bus.bind_unanchored(callback, "FOO|BAR");
+    auto typed = bus.bind_convert([](ivy::ConvertStatus, long) {}, "^TYPED (.*)$");
+    assert(typed);
+    auto typed_missing = bus.bind_convert([](ivy::ConvertStatus, long) {}, ivy::runtime_regexp("TYPED (.*)$"));
+    assert(!typed_missing && typed_missing.error() == ivy::make_error_code(IVY_EUNANCHORED));
+    auto typed_syntax = bus.bind_convert([](ivy::ConvertStatus, long) {}, "^(");
+    assert(!typed_syntax && typed_syntax.error() == ivy::make_error_code(IVY_EINVAL));
+    auto typed_injected = bus.bind_convert([](ivy::ConvertStatus, long) {}, "^TYPED {} (.*)$", "X|BAR");
+    assert(!typed_injected && typed_injected.error() == ivy::make_error_code(IVY_EUNANCHORED));
+
+    auto unanchored = bus.bind_raw_unanchored(callback, "FOO|BAR");
     assert(unanchored);
-    auto malformed_unanchored = bus.bind_unanchored(callback, "(?Ibad)");
+    auto malformed_unanchored = bus.bind_raw_unanchored(callback, "(?Ibad)");
     assert(!malformed_unanchored && malformed_unanchored.error() == ivy::make_error_code(IVY_EINVAL));
     auto malformed_change = unanchored->change_unanchored("(?I1#2");
     assert(!malformed_change && unanchored->is_bound());

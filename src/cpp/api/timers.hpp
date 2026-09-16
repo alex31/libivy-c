@@ -36,7 +36,7 @@
      * @see TimerSubscription::set_period() cpp_event_callbacks
      */
     template<class Callback>
-    [[nodiscard]] TimerBindResult bind(Callback&& callback, Every schedule) noexcept;
+    [[nodiscard]] TimerBindResult bind_event(Callback&& callback, Every schedule) noexcept;
 
     /**
      * @brief Register one delayed invocation on this bus's event loop.
@@ -48,7 +48,7 @@
      * then; destruction cancels an invocation that has not yet been selected.
      */
     template<class Callback>
-    [[nodiscard]] TimerBindResult bind(Callback&& callback, After schedule) noexcept;
+    [[nodiscard]] TimerBindResult bind_event(Callback&& callback, After schedule) noexcept;
 // IVY_CPP_API_END
 
 #endif

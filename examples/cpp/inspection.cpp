@@ -43,9 +43,9 @@ int main(int argc, char** argv) {
         }
     };
 
-    auto once = bus.bind(inspect, ivy::after(250ms));
-    auto repeated = bus.bind(inspect, ivy::every(1s, 3));
-    auto finish = bus.bind([&bus](std::chrono::milliseconds) {
+    auto once = bus.bind_event(inspect, ivy::after(250ms));
+    auto repeated = bus.bind_event(inspect, ivy::every(1s, 3));
+    auto finish = bus.bind_event([&bus](std::chrono::milliseconds) {
         if (auto stopped = bus.stop(); !stopped)
             std::cerr << stopped.error().message() << '\n';
     }, ivy::after(4s));

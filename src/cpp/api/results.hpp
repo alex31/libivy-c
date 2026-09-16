@@ -31,6 +31,13 @@
 // IVY_CPP_API_BEGIN
 namespace ivy {
 
+/** @brief Result of converting one message for a bind_convert callback. */
+enum class ConvertStatus {
+    OK,            ///< Every capture was converted successfully.
+    COUNT_ERROR,   ///< The capture count differs from the callback's value parameter count.
+    CONVERT_ERROR  ///< A capture cannot be converted to its expected type.
+};
+
 /**
  * @brief C++-specific errors in the "ivy-cpp" category.
  *

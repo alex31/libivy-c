@@ -7,7 +7,7 @@ restent des appels directs à l’API MT-safe.
 
 ## Messages reçus
 
-L’abonnement est exactement `(.*)`, enregistré par `bind_unanchored()` pour
+L’abonnement est exactement `(.*)`, enregistré par `bind_raw_unanchored()` pour
 respecter le choix explicite des regexps non ancrées dans le wrapper C++.
 Le journal conserve tous les messages reçus pendant la session, y compris les
 messages ready et les messages directs, avec les colonnes :

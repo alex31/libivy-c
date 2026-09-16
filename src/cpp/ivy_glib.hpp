@@ -29,7 +29,7 @@
  * auto created = ivy::glib::create_bus("gtk-listener", "ready");
  * if (!created) return 1;
  * auto& bus = *created;
- * auto subscription = bus.bind([](IvyClientPtr, std::span<const std::string_view> args) {
+ * auto subscription = bus.bind_raw([](IvyClientPtr, std::span<const std::string_view> args) {
  *     // Use/copy args here. The callback executes on the GLib/GTK loop thread.
  * }, "^HELLO (.*)$");
  * if (!subscription || !bus.start()) return 1;

@@ -116,20 +116,20 @@ int main(int argc, char** argv) {
         assert(!peer_a.application(nullptr) && !peer_a.application_regexps(nullptr));
         std::atomic<int> pongs_a{0}, pongs_b{0}, remote_added{0}, remote_changed{0}, remote_removed{0};
         std::atomic<int> ticks_a{0}, ticks_b{0}, replacement_pongs{0}, once_ticks{0}, limited_ticks{0};
-        auto once_timer = require_bind(bus_a.bind([&](auto) { ++once_ticks; }, ivy::after(0ms)));
+        auto once_timer = require_bind(bus_a.bind_event([&](auto) { ++once_ticks; }, ivy::after(0ms)));
         assert(once_ticks == 0 && once_timer.is_bound());
         std::atomic<int> filter_rejected_a{0}, filter_rejected_b{0}, filter_hits_a{0}, filter_hits_b{0};
         int observed_id = -1;
         IvyClientPtr observed_peer = nullptr;
-        auto pong_a = require_bind(peer_a.bind([&](IvyClientPtr peer, int delay) {
+        auto pong_a = require_bind(peer_a.bind_event([&](IvyClientPtr peer, int delay) {
             if (!peer || delay < 0) ++unexpected;
             ++pongs_a;
         }, ivy::pong));
-        auto pong_b = require_bind(peer_b.bind([&](IvyClientPtr peer, int delay) {
+        auto pong_b = require_bind(peer_b.bind_event([&](IvyClientPtr peer, int delay) {
             if (!peer || delay < 0) ++unexpected;
             ++pongs_b;
         }, ivy::pong));
-        auto observer = require_bind(peer_a.bind(
+        auto observer = require_bind(peer_a.bind_event(
             [&](IvyClientPtr peer, int id, std::string_view regexp, IvyBindEvent event) {
                 if (!peer) ++unexpected;
                 if (regexp == "^OBSERVED$" && event == IvyAddBind) {
@@ -146,45 +146,62 @@ int main(int argc, char** argv) {
             }, ivy::remote_bindings));
         std::atomic<int> messages_a{0}, messages_b{0}, direct_a{0}, direct_b{0}, once_count{0};
         std::atomic<int> anywhere_count{0}, interval_count{0};
-        auto anywhere = require_bind(bus_a.bind_unanchored(
+        std::atomic<int> converted_count{0}, conversion_errors{0};
+        constexpr std::string_view converted_regexp = R"(^TYPED (\S+) (\S+) (.*) (\S+)$)";
+        auto converted = require_bind(bus_a.bind_convert(
+            [&converted_count, &conversion_errors, &unexpected, &bus_a]
+            (ivy::ConvertStatus status, IvyClientPtr sender, long id, double altitude, std::string_view name, bool active) {
+                if (status != ivy::ConvertStatus::OK) {
+                    if (status != ivy::ConvertStatus::CONVERT_ERROR || !sender || id != 0 ||
+                        altitude != 0.0 || !name.empty() || active || bus_a.conversion_error() !=
+                        "capture 2: cannot convert \"bad\" to double: invalid numeric syntax")
+                        ++unexpected;
+                    ++conversion_errors;
+                    return;
+                }
+                if (!sender || id != -42 || altitude != 125.5 || name != "test aircraft" || !active)
+                    ++unexpected;
+                ++converted_count;
+            }, converted_regexp));
+        auto anywhere = require_bind(bus_a.bind_raw_unanchored(
             [&anywhere_count, &unexpected](IvyClientPtr, auto args) {
                 if (args.size() != 1 || args[0] != "42")
                     ++unexpected;
                 ++anywhere_count;
             }, R"(NEEDLE ([0-9]{2})$)"));
-        auto interval = require_bind(bus_a.bind(
+        auto interval = require_bind(bus_a.bind_raw(
             [&interval_count, &unexpected](IvyClientPtr, auto args) {
                 if (args.size() != 1 || args[0] != "2")
                     ++unexpected;
                 ++interval_count;
             }, R"(^RANGE ((?I1#3i))$)"));
-        auto message_a = require_bind(bus_a.bind(
+        auto message_a = require_bind(bus_a.bind_raw(
             [token = std::make_unique<int>(42), &messages_a, &unexpected]
             (IvyClientPtr, std::span<const std::string_view> args) {
                 if (*token != 42 || args.size() != 1 || args[0] != "42")
                     ++unexpected;
                 ++messages_a;
             }, R"(^CPP ([0-9]{2}) 100%$)"));
-        auto message_b = require_bind(bus_b.bind(
+        auto message_b = require_bind(bus_b.bind_raw(
             [token = std::make_unique<int>(17), &messages_b, &unexpected](IvyClientPtr, auto args) {
                 if (*token != 17 || args.size() != 1 || args[0] != "17")
                     ++unexpected;
                 ++messages_b;
             }, R"(^CPP {} ([0-9]{{2}}) 100%$)", 23));
-        auto direct_subscription_a = require_bind(bus_a.bind(
+        auto direct_subscription_a = require_bind(bus_a.bind_direct(
             [&direct_a, &unexpected](IvyClientPtr, int id, std::string_view message) {
                 if (id != 101 || message != "direct-a")
                     ++unexpected;
                 ++direct_a;
             }));
-        auto direct_subscription_b = require_bind(bus_b.bind(
+        auto direct_subscription_b = require_bind(bus_b.bind_direct(
             [&direct_b, &unexpected](IvyClientPtr, int id, std::string_view message) {
                 if (id != 102 || message != "direct-b")
                     ++unexpected;
                 ++direct_b;
             }));
         std::optional<ivy::Subscription> once;
-        once.emplace(require_bind(bus_a.bind([&once, &once_count](IvyClientPtr, auto) {
+        once.emplace(require_bind(bus_a.bind_raw([&once, &once_count](IvyClientPtr, auto) {
             once.reset();
             ++once_count;
         }, "^ONCE$")));
@@ -199,7 +216,7 @@ int main(int argc, char** argv) {
             registrars.emplace_back([&, worker] {
                 gate.arrive_and_wait();
                 for (int item = 0; item < registrations; ++item)
-                    parallel[worker].push_back(require_bind(bus_a.bind(
+                    parallel[worker].push_back(require_bind(bus_a.bind_raw(
                         [](IvyClientPtr, auto) {}, R"(^PAR {} {} ([0-9]{{2}})$)", worker, item)));
             });
         }
@@ -284,7 +301,7 @@ int main(int argc, char** argv) {
         require_start(peer_a.send_ping(receiver_a), "ping A");
         require_start(peer_b.send_ping(receiver_b), "ping B");
         wait_for([&] { return pongs_a == 1 && pongs_b == 1; }, "pong callbacks timed out");
-        auto new_pong = require_bind(peer_a.bind([&](IvyClientPtr, int delay) {
+        auto new_pong = require_bind(peer_a.bind_event([&](IvyClientPtr, int delay) {
             if (delay < 0) ++unexpected;
             ++replacement_pongs;
         }, ivy::pong));
@@ -296,7 +313,7 @@ int main(int argc, char** argv) {
         auto no_pong = peer_a.send_ping(receiver_a);
         assert(!no_pong && no_pong.error() == ivy::make_error_code(IVY_ESTATE));
 
-        auto observed = require_bind(bus_a.bind([](auto...) {}, "^OBSERVED$"));
+        auto observed = require_bind(bus_a.bind_raw([](auto...) {}, "^OBSERVED$"));
         wait_for([&] { return remote_added > 0; }, "remote bind notification timed out");
         require_start(observed.change("^OBSERVED_CHANGED$"), "observed change");
         wait_for([&] { return remote_changed > 0; }, "remote change notification timed out");
@@ -306,16 +323,16 @@ int main(int argc, char** argv) {
 
         wait_for([&] { return once_ticks == 1; }, "one-shot timer before start timed out");
         assert(!once_timer.is_bound());
-        auto finite_timer = require_bind(moved_b.bind([&](auto) { ++limited_ticks; }, ivy::every(5ms, 3)));
+        auto finite_timer = require_bind(moved_b.bind_event([&](auto) { ++limited_ticks; }, ivy::every(5ms, 3)));
         wait_for([&] { return limited_ticks == 3; }, "limited timer timed out");
         assert(!finite_timer.is_bound());
 
         // Register and change timers from a thread other than either event loop.
-        auto timer_a = require_bind(bus_a.bind([&](std::chrono::milliseconds late) {
+        auto timer_a = require_bind(bus_a.bind_event([&](std::chrono::milliseconds late) {
             if (late < 0ms) ++unexpected;
             ++ticks_a;
         }, ivy::every(10ms)));
-        auto timer_b = require_bind(moved_b.bind([&](std::chrono::milliseconds late) {
+        auto timer_b = require_bind(moved_b.bind_event([&](std::chrono::milliseconds late) {
             if (late < 0ms) ++unexpected;
             ++ticks_b;
         }, ivy::every(15ms)));
@@ -336,7 +353,7 @@ int main(int argc, char** argv) {
         {
             require_start(peer_a.set_filters({"FILTER_A"}), "filters A");
             require_start(peer_b.set_filters({"FILTER_B"}), "filters B");
-            auto filter_observer_a = require_bind(peer_a.bind(
+            auto filter_observer_a = require_bind(peer_a.bind_event(
                 [&](IvyClientPtr, int, std::string_view regexp, IvyBindEvent event) {
                     if (event == IvyFilterBind && regexp == "^FILTER_B$") {
                         // The legacy facade must target this callback's context, not another bus.
@@ -344,22 +361,22 @@ int main(int argc, char** argv) {
                         ++filter_rejected_a;
                     }
                 }, ivy::remote_bindings));
-            auto filter_observer_b = require_bind(peer_b.bind(
+            auto filter_observer_b = require_bind(peer_b.bind_event(
                 [&](IvyClientPtr, int, std::string_view regexp, IvyBindEvent event) {
                     if (event == IvyFilterBind && (regexp == "^FILTER_A$" || regexp == "^FILTER_LOCAL$"))
                         ++filter_rejected_b;
                 }, ivy::remote_bindings));
-            auto aa = require_bind(bus_a.bind([&](auto...) { ++filter_hits_a; }, "^FILTER_A$"));
-            auto ab = require_bind(bus_a.bind([&](auto...) { ++filter_hits_a; }, "^FILTER_B$"));
-            auto ba = require_bind(moved_b.bind([&](auto...) { ++filter_hits_b; }, "^FILTER_A$"));
-            auto bb = require_bind(moved_b.bind([&](auto...) { ++filter_hits_b; }, "^FILTER_B$"));
+            auto aa = require_bind(bus_a.bind_raw([&](auto...) { ++filter_hits_a; }, "^FILTER_A$"));
+            auto ab = require_bind(bus_a.bind_raw([&](auto...) { ++filter_hits_a; }, "^FILTER_B$"));
+            auto ba = require_bind(moved_b.bind_raw([&](auto...) { ++filter_hits_b; }, "^FILTER_A$"));
+            auto bb = require_bind(moved_b.bind_raw([&](auto...) { ++filter_hits_b; }, "^FILTER_B$"));
             wait_for([&] {
                 return filter_rejected_a == 1 && filter_rejected_b == 1 &&
                     advertises(peer_a, receiver_a, "^FILTER_A$") &&
                     advertises(peer_b, receiver_b, "^FILTER_B$");
             }, "per-bus filters did not isolate remote subscriptions");
-            auto local_a = require_bind(bus_a.bind([&](auto...) { ++filter_hits_a; }, "^FILTER_LOCAL$"));
-            auto local_b = require_bind(moved_b.bind([&](auto...) { ++filter_hits_b; }, "^FILTER_LOCAL$"));
+            auto local_a = require_bind(bus_a.bind_raw([&](auto...) { ++filter_hits_a; }, "^FILTER_LOCAL$"));
+            auto local_b = require_bind(moved_b.bind_raw([&](auto...) { ++filter_hits_b; }, "^FILTER_LOCAL$"));
             wait_for([&] {
                 return filter_rejected_b == 2 && advertises(peer_a, receiver_a, "^FILTER_LOCAL$");
             }, "legacy filter update did not stay in the callback's bus");
@@ -388,6 +405,7 @@ int main(int argc, char** argv) {
 
         wait_for([&] {
             return advertises(peer_a, receiver_a, "^ONCE$") &&
+                advertises(peer_a, receiver_a, converted_regexp) &&
                 advertises(peer_b, receiver_b, R"(^CPP 23 ([0-9]{2}) 100%$)");
         }, "subscription advertisement timed out");
         for (int worker = 0; worker < worker_count; ++worker)
@@ -401,6 +419,11 @@ int main(int argc, char** argv) {
         const auto no_match = peer_a.send_report("NO_MATCH");
         assert(!no_match.error && no_match.matched == 0 && no_match.accepted == 0);
         assert(!peer_a.send(receiver_b, 99, "wrong context"));
+        assert(peer_a.send("TYPED -42 bad test aircraft true").value() == 1);
+        wait_for([&] { return conversion_errors == 1; }, "conversion error callback timed out");
+        assert(bus_a.take_callback_error());
+        assert(peer_a.send("TYPED -42 +1.255e2 test aircraft true").value() == 1);
+        wait_for([&] { return converted_count == 1; }, "converted callback timed out");
         assert(peer_a.send("prefix NEEDLE 42").value() == 1);
         assert(peer_a.send("RANGE 2").value() == 1);
         wait_for([&] { return anywhere_count == 1 && interval_count == 1; }, "anchoring modes timed out");
@@ -439,7 +462,7 @@ int main(int argc, char** argv) {
         wait_for([&] { return direct_a == 1 && direct_b == 1; }, "direct callbacks timed out");
 
         std::atomic<int> replacement_count{0};
-        auto replacement = require_bind(bus_a.bind(
+        auto replacement = require_bind(bus_a.bind_direct(
             [&replacement_count, &unexpected](IvyClientPtr, int id, std::string_view text) {
                 if (id != 103 || text != "direct-a")
                     ++unexpected;

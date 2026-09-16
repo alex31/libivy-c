@@ -17,35 +17,35 @@
 // IVY_CPP_API_BEGIN
 namespace ivy {
 
-/// @brief Periodic timer settings used by bind(callback, every(period)).
+/// @brief Periodic timer settings used by bind_event(callback, every(period)).
 struct Every {
-    std::chrono::milliseconds period; ///< Positive period, validated by bind().
+    std::chrono::milliseconds period; ///< Positive period, validated by bind_event().
     std::optional<int> count = std::nullopt; ///< Positive invocation count, or nullopt to repeat indefinitely.
 };
 
-/// @brief One-shot timer settings used by bind(callback, after(delay)).
+/// @brief One-shot timer settings used by bind_event(callback, after(delay)).
 struct After {
-    std::chrono::milliseconds delay; ///< Nonnegative delay, validated by bind().
+    std::chrono::milliseconds delay; ///< Nonnegative delay, validated by bind_event().
 };
 
 /**
  * @brief Select a periodic timer; no timer is created by this helper.
  * @param period Positive period in milliseconds, e.g. std::chrono::seconds(1).
- * @return Timer settings; bind() rejects zero, negative or unrepresentable periods.
+ * @return Timer settings; bind_event() rejects zero, negative or unrepresentable periods.
  */
 [[nodiscard]] constexpr Every every(std::chrono::milliseconds period) noexcept;
 
 /** @brief Select a periodic timer with a limited number of invocations.
  * @param period Positive interval in milliseconds.
- * @param count Positive number of callback invocations; bind() rejects zero/negative values.
+ * @param count Positive number of callback invocations; bind_event() rejects zero/negative values.
  * @return Timer settings; the returned token becomes inactive on the last invocation.
  */
 [[nodiscard]] constexpr Every every(std::chrono::milliseconds period, int count) noexcept;
 
 /** @brief Select a timer that invokes its callback once.
  * @param delay Nonnegative delay in milliseconds. Zero schedules the next opportunity
- * in the native loop; bind() never invokes the callback synchronously itself.
- * @return One-shot settings, validated when bind() is called.
+ * in the native loop; bind_event() never invokes the callback synchronously itself.
+ * @return One-shot settings, validated when bind_event() is called.
  */
 [[nodiscard]] constexpr After after(std::chrono::milliseconds delay) noexcept;
 

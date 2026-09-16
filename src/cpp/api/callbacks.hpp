@@ -14,13 +14,13 @@
  * @code{.cpp}
  * // With a running bus and <iostream> included, inside a function returning int:
  * using namespace std::chrono_literals;
- * auto pongs = bus.bind([](IvyClientPtr, int delay_us) {
+ * auto pongs = bus.bind_event([](IvyClientPtr, int delay_us) {
  *     std::cout << "Pong delay (negative on timeout): " << delay_us << " us\n";
  * }, ivy::pong);
- * auto changes = bus.bind([](IvyClientPtr, int id, std::string_view regexp, IvyBindEvent) {
+ * auto changes = bus.bind_event([](IvyClientPtr, int id, std::string_view regexp, IvyBindEvent) {
  *     std::cout << "Remote subscription " << id << ": " << regexp << '\n';
  * }, ivy::remote_bindings);
- * auto timer = bus.bind([](std::chrono::milliseconds late) {
+ * auto timer = bus.bind_event([](std::chrono::milliseconds late) {
  *     std::cout << "Tick, " << late.count() << " ms late\n";
  * }, ivy::every(1s));
  * if (!pongs || !changes || !timer) {
@@ -94,7 +94,7 @@
      * @see send_ping() EventSubscription
      */
     template<class Callback>
-    [[nodiscard]] EventBindResult bind(Callback&& callback, PongTag selector) noexcept;
+    [[nodiscard]] EventBindResult bind_event(Callback&& callback, PongTag selector) noexcept;
 
     /**
      * @brief Observe regexp subscriptions advertised by other applications.
@@ -109,7 +109,7 @@
      * @see EventSubscription
      */
     template<class Callback>
-    [[nodiscard]] EventBindResult bind(Callback&& callback, RemoteBindingsTag selector) noexcept;
+    [[nodiscard]] EventBindResult bind_event(Callback&& callback, RemoteBindingsTag selector) noexcept;
 // IVY_CPP_API_END
 
 #endif

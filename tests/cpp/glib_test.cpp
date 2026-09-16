@@ -32,7 +32,7 @@ static void external_loop(const char* address, bool global) {
     assert(g_main_context_get_thread_default() == nullptr);
     int received = 0, ticks_after_stop = 0;
     bool first_stopped = false;
-    auto subscription = a->bind([&](IvyClientPtr sender_peer, auto args) {
+    auto subscription = a->bind_raw([&](IvyClientPtr sender_peer, auto args) {
         const auto endpoint = a->application_info(sender_peer);
         assert(endpoint && endpoint->name == "glib-b" && endpoint->address.starts_with("127.") && endpoint->port > 0);
         assert(std::this_thread::get_id() == owner);
@@ -42,7 +42,7 @@ static void external_loop(const char* address, bool global) {
         assert(a->stop());
         first_stopped = true;
     }, "^GLIB (.*)$");
-    auto sender = b->bind([&, capture = std::make_unique<int>(123)](auto) {
+    auto sender = b->bind_event([&, capture = std::make_unique<int>(123)](auto) {
         assert(*capture == 123 && std::this_thread::get_id() == owner);
         assert(b->send("GLIB hello"));
         if (first_stopped && ++ticks_after_stop == 3) {
@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
         int default_calls = 0;
         auto thread_default = ivy::glib::create_bus("thread-default");
         assert(thread_default);
-        auto timer = thread_default->bind([&](auto) {
+        auto timer = thread_default->bind_event([&](auto) {
             assert(g_main_context_is_owner(previous));
             ++default_calls;
             assert(thread_default->stop());
@@ -135,12 +135,12 @@ int main(int argc, char** argv) {
         auto a = ivy::glib::create_bus(ca, "thread-a");
         auto b = ivy::glib::create_bus(cb, "thread-b");
         assert(a && b);
-        auto ta = a->bind([&](auto) {
+        auto ta = a->bind_event([&](auto) {
             assert(g_main_context_is_owner(ca));
             assert(!g_main_context_is_owner(cb));
             assert(a->stop());
         }, ivy::after(0ms));
-        auto tb = b->bind([&](auto) {
+        auto tb = b->bind_event([&](auto) {
             assert(g_main_context_is_owner(cb));
             assert(!g_main_context_is_owner(ca));
             assert(b->stop());
