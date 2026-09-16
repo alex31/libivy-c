@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Ivy/ivy_thread.hpp>
+#include <QRegularExpression>
 #include <QThreadPool>
 #include <QWidget>
 #include <chrono>
@@ -11,6 +12,7 @@
 class QCloseEvent;
 class QLabel;
 class QLineEdit;
+class QPlainTextEdit;
 class QPushButton;
 class QRadioButton;
 class QTableView;
@@ -29,6 +31,7 @@ signals:
     // Owned values only: no borrowed peer/view crosses into the Qt event queue.
     void incomingMessage(QString address, quint16 port, QString application,
                          qint64 receivedMs, QString kind, QString message);
+    void convertedMessage(QString result);
     void peerChanged(quint64 id, QString address, quint16 port, QString application);
     void peerGone(quint64 id);
     void pingChanged(quint64 id, int delayUs, QString state);
@@ -64,6 +67,7 @@ private:
     void setSendingEnabled(bool enabled);
     void showSendResult(QString origin, const ivy::Bus::SendResult& result);
     void copyMessages();
+    void showConvertedSource();
 
     QRadioButton* radio_;
     QPushButton* worker_button_;
@@ -74,12 +78,15 @@ private:
     QTableWidget* agents_;
     QLabel* count_;
     QLabel* status_;
+    QPlainTextEdit* converted_result_;
+    const QRegularExpression converted_pattern_;
     // Accessed only by Ivy callbacks/timers, then by destruction after joining.
     // These fields outlive Bus destruction and its final disconnection callbacks.
     std::unordered_map<IvyClientPtr, PeerState> peers_;
     quint64 next_peer_id_ = 1;
     std::optional<ivy::Bus> bus_;
     std::optional<ivy::Subscription> messages_;
+    std::optional<ivy::Subscription> converted_;
     std::optional<ivy::DirectSubscription> direct_;
     std::optional<ivy::EventSubscription> pongs_;
     std::optional<ivy::TimerSubscription> ping_timer_;

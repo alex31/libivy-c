@@ -6,10 +6,17 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QDebug>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFile>
+#include <QFontDatabase>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollBar>
@@ -17,15 +24,19 @@
 #include <QSplitter>
 #include <QTableView>
 #include <QTableWidget>
+#include <QTextCursor>
+#include <QTextEdit>
 #include <QThread>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 using namespace std::chrono_literals;
 namespace {
 constexpr auto ping_period = 2s;
 constexpr auto ping_timeout = 3s;
+constexpr std::string_view converted_regexp = R"(^QT_CONVERT (\S+) (\S+) (\S+) (\S+)$)";
 QString describe(std::error_code error) { return QString::fromStdString(error.message()); }
 QString text(std::string_view value) {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
@@ -79,9 +90,10 @@ private:
     std::vector<Row> rows_;
 };
 
-MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
+MainWindow::MainWindow(QWidget* parent)
+    : QWidget(parent), converted_pattern_(text(converted_regexp)) {
     setWindowTitle("Ivy — Moniteur Qt6");
-    resize(1120, 720);
+    resize(1120, 920);
     auto* layout = new QVBoxLayout(this);
     auto* compose = new QHBoxLayout;
     outgoing_ = new QLineEdit(this);
@@ -92,6 +104,48 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
     compose->addWidget(outgoing_, 1);
     compose->addWidget(send_button_);
     layout->addLayout(compose);
+
+    auto* converted_panel = new QGroupBox("Réception typée — bind_convert", this);
+    auto* converted_layout = new QVBoxLayout(converted_panel);
+    auto* regexp = new QLabel(text(converted_regexp), converted_panel);
+    regexp->setObjectName("convertedRegexp");
+    regexp->setTextFormat(Qt::PlainText);
+    regexp->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    regexp->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    regexp->setWordWrap(true);
+    converted_layout->addWidget(new QLabel("Regexp d'abonnement (copiable) :", converted_panel));
+    auto* regexp_row = new QHBoxLayout;
+    regexp_row->addWidget(regexp, 1);
+    auto* source_button = new QPushButton("Voir l'abonnement", converted_panel);
+    source_button->setObjectName("convertedSource");
+    source_button->setToolTip("Ouvrir window.cpp à l'appel bind_convert");
+    connect(source_button, &QPushButton::clicked, this, &MainWindow::showConvertedSource);
+    regexp_row->addWidget(source_button);
+    converted_layout->addLayout(regexp_row);
+    auto* types = new QLabel("Captures attendues, dans cet ordre : long | double | std::string_view | bool", converted_panel);
+    types->setObjectName("convertedTypes");
+    types->setWordWrap(true);
+    converted_layout->addWidget(types);
+    auto* rules = new QLabel(
+        "Quatre champs non vides, séparés par un espace ; le texte ne contient pas d'espace.\n"
+        "Booléen : entier nul = false, non nul = true ; sinon f/F = false, t/T/v/V = true.", converted_panel);
+    rules->setWordWrap(true);
+    converted_layout->addWidget(rules);
+    auto* examples = new QLabel(
+        "À envoyer avec ivyprobe :\nQT_CONVERT -42 125.5 avion vrai\n"
+        "QT_CONVERT -42 erreur avion vrai", converted_panel);
+    examples->setTextFormat(Qt::PlainText);
+    examples->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    examples->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    converted_layout->addWidget(examples);
+    converted_result_ = new QPlainTextEdit(converted_panel);
+    converted_result_->setObjectName("convertedResult");
+    converted_result_->setReadOnly(true);
+    converted_result_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    converted_result_->setPlainText("En attente d'un message QT_CONVERT.");
+    converted_result_->setFixedHeight(converted_result_->fontMetrics().height() * 7 + 16);
+    converted_layout->addWidget(converted_result_);
+    layout->addWidget(converted_panel);
 
     auto* splitter = new QSplitter(Qt::Vertical, this);
     auto* peer_panel = new QWidget(splitter);
@@ -174,6 +228,10 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
             count_->setText(QString("Messages reçus : %1").arg(log_->rowCount()));
             if (follow) received_->scrollToBottom();
         }, Qt::QueuedConnection);
+    connect(this, &MainWindow::convertedMessage, this, [this](const QString& result) {
+        Q_ASSERT(QThread::currentThread() == thread());
+        if (!closing_) converted_result_->setPlainText(result);
+    }, Qt::QueuedConnection);
     connect(this, &MainWindow::peerChanged, this,
         [this](quint64 id, const QString& address, quint16 port, const QString& name) {
             if (closing_) return;
@@ -230,6 +288,21 @@ std::expected<void, std::error_code> MainWindow::start(std::optional<std::string
     }, "(.*)");
     if (!subscription) return std::unexpected(subscription.error());
     messages_.emplace(std::move(*subscription));
+    auto converted = bus_->bind_convert(
+        [this](ivy::ConvertStatus state, long integer, double real, std::string_view word, bool flag) {
+            // Copy borrowed views, including the diagnostic, before queuing to Qt.
+            if (state != ivy::ConvertStatus::OK) {
+                const QString name = state == ivy::ConvertStatus::COUNT_ERROR ? "COUNT_ERROR" : "CONVERT_ERROR";
+                emit convertedMessage(name + '\n' + text(bus_->conversion_error()));
+                return;
+            }
+            emit convertedMessage(QString("OK\nlong : %1\ndouble : %2\nstd::string_view : %3\nbool : %4")
+                .arg(QString::number(static_cast<qlonglong>(integer)),
+                     QString::number(real, 'g', std::numeric_limits<double>::max_digits10),
+                     text(word), flag ? "true" : "false"));
+        }, converted_regexp);
+    if (!converted) return std::unexpected(converted.error());
+    converted_.emplace(std::move(*converted));
     auto direct = bus_->bind_direct([this](IvyClientPtr peer, int id, std::string_view message) {
         receive(peer, message, QString("Direct %1").arg(id));
     });
@@ -249,7 +322,7 @@ std::expected<void, std::error_code> MainWindow::start(std::optional<std::string
     loop_.emplace(std::move(*running));
     loop_done_ = false;
     setSendingEnabled(true);
-    status_->setText("Bus démarré — abonnement (.*)");
+    status_->setText("Bus démarré — journal (.*) et réception typée QT_CONVERT");
     return {};
 }
 
@@ -282,6 +355,13 @@ void MainWindow::applicationChanged(IvyClientPtr peer, IvyApplicationEvent event
 
 void MainWindow::receive(IvyClientPtr peer, std::string_view message, QString kind) {
     const auto received = QDateTime::currentMSecsSinceEpoch(); // Reception time, before any GUI queuing/query.
+    if (kind == "Message" && (message == "QT_CONVERT" || message.starts_with("QT_CONVERT ")) &&
+        !converted_pattern_.match(text(message)).hasMatch()) {
+        // Ivy never dispatches a regexp callback for a nonmatching message.
+        // Use the existing raw journal subscription to report malformed test frames.
+        emit convertedMessage("REGEXP_ERROR\nLe message ne correspond pas à la regexp affichée.\n"
+                              "Quatre champs non vides séparés par un espace sont attendus.\nReçu : " + text(message));
+    }
     const auto& state = rememberPeer(peer);
     emit incomingMessage(text(state.info.address), state.info.port, text(state.info.name),
                          received, std::move(kind), text(message));
@@ -380,6 +460,64 @@ void MainWindow::setSendingEnabled(bool enabled) {
     send_button_->setEnabled(enabled && !outgoing_->text().isEmpty());
     radio_->setEnabled(enabled);
     worker_button_->setEnabled(enabled);
+}
+
+void MainWindow::showConvertedSource() {
+    if (auto* existing = findChild<QDialog*>("convertedSourceDialog")) {
+        existing->showNormal();
+        existing->raise();
+        existing->activateWindow();
+        return;
+    }
+    QFile source(QString::fromUtf8(__FILE__));
+    if (!source.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "Source de l'abonnement",
+            QString("Impossible d'ouvrir %1 :\n%2").arg(source.fileName(), source.errorString()));
+        return;
+    }
+    const auto code = QString::fromUtf8(source.readAll());
+    // Find the call in the current source so edits above it do not invalidate the link.
+    const auto subscription = QRegularExpression(
+        R"(^[ \t]*auto converted = bus_->bind_convert\()", QRegularExpression::MultilineOption).match(code);
+    if (!subscription.hasMatch()) {
+        QMessageBox::warning(this, "Source de l'abonnement",
+            QString("L'appel bind_convert est introuvable dans %1.").arg(source.fileName()));
+        return;
+    }
+
+    auto* dialog = new QDialog(this);
+    dialog->setObjectName("convertedSourceDialog");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle("Source de l'abonnement — bind_convert");
+    dialog->resize(1000, 650);
+    auto* layout = new QVBoxLayout(dialog);
+    auto* view = new QPlainTextEdit(dialog);
+    view->setObjectName("convertedSourceCode");
+    view->setReadOnly(true);
+    view->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    view->setLineWrapMode(QPlainTextEdit::NoWrap);
+    view->setPlainText(code);
+    auto cursor = view->textCursor();
+    cursor.setPosition(static_cast<int>(subscription.capturedStart()));
+    view->setTextCursor(cursor);
+    QTextEdit::ExtraSelection highlight;
+    highlight.cursor = cursor;
+    highlight.format.setBackground(view->palette().brush(QPalette::Highlight));
+    highlight.format.setForeground(view->palette().brush(QPalette::HighlightedText));
+    highlight.format.setProperty(QTextFormat::FullWidthSelection, true);
+    view->setExtraSelections({highlight});
+    auto* location = new QLabel(QString("%1 — ligne %2").arg(source.fileName()).arg(cursor.blockNumber() + 1), dialog);
+    location->setTextFormat(Qt::PlainText);
+    location->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    location->setWordWrap(true);
+    layout->addWidget(location);
+    layout->addWidget(view);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    layout->addWidget(buttons);
+    dialog->show();
+    view->centerCursor();
+    view->setFocus();
 }
 
 void MainWindow::copyMessages() {

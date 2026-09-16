@@ -2,7 +2,9 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDateTime>
+#include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QTableView>
@@ -47,6 +49,86 @@ private slots:
         const auto result = window.start(std::string_view("127\0invalid", 11));
         QVERIFY(!result);
         QCOMPARE(result.error(), ivy::make_error_code(IVY_EINVAL));
+    }
+    void convertedMessages() {
+        auto peer = ivy::Bus::create("qt-conversion-peer");
+        QVERIFY(peer && peer->start(address_));
+        auto peer_loop = ivy::LoopThread::create(*peer);
+        QVERIFY(peer_loop);
+        int updates = 0;
+        QObject observer;
+        MainWindow window;
+        connect(&window, &MainWindow::convertedMessage, &observer, [&] { ++updates; }, Qt::QueuedConnection);
+        QVERIFY(window.start(address_));
+        window.show();
+        auto* regexp = window.findChild<QLabel*>("convertedRegexp");
+        auto* types = window.findChild<QLabel*>("convertedTypes");
+        auto* result = window.findChild<QPlainTextEdit*>("convertedResult");
+        auto* journal = window.findChild<QTableView*>("receivedMessages");
+        QVERIFY(regexp && types && result && journal);
+        QVERIFY(result->isReadOnly());
+        QCOMPARE(regexp->text(), QString(R"(^QT_CONVERT (\S+) (\S+) (\S+) (\S+)$)"));
+        QVERIFY(types->text().contains("long | double | std::string_view | bool"));
+        QVERIFY(result->toPlainText().startsWith("En attente"));
+        const auto advertised = [&] {
+            const auto target = peer->find_application("QtDemo");
+            if (!target || !*target) return false;
+            const auto patterns = peer->application_regexps(**target);
+            return patterns && std::ranges::find(*patterns, regexp->text().toStdString()) != patterns->end() &&
+                std::ranges::find(*patterns, "(.*)") != patterns->end();
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(advertised(), 5000);
+
+        QVERIFY(peer->send("QT_CONVERT -42 125.5 avion vrai"));
+        QTRY_COMPARE_WITH_TIMEOUT(updates, 1, 3000);
+        QCOMPARE(result->toPlainText(), QString("OK\nlong : -42\ndouble : 125.5\nstd::string_view : avion\nbool : true"));
+        QTRY_VERIFY_WITH_TIMEOUT(messageRow(journal, "QT_CONVERT -42 125.5 avion vrai") >= 0, 3000);
+        if (const auto screenshot = qEnvironmentVariable("IVY_QT_CONVERT_SCREENSHOT"); !screenshot.isEmpty())
+            QVERIFY(window.grab().save(screenshot));
+
+        // Each bad field reaches bind_convert; errors replace the previous values.
+        const std::pair<const char*, const char*> errors[] = {
+            {"QT_CONVERT mauvais 125.5 avion vrai", "capture 1: cannot convert \"mauvais\" to long"},
+            {"QT_CONVERT -42 erreur avion vrai", "capture 2: cannot convert \"erreur\" to double"},
+            {"QT_CONVERT -42 125.5 avion inconnu", "capture 4: cannot convert \"inconnu\" to bool"},
+        };
+        int expected_updates = updates;
+        for (const auto& [message, detail] : errors) {
+            QVERIFY(peer->send(message));
+            ++expected_updates;
+            QTRY_COMPARE_WITH_TIMEOUT(updates, expected_updates, 3000);
+            QVERIFY(result->toPlainText().startsWith("CONVERT_ERROR\n"));
+            QVERIFY(result->toPlainText().contains(detail));
+            QVERIFY(!result->toPlainText().contains("long : -42"));
+        }
+        // Wrong field counts do not match the regexp and are reported by the raw observer.
+        for (const char* message : {"QT_CONVERT", "QT_CONVERT 42 1.5 avion", "QT_CONVERT 42 1.5 avion true extra"}) {
+            QVERIFY(peer->send(message));
+            ++expected_updates;
+            QTRY_COMPARE_WITH_TIMEOUT(updates, expected_updates, 3000);
+            QVERIFY(result->toPlainText().startsWith("REGEXP_ERROR\n"));
+            QVERIFY(result->toPlainText().contains(message));
+        }
+
+        // Recovery, scientific notation, Unicode and literal percent placeholders.
+        QVERIFY(peer->send("QT_CONVERT +7 -2.5e1 été🌍%4 -000"));
+        ++expected_updates;
+        QTRY_COMPARE_WITH_TIMEOUT(updates, expected_updates, 3000);
+        QCOMPARE(result->toPlainText(), QString("OK\nlong : 7\ndouble : -25\nstd::string_view : été🌍%4\nbool : false"));
+        QVERIFY(peer->send("QT_CONVERT 9 1.5 avion -2"));
+        ++expected_updates;
+        QTRY_COMPARE_WITH_TIMEOUT(updates, expected_updates, 3000);
+        QCOMPARE(result->toPlainText(), QString("OK\nlong : 9\ndouble : 1.5\nstd::string_view : avion\nbool : true"));
+
+        const auto last_result = result->toPlainText();
+        QVERIFY(peer->send("AUTRE_MESSAGE reste_dans_le_journal"));
+        QTRY_VERIFY_WITH_TIMEOUT(messageRow(journal, "AUTRE_MESSAGE reste_dans_le_journal") >= 0, 3000);
+        QCOMPARE(updates, expected_updates);
+        QCOMPARE(result->toPlainText(), last_result);
+        window.close();
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isVisible(), 3000);
+        QVERIFY(peer_loop->request_stop() && peer_loop->join());
+        QVERIFY(peer->take_callback_error());
     }
     void trafficPingsAndClose() {
         auto peer = ivy::Bus::create("qt-test-peer", "AGENT_READY");

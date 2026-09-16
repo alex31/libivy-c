@@ -52,6 +52,13 @@ le port TCP annoncé, le nom du pair et le timestamp pris avant la mise en file
 Qt. `Bus::application_info()` ajoute le snapshot C++ possédé correspondant,
 avec un pont privé C sous verrou et sans résolution DNS.
 
+Un panneau supplémentaire utilise `bind_convert` sur
+`^QT_CONVERT (\S+) (\S+) (\S+) (\S+)$`, avec les captures `long`, `double`,
+`std::string_view` et `bool`. La regexp, les types et des exemples pour ivyprobe
+restent visibles. Le panneau affiche les valeurs ou le diagnostic de conversion,
+copié avant la mise en file Qt. Les messages `QT_CONVERT` mal formés sont signalés
+par l’abonnement brut, car une regexp non satisfaite ne déclenche pas sa callback.
+
 Le champ Send transmet le texte UTF-8 depuis le thread Qt (bouton ou Entrée).
 Le suivi des pings reste dans le thread Ivy : un registre par connexion est
 alimenté par les callbacks connect/disconnect et un timer Ivy programme les
@@ -61,7 +68,9 @@ la table des agents affiche les RTT, l’attente ou l’absence de réponse.
 
 Les tests Qt couvrent les deux sens de ping, les agents silencieux/homonymes,
 la périodicité, les timeouts et la reprise, les colonnes du journal, Send/Entrée,
-le texte UTF-8, les messages directs, la copie et la fermeture. Voir le
+le texte UTF-8, les messages directs, la copie et la fermeture. Ils couvrent aussi
+les quatre conversions, les erreurs de type ou de format et la reprise après
+erreur. Voir le
 [README de l’exemple](examples/ivyqt/README.md) pour les détails d’utilisation.
 
 ## Le point déterminant dans le cœur actuel
