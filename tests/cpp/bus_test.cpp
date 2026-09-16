@@ -535,6 +535,70 @@ void subscriptions_and_formats() {
     assert(!after_stop && after_stop.error() == ivy::make_error_code(IVY_ESTOPPED));
 }
 
+void raw_callbacks_without_sender() {
+    auto bus = require_bus(ivy::Bus::create("raw captures"));
+    auto* ctx = bus.native_handle();
+    _clnt_lst_dict peer;
+    char value[] = "42";
+    char* arguments[] = {value};
+    int calls = 0;
+    auto make_callback = [&] {
+        return [count = std::make_unique<int>(0), &calls, &value](auto args) mutable noexcept {
+            if (++*count == 1) {
+                assert(args.size() == 1 && args[0] == "42" && args[0].data() == value);
+            } else {
+                assert(*count == 2 && args.empty());
+            }
+            ++calls;
+        };
+    };
+    std::array subscriptions{
+        bus.bind_raw(make_callback(), "^VALUE (.*)$"),
+        bus.bind_raw(make_callback(), ivy::runtime_regexp("^VALUE (.*)$")),
+        bus.bind_raw(make_callback(), "^VALUE {} (.*)$", 7),
+        bus.bind_raw_unanchored(make_callback(), "VALUE (.*)$"),
+        bus.bind_raw_unanchored(make_callback(), "VALUE {} (.*)$", 7),
+    };
+    assert(ctx->bindings.size() == subscriptions.size());
+    for (std::size_t i = 0; i < subscriptions.size(); ++i) {
+        assert(subscriptions[i] && subscriptions[i]->is_bound());
+        auto* binding = ctx->bindings[i];
+        binding->callback(&peer, binding->data, 1, arguments);
+        binding->callback(&peer, binding->data, 0, nullptr);
+    }
+    assert(calls == 10);
+
+    // A callable accepting both forms must continue to receive the sender.
+    bool received_peer = false;
+    auto generic = bus.bind_raw([&](auto... args) {
+        if constexpr (sizeof...(args) == 2)
+            received_peer = std::get<0>(std::tuple(args...)) == &peer;
+        else
+            assert(false);
+    }, "^GENERIC$");
+    assert(generic);
+    auto* binding = ctx->bindings.back();
+    binding->callback(&peer, binding->data, 0, nullptr);
+    assert(received_peer);
+
+    const auto count = ctx->bindings.size();
+    using Captures = std::span<const std::string_view>;
+    expect_error(IVY_EINVAL, bus.bind_raw(std::function<void(Captures)>{}, "^EMPTY$"));
+    expect_error(IVY_EINVAL, bus.bind_raw(std::move_only_function<void(Captures)>{},
+        ivy::runtime_regexp("^EMPTY$")));
+    expect_error(IVY_EINVAL, bus.bind_raw(static_cast<void(*)(Captures)>(nullptr), "^EMPTY {}$", 7));
+    expect_error(IVY_EINVAL, bus.bind_raw_unanchored(std::function<void(Captures)>{}, "EMPTY$"));
+    expect_error(IVY_EINVAL, bus.bind_raw_unanchored(std::move_only_function<void(Captures)>{}, "EMPTY {}$", 7));
+    assert(ctx->bindings.size() == count);
+
+    auto throwing = bus.bind_raw([](Captures) { throw 42; }, "^THROW$");
+    assert(throwing);
+    binding = ctx->bindings.back();
+    binding->callback(&peer, binding->data, 0, nullptr);
+    expect_error(ivy::Error::callback_failed, bus.take_callback_error());
+    assert(bus.state() == IVY_CTX_STOPPED);
+}
+
 void direct_subscriptions() {
     auto bus = require_bus(ivy::Bus::create("direct"));
     auto* ctx = bus.native_handle();
@@ -735,7 +799,7 @@ void converted_subscriptions() {
     char* arguments[] = {id, altitude, label, active};
     auto subscription = bus.bind_convert(
         [count = std::make_unique<int>(0), &calls, &peer, &label]
-        (ivy::ConvertStatus status, IvyClientPtr sender, long number, double height, std::string_view name, bool enabled) mutable {
+        (IvyClientPtr sender, ivy::ConvertStatus status, long number, double height, std::string_view name, bool enabled) mutable {
             assert(status == ivy::ConvertStatus::OK);
             assert(sender == &peer && number == -42 && height == 125.5 && enabled);
             assert(name == "name with spaces" && name.data() == label);
@@ -771,11 +835,12 @@ void converted_subscriptions() {
     }, "^EMPTY$");
     assert(empty);
     dispatch_captures(moved_bus.native_handle()->bindings.back(), {});
-    auto peer_only = moved_bus.bind_convert([&](ivy::ConvertStatus status, IvyClientPtr) {
-        assert(status == ivy::ConvertStatus::OK); ++empty_calls;
+    auto peer_only = moved_bus.bind_convert([&](IvyClientPtr sender, ivy::ConvertStatus status) {
+        assert(sender == &peer && status == ivy::ConvertStatus::OK); ++empty_calls;
     }, "^PEER$");
     assert(peer_only);
-    dispatch_captures(moved_bus.native_handle()->bindings.back(), {});
+    auto* peer_binding = moved_bus.native_handle()->bindings.back();
+    peer_binding->callback(&peer, peer_binding->data, 0, nullptr);
     auto empty_view = moved_bus.bind_convert([&](ivy::ConvertStatus status, std::string_view text) {
         assert(status == ivy::ConvertStatus::OK && text.empty()); ++empty_calls;
     }, "^TEXT (.*)$");
@@ -786,20 +851,21 @@ void converted_subscriptions() {
     for (auto captures : {std::initializer_list<std::string>{}, {"42", "extra"}}) {
         auto mismatch = require_bus(ivy::Bus::create("capture count"));
         int count_calls = 0;
-        auto typed = mismatch.bind_convert([&](ivy::ConvertStatus status, long value) {
-            assert(status == ivy::ConvertStatus::COUNT_ERROR && value == 0);
+        auto typed = mismatch.bind_convert([&](IvyClientPtr sender, ivy::ConvertStatus status, long value) {
+            assert(sender == &peer && status == ivy::ConvertStatus::COUNT_ERROR && value == 0);
             assert(mismatch.conversion_error() == std::format(
                 "capture count mismatch: expected 1, received {}", captures.size()));
             ++count_calls;
         }, "^ONE (.*)$");
         assert(typed && typed->change("^CHANGED$"));
-        dispatch_captures(mismatch.native_handle()->bindings.back(), captures);
+        auto* mismatch_binding = mismatch.native_handle()->bindings.back();
+        mismatch_binding->callback(&peer, mismatch_binding->data, static_cast<int>(captures.size()), arguments);
         assert(count_calls == 1 && mismatch.take_callback_error() && typed->is_bound());
     }
     // Discard all partial conversions, preserving the sender and reporting the first failure.
     auto partial = require_bus(ivy::Bus::create("partial conversion"));
     int partial_calls = 0;
-    auto mixed = partial.bind_convert([&](ivy::ConvertStatus status, IvyClientPtr sender,
+    auto mixed = partial.bind_convert([&](IvyClientPtr sender, ivy::ConvertStatus status,
                                           long id, double altitude, std::string_view name, bool enabled) {
         ++partial_calls;
         assert(status == ivy::ConvertStatus::CONVERT_ERROR && sender == &peer);
@@ -1178,6 +1244,11 @@ struct FailingTypedCallback : FailingCallback {
     void operator()(ivy::ConvertStatus, long) const {}
 };
 
+struct FailingRawCallback : FailingCallback {
+    using FailingCallback::FailingCallback;
+    void operator()(std::span<const std::string_view>) const {}
+};
+
 template<> struct std::formatter<FailingFormat> {
     constexpr auto parse(std::format_parse_context& context) { return context.begin(); }
     auto format(const FailingFormat& value, std::format_context& context) const {
@@ -1210,6 +1281,12 @@ void nonthrowing_boundaries() {
         check(bus.bind_raw(failing, "^regexp {}", 42));
         check(bus.bind_raw_unanchored(failing, "regexp"));
         check(bus.bind_raw_unanchored(failing, "regexp {}", 42));
+        FailingRawCallback raw(allocation);
+        check(bus.bind_raw(raw, "^regexp"));
+        check(bus.bind_raw(raw, ivy::runtime_regexp("^regexp")));
+        check(bus.bind_raw(raw, "^regexp {}", 42));
+        check(bus.bind_raw_unanchored(raw, "regexp"));
+        check(bus.bind_raw_unanchored(raw, "regexp {}", 42));
         check(bus.bind_direct(failing));
         check(bus.bind_event(failing, ivy::pong));
         check(bus.bind_event(failing, ivy::remote_bindings));
@@ -1785,6 +1862,7 @@ int main() {
     move_only_callbacks();
     errors_and_callback_exceptions();
     subscriptions_and_formats();
+    raw_callbacks_without_sender();
     direct_subscriptions();
     subscription_lifetimes();
     concurrent_unbind();

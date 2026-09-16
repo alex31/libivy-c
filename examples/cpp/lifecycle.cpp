@@ -22,12 +22,12 @@ int main(int argc, char** argv) {
 
     // Keep the Subscription and DirectSubscription results alive.
     auto messages = bus.bind_raw(
-        [](IvyClientPtr, std::span<const std::string_view> args) {
+        [](std::span<const std::string_view> args) {
             if (!args.empty())
                 std::cout << "Greeting: " << args[0] << '\n';
         }, R"(^HELLO (.*)$)");
     auto tracks = bus.bind_raw(
-        [](IvyClientPtr, std::span<const std::string_view> args) {
+        [](std::span<const std::string_view> args) {
             if (!args.empty())
                 std::cout << "TRACK 42: " << args[0] << '\n';
         }, R"(^TRACK {} ([0-9]{{2}})$)", 42);
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
             std::cout << "Direct " << id << ": " << message << '\n';
         });
     auto anywhere = bus.bind_raw_unanchored(
-        [](IvyClientPtr, std::span<const std::string_view> args) {
+        [](std::span<const std::string_view> args) {
             if (!args.empty())
                 std::cout << "Unanchored alert: " << args[0] << '\n';
         }, R"(ALERT (.*)$)");

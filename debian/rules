@@ -19,9 +19,11 @@ IVY_BUILD_FLAGS = PREFIX=/usr LIB=/lib MAJOR=$(MAJOR) MINOR=$(MINOR) MINOR2=$(MI
 
 override_dh_auto_build:
 	$(MAKE) -C src all cpp cpp-glib $(IVY_BUILD_FLAGS)
+	sh doc/build_pdf.sh
 
 override_dh_auto_clean:
 	$(MAKE) -C src clean
+	rm -rf doc/doxygen doc/__pycache__
 
 override_dh_auto_install:
 	$(MAKE) -C src install $(IVY_BUILD_FLAGS) DESTDIR=$(CURDIR)/debian/tmp
@@ -31,11 +33,14 @@ override_dh_auto_install:
 override_dh_missing:
 	dh_missing --fail-missing
 
-# Produce the four requested packages, without automatic dbgsym packages.
+override_dh_compress:
+	dh_compress -X.pdf
+
+# Produce the two requested packages, without automatic dbgsym packages.
 override_dh_dwz:
 	dh_dwz --no-dwz-multifile
 
 override_dh_strip:
 	dh_strip --no-automatic-dbgsym
 
-.PHONY: override_dh_auto_build override_dh_auto_clean override_dh_auto_install override_dh_missing override_dh_dwz override_dh_strip
+.PHONY: override_dh_auto_build override_dh_auto_clean override_dh_auto_install override_dh_missing override_dh_compress override_dh_dwz override_dh_strip

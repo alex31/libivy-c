@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
         constexpr std::string_view converted_regexp = R"(^TYPED (\S+) (\S+) (.*) (\S+)$)";
         auto converted = require_bind(bus_a.bind_convert(
             [&converted_count, &conversion_errors, &unexpected, &bus_a]
-            (ivy::ConvertStatus status, IvyClientPtr sender, long id, double altitude, std::string_view name, bool active) {
+            (IvyClientPtr sender, ivy::ConvertStatus status, long id, double altitude, std::string_view name, bool active) {
                 if (status != ivy::ConvertStatus::OK) {
                     if (status != ivy::ConvertStatus::CONVERT_ERROR || !sender || id != 0 ||
                         altitude != 0.0 || !name.empty() || active || bus_a.conversion_error() !=
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
                 ++converted_count;
             }, converted_regexp));
         auto anywhere = require_bind(bus_a.bind_raw_unanchored(
-            [&anywhere_count, &unexpected](IvyClientPtr, auto args) {
+            [&anywhere_count, &unexpected](auto args) {
                 if (args.size() != 1 || args[0] != "42")
                     ++unexpected;
                 ++anywhere_count;
@@ -177,13 +177,13 @@ int main(int argc, char** argv) {
             }, R"(^RANGE ((?I1#3i))$)"));
         auto message_a = require_bind(bus_a.bind_raw(
             [token = std::make_unique<int>(42), &messages_a, &unexpected]
-            (IvyClientPtr, std::span<const std::string_view> args) {
+            (std::span<const std::string_view> args) {
                 if (*token != 42 || args.size() != 1 || args[0] != "42")
                     ++unexpected;
                 ++messages_a;
             }, R"(^CPP ([0-9]{2}) 100%$)"));
         auto message_b = require_bind(bus_b.bind_raw(
-            [token = std::make_unique<int>(17), &messages_b, &unexpected](IvyClientPtr, auto args) {
+            [token = std::make_unique<int>(17), &messages_b, &unexpected](auto args) {
                 if (*token != 17 || args.size() != 1 || args[0] != "17")
                     ++unexpected;
                 ++messages_b;

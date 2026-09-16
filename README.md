@@ -215,6 +215,12 @@ excluded from version control.
 The PDF uses printed cross-references to avoid incorrect C++ alias hyperlinks
 produced by Doxygen 1.9.x.
 
+Debian/Ubuntu builds produce two packages: `ivy-c` contains the C and C++23
+shared libraries, and `ivy-c-dev` contains their headers, static libraries,
+pkg-config files and the PDF at `/usr/share/doc/ivy-c-dev/ivy-api.pdf`.
+The PDF is rebuilt from source when packaging; Doxygen and LaTeX are build
+requirements only. See [the packaging instructions](debian/README).
+
 The Linux build has separate targets for the wrapper. Building the C library
 and tools does not enable C++23:
 
@@ -437,10 +443,25 @@ start with `^`, and PCRE2 must recognize it as anchored. A dynamic format can
 be processed separately and its resulting regexp passed through this route.
 
 `MessageCallback` is a `std::move_only_function` taking
-`(IvyClientPtr, std::span<const std::string_view>)`; `DirectCallback` takes
-`(IvyClientPtr, int, std::string_view)`. Captures and direct-message text are
-borrowed views valid only for the callback invocation. Callback failures
+`(IvyClientPtr, std::span<const std::string_view>)`. `bind_raw` and
+`bind_raw_unanchored` also accept callbacks taking only
+`(std::span<const std::string_view>)`, including generic lambdas such as
+`[](auto captures) { /* ... */ }`. If a callable accepts both forms, it receives
+the sender. This applies to constant, dynamic and formatted regexps.
+`DirectCallback` takes `(IvyClientPtr, int, std::string_view)`. Captures and
+direct-message text are borrowed views valid only for the callback invocation. Callback failures
 follow the same stop-and-record mechanism as application/die callbacks.
+
+Both regexp APIs place the optional sender first:
+
+| API | With sender | Without sender |
+| --- | --- | --- |
+| `bind_raw` | `(IvyClientPtr, std::span<const std::string_view>)` | `(std::span<const std::string_view>)` |
+| `bind_convert` | `(IvyClientPtr, ivy::ConvertStatus, values...)` | `(ivy::ConvertStatus, values...)` |
+
+The sender is borrowed; use `bus.application_info(peer)` during the callback to
+copy its name, address and port. Existing `bind_convert` callbacks taking
+`(ConvertStatus, IvyClientPtr, ...)` must move `IvyClientPtr` before the status.
 
 Use `bind_convert(callback, regexp)` to receive converted captures directly:
 
@@ -461,12 +482,12 @@ if (!tracks) {
 // Keep tracks alive while servicing the loop.
 ```
 
-The first callback parameter must be `ivy::ConvertStatus`. The remaining
+An optional `IvyClientPtr` first parameter receives the sender, followed by the
+mandatory `ivy::ConvertStatus` (first when the sender is omitted). The remaining
 signature determines the conversions, in capture order: only `long`, `double`,
 `std::string_view` and `bool`, passed by value, are accepted for captures.
-An optional `IvyClientPtr` immediately after the status receives the sender. The callback must return
-`void` and have an explicit, unambiguous signature: generic lambdas, overloaded
-call operators and other parameter types are rejected at compile time.
+The callback must return `void` and have an explicit, unambiguous signature:
+generic lambdas, overloaded call operators and other parameter types are rejected at compile time.
 Move-only captures, mutable/noexcept lambdas and function pointers work as with
 `bind_raw`. Dynamic expressions use `ivy::runtime_regexp(text)`; formatting uses
 `bind_convert(callback, "^TRACK {} (.*)$", id)` with the same rules as `bind_raw`.
@@ -929,9 +950,11 @@ Notes:
 
 ### Debian / Ubuntu packages
 
-The Debian packaging builds four packages: `ivy-c`, `ivy-c-dev`, `ivy-cpp`
-and `ivy-cpp-dev`. Both C++ backends (native and GLib) are included, with
-runtime libraries and development files in separate packages.
+The Debian packaging builds two packages: `ivy-c` contains the C and C++23
+runtime libraries, and `ivy-c-dev` contains their development files and the
+Doxygen PDF reference at `/usr/share/doc/ivy-c-dev/ivy-api.pdf`. Native and
+GLib backends are included. The former `ivy-cpp` and `ivy-cpp-dev` packages
+are replaced automatically during installation.
 
 ```bash
 ./debian/build.sh

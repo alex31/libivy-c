@@ -1,31 +1,41 @@
 Construction des paquets Debian / Ubuntu
 ======================================
 
-La source produit quatre paquets binaires de même version :
+La source produit deux paquets binaires de même version :
 
-- ivy-c : bibliothèques C native et GLib, outils et pages de manuel.
-- ivy-c-dev : en-têtes C, archives statiques, liens de compilation et
-  fichiers pkg-config C.
-- ivy-cpp : bibliothèques partagées C++23 native et GLib.
-- ivy-cpp-dev : en-têtes C++, y compris Ivy/api/, archives statiques,
-  liens de compilation et fichiers pkg-config ivy-cpp et ivy-cpp-glib.
+- ivy-c : bibliothèques partagées C et C++23, variantes native et GLib,
+  outils et pages de manuel.
+- ivy-c-dev : en-têtes C et C++, y compris Ivy/api/, archives statiques,
+  liens de compilation, fichiers pkg-config C et C++ et référence PDF
+  des deux API dans /usr/share/doc/ivy-c-dev/ivy-api.pdf.
 
-ivy-cpp dépend de la même version de ivy-c : le wrapper utilise un pont
-interne au cœur C. Chaque paquet de développement dépend du runtime de
-même version ; ivy-cpp-dev dépend aussi de ivy-c-dev.
+ivy-c-dev dépend de la même version de ivy-c : le wrapper C++ utilise un
+pont interne au cœur C. Le runtime inclut les dépendances système C++,
+notamment libstdc++6 et libgcc-s1, calculées automatiquement par debhelper.
+Aucune dépendance Qt n'est ajoutée.
+
+Les anciens ivy-cpp et ivy-cpp-dev sont remplacés respectivement par ivy-c
+et ivy-c-dev. Les champs Conflicts/Replaces permettent leur retrait lors
+de l'installation et les champs Provides versionnés conservent leurs noms
+pour les applications qui en dépendent.
 
 Prérequis
 ---------
 
 La construction vise Ubuntu 24.04 ou une distribution disposant de GCC 13
 ou plus récent et de libstdc++ avec std::expected, std::move_only_function
-et std::format. Le backend GLib est inclus dans les quatre paquets.
+et std::format. Le backend GLib est inclus dans les deux paquets.
 
     sudo apt install build-essential debhelper pkg-config python3 \
-        libxt-dev libx11-dev tcl-dev libglib2.0-dev libpcre2-dev libreadline-dev
+        libxt-dev libx11-dev tcl-dev libglib2.0-dev libpcre2-dev libreadline-dev \
+        doxygen graphviz texlive-latex-base texlive-latex-recommended \
+        texlive-latex-extra texlive-fonts-recommended poppler-utils
 
 list.h est fourni dans les sources ; aucun paquet utils-c-dev n'est requis.
 Qt n'est pas nécessaire pour construire les bibliothèques C++ ou les paquets.
+Doxygen et LaTeX servent uniquement à la construction du PDF ; ils ne sont
+pas des dépendances des paquets installés. poppler-utils est utilisé par
+le vérificateur pour lire le PDF extrait du paquet.
 
 Construction et vérification
 ----------------------------
@@ -41,7 +51,10 @@ La commande historique utilise désormais les mêmes règles :
 
 Le script construit une copie temporaire des sources. Le nettoyage Debian
 ne supprime donc pas les builds locaux. Les .deb, .buildinfo et .changes
-sont copiés dans build/debian/ après une construction réussie.
+sont copiés dans build/debian/ après une construction réussie. Les anciens
+.deb ivy-cpp et ivy-cpp-dev présents dans ce répertoire sont alors déplacés
+dans build/debian/legacy-cpp/ pour ne pas les inclure dans une installation
+avec un joker (*.deb).
 IVY_DEB_OUTPUT_DIR permet de choisir un autre répertoire de sortie.
 Les arguments du script sont transmis à dpkg-buildpackage ; par exemple :
 
@@ -56,11 +69,15 @@ sources et dépose les paquets dans le répertoire parent :
 La version vient de debian/changelog. Les règles utilisent les options de
 compilation Debian et leur cible CPU par défaut, sans imposer x86-64-v3.
 Elles vérifient que chaque fichier installé appartient à un paquet et
-produisent exactement quatre .deb, sans paquets dbgsym automatiques.
+produisent exactement deux .deb, sans paquets dbgsym automatiques.
 Les dépendances système et les triggers ldconfig sont calculés par debhelper.
+Le PDF est régénéré depuis les sources par doc/build_pdf.sh à chaque
+construction des paquets, puis installé sans compression supplémentaire.
+Les documents générés localement ne sont pas utilisés par le build isolé.
 
 Le vérificateur contrôle les noms, versions, dépendances, propriétaires,
-conflits de fichiers, liens de bibliothèques et en-têtes privés. Il extrait
+conflits de fichiers, liens de bibliothèques, en-têtes privés, remplacement
+des anciens paquets C++ et contenu du PDF. Il extrait
 les paquets dans un répertoire temporaire, puis compile et exécute des
 consommateurs C et C++ avec les variantes native et GLib, en liaison
 partagée et en utilisant les archives Ivy statiques. Il n'installe aucun
@@ -70,8 +87,16 @@ avec les dépendances de compilation ci-dessus.
 Utilisation des paquets
 ----------------------
 
-    sudo apt install ./build/debian/ivy-c_*.deb ./build/debian/ivy-c-dev_*.deb \
-        ./build/debian/ivy-cpp_*.deb ./build/debian/ivy-cpp-dev_*.deb
+    sudo apt install --reinstall ./build/debian/ivy-c_*.deb ./build/debian/ivy-c-dev_*.deb
+
+--reinstall permet aussi de remplacer un build précédent de même version,
+notamment la première version 3.18.0 répartie en quatre paquets. APT retire
+alors les anciens paquets ivy-cpp et ivy-cpp-dev et installe leur contenu
+dans les deux paquets regroupés.
+
+Pour ouvrir la référence installée :
+
+    xdg-open /usr/share/doc/ivy-c-dev/ivy-api.pdf
 
 Pour compiler un consommateur C++ :
 

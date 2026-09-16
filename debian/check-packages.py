@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the four Ivy binary packages without installing them on the host."""
+"""Check the two Ivy binary packages without installing them on the host."""
 
 import argparse
 import io
@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 from email.parser import Parser
 
-PACKAGES = {"ivy-c", "ivy-c-dev", "ivy-cpp", "ivy-cpp-dev"}
+PACKAGES = {"ivy-c", "ivy-c-dev"}
 LIBRARIES = ("ivy", "glibivy", "ivy-cpp", "ivy-cpp-glib")
 
 
@@ -54,17 +54,17 @@ def inspect_packages(directory, extracted):
     require(numbers, f"Unrecognized Ivy version: {version}")
     major, minor = numbers.groups()
 
-    dependencies = {
-        "ivy-c-dev": ["ivy-c"],
-        "ivy-cpp": ["ivy-c"],
-        "ivy-cpp-dev": ["ivy-cpp", "ivy-c-dev"],
-    }
-    for name, required in dependencies.items():
-        depends = metadata[name].get("Depends", "")
-        for dependency in required:
-            require(re.search(r"\b" + re.escape(dependency) + r"\s*\(=\s*" + re.escape(version) + r"\)", depends),
-                    f"{name}: missing exact dependency on {dependency} {version}")
-    require("libstdc++6" in metadata["ivy-cpp"].get("Depends", ""),
+    require(re.search(r"\bivy-c\s*\(=\s*" + re.escape(version) + r"\)", metadata["ivy-c-dev"].get("Depends", "")),
+            f"ivy-c-dev: missing exact dependency on ivy-c {version}")
+    for name, retired in (("ivy-c", "ivy-cpp"), ("ivy-c-dev", "ivy-cpp-dev")):
+        for field in ("Conflicts", "Replaces"):
+            require(retired in [entry.strip() for entry in metadata[name].get(field, "").split(",")],
+                    f"{name}: missing {field} for retired package {retired}")
+        require(f"{retired} (= {version})" in metadata[name].get("Provides", ""),
+                f"{name}: missing versioned compatibility Provides for {retired}")
+        require(not re.search(r"\bivy-cpp(?:-dev)?\b", metadata[name].get("Depends", "")),
+                f"{name}: depends on a retired package")
+    require("libstdc++6" in metadata["ivy-c"].get("Depends", ""),
             "C++ runtime dependency was not generated")
     require("libpcre2-dev" in metadata["ivy-c-dev"].get("Depends", ""),
             "Static C consumers need libpcre2-dev")
@@ -77,26 +77,28 @@ def inspect_packages(directory, extracted):
             require(not filename.startswith("usr/lib/debug/"), f"Unexpected debug artifact: {filename}")
             require(not filename.endswith(("_internal.h", "ivy_internal.hpp")), f"Private header shipped: {filename}")
             if filename.startswith("usr/include/"):
-                expected = "ivy-cpp-dev" if filename.endswith(".hpp") else "ivy-c-dev"
-                require(name == expected, f"Header in wrong package: {filename}")
+                require(name == "ivy-c-dev", f"Header in wrong package: {filename}")
         subprocess.run(["dpkg-deb", "--extract", str(package), str(extracted)], check=True)
         controls = extracted.parent / (name + "-control")
         subprocess.run(["dpkg-deb", "--control", str(package), str(controls)], check=True)
-        if name in ("ivy-c", "ivy-cpp"):
+        if name == "ivy-c":
             require((controls / "shlibs").is_file(), f"{name}: missing shared-library metadata")
+            shlibs = (controls / "shlibs").read_text()
+            for library in LIBRARIES:
+                require(re.search(r"^lib" + re.escape(library) + r"\s+" + major + r"\s+ivy-c(?:\s|$)",
+                                  shlibs, re.MULTILINE), f"{library}: shared-library dependency must point to ivy-c")
             require("ldconfig" in (controls / "triggers").read_text(), f"{name}: missing ldconfig trigger")
         print(f"PASS {name} {version}: {len(files)} files; Depends: {metadata[name].get('Depends', '(none)')}")
 
     required = {"usr/include/Ivy/ivy.h": "ivy-c-dev", "usr/include/Ivy/timer.h": "ivy-c-dev"}
     for filename in ("ivy.hpp", "ivy_detail.hpp", "ivy_bus_private.hpp", "ivy_thread.hpp", "ivy_glib.hpp"):
-        required["usr/include/Ivy/" + filename] = "ivy-cpp-dev"
+        required["usr/include/Ivy/" + filename] = "ivy-c-dev"
     for filename in ("application_types", "applications", "callbacks", "filters", "lifecycle", "mainloop",
                      "messages", "regexp", "results", "send", "subscriptions", "timer_types", "timers"):
-        required[f"usr/include/Ivy/api/{filename}.hpp"] = "ivy-cpp-dev"
+        required[f"usr/include/Ivy/api/{filename}.hpp"] = "ivy-c-dev"
     for library in LIBRARIES:
-        runtime = "ivy-cpp" if library.startswith("ivy-cpp") else "ivy-c"
-        dev = runtime + "-dev"
-        for suffix, owner in ((f".so.{major}.{minor}", runtime), (f".so.{major}", runtime), (".so", dev), (".a", dev)):
+        for suffix, owner in ((f".so.{major}.{minor}", "ivy-c"), (f".so.{major}", "ivy-c"),
+                              (".so", "ivy-c-dev"), (".a", "ivy-c-dev")):
             required[f"usr/lib/lib{library}{suffix}"] = owner
         for suffix in (".so", f".so.{major}"):
             link = extracted / f"usr/lib/lib{library}{suffix}"
@@ -110,12 +112,19 @@ def inspect_packages(directory, extracted):
             require(f"[lib{backend}.so.{major}]" in elf and f"[lib{other}.so.{major}]" not in elf,
                     f"Wrong C backend linked by {library}")
     for pc in ("ivy-c", "ivy-glib", "ivy-tcl", "ivy-cpp", "ivy-cpp-glib"):
-        required[f"usr/lib/pkgconfig/{pc}.pc"] = "ivy-cpp-dev" if pc.startswith("ivy-cpp") else "ivy-c-dev"
+        required[f"usr/lib/pkgconfig/{pc}.pc"] = "ivy-c-dev"
+    required["usr/share/doc/ivy-c-dev/ivy-api.pdf"] = "ivy-c-dev"
     for filename, package in required.items():
         require(owners.get(filename) == package, f"{filename}: expected in {package}, found {owners.get(filename)}")
     for filename in owners:
         path = extracted / filename
         require(not path.is_symlink() or path.exists(), f"Broken link after package extraction: {filename}")
+    pdf = extracted / "usr/share/doc/ivy-c-dev/ivy-api.pdf"
+    require(pdf.read_bytes().startswith(b"%PDF-"), "API reference is not a PDF")
+    text = run("pdftotext", "-layout", str(pdf), "-")
+    for topic in ("C API", "C++23 API", "bind_raw", "bind_convert"):
+        require(topic in text, f"API PDF is missing {topic}")
+    print("PASS ivy-c-dev: readable C/C++ API PDF in /usr/share/doc/ivy-c-dev/ivy-api.pdf")
 
 
 C_SOURCE = r'''
@@ -142,9 +151,12 @@ int main() {
     auto& bus = *created;
     if (!bus.set_filters("CHECK")) return 2;
     auto messages = bus.bind_raw([](IvyClientPtr, auto) {}, "^CHECK (.*)$");
+    auto captures = bus.bind_raw([](auto args) { (void)args.size(); }, "^CAPTURES (.*)$");
+    auto typed = bus.bind_convert([](IvyClientPtr, ivy::ConvertStatus, long) {}, "^TYPED (.*)$");
+    auto typed_captures = bus.bind_convert([](ivy::ConvertStatus, long) {}, "^TYPED_CAPTURES (.*)$");
     auto timer = bus.bind_event([](auto) {}, ivy::after(std::chrono::milliseconds(1)));
     auto applications = bus.applications();
-    if (!messages || !timer || !applications || !applications->empty()) return 3;
+    if (!messages || !captures || !typed || !typed_captures || !timer || !applications || !applications->empty()) return 3;
     if (!ivy::validate_anchored_regexp("^CHECK {}$", 42)) return 4;
     return bus.take_callback_error() ? 0 : 5;
 }
@@ -187,13 +199,13 @@ def check_consumers(extracted):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("directory", type=Path, help="directory containing one version of the four .deb files")
+    parser.add_argument("directory", type=Path, help="directory containing one version of the two .deb files")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="ivy-deb-check.") as temporary:
         extracted = Path(temporary) / "root"
         inspect_packages(args.directory.resolve(), extracted)
         check_consumers(extracted)
-    print("All four packages and eight installed-consumer checks passed.")
+    print("Both packages, the API PDF and eight installed-consumer checks passed.")
 
 
 if __name__ == "__main__":

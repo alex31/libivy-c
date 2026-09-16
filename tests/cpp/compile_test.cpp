@@ -7,6 +7,8 @@
 #endif
 
 void typed_function(ivy::ConvertStatus, long, double, std::string_view, bool) noexcept {}
+void typed_peer_function(IvyClientPtr, ivy::ConvertStatus, long) noexcept {}
+void raw_function(std::span<const std::string_view>) noexcept {}
 
 void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string dynamic) {
     auto message = [](IvyClientPtr, std::span<const std::string_view>) {};
@@ -54,6 +56,27 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.bind_raw(message, ivy::runtime_regexp(dynamic));
     (void)bus.bind_raw_unanchored(message, dynamic);
     (void)bus.bind_raw_unanchored(message, "TRACK {}", id);
+    auto captures_only = [](auto args) { (void)args.size(); };
+    (void)bus.bind_raw(captures_only, "^RAW (.*)$");
+    (void)bus.bind_raw(captures_only, ivy::runtime_regexp(dynamic));
+    (void)bus.bind_raw(captures_only, "^RAW {} (.*)$", id);
+    (void)bus.bind_raw_unanchored(captures_only, dynamic);
+    (void)bus.bind_raw_unanchored(captures_only, "RAW {} (.*)$", id);
+    (void)bus.bind_raw(raw_function, "^FUNCTION (.*)$");
+    (void)bus.bind_raw(&raw_function, "^POINTER (.*)$");
+    (void)bus.bind_raw([](const std::span<const std::string_view>&) {}, "^CONST_REF (.*)$");
+    (void)bus.bind_raw([](std::span<const std::string_view>&&) {}, "^RVALUE_REF (.*)$");
+    (void)bus.bind_raw([value = std::make_unique<int>(42)](auto args) mutable noexcept {
+        *value += args.size();
+    }, "^MOVE (.*)$");
+    (void)bus.bind_raw([](auto...) {}, "^GENERIC$");
+    struct RawOverloaded {
+        void operator()(std::span<const std::string_view>) {}
+        void operator()(IvyClientPtr, std::span<const std::string_view>) {}
+    };
+    (void)bus.bind_raw(RawOverloaded{}, "^OVERLOADED (.*)$");
+    (void)bus.bind_raw(std::function<void(std::span<const std::string_view>)>{}, "^FUNCTION (.*)$");
+    (void)bus.bind_raw(std::move_only_function<void(std::span<const std::string_view>) const & noexcept>{}, "^MOVE_FUNCTION (.*)$");
     (void)bus.bind_direct([](IvyClientPtr, int, std::string_view) {});
     (void)subscription.change(R"(^UPDATED ([0-9]{2})$)");
     (void)subscription.change("^UPDATED {}", id);
@@ -66,10 +89,14 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.bind_convert(converted, R"(^TRACK {} ([0-9]{{2}}) (\S+) (\S+) (\S+)$)", id);
     (void)bus.bind_convert(typed_function, "^FUNCTION");
     (void)bus.bind_convert(&typed_function, "^POINTER");
-    (void)bus.bind_convert([](ivy::ConvertStatus, IvyClientPtr, long, double, std::string_view, bool) noexcept {}, "^PEER");
+    (void)bus.bind_convert([](IvyClientPtr, ivy::ConvertStatus, long, double, std::string_view, bool) noexcept {}, "^PEER");
+    (void)bus.bind_convert(typed_peer_function, ivy::runtime_regexp(dynamic));
+    (void)bus.bind_convert(&typed_peer_function, "^PEER {} (.*)$", id);
+    (void)bus.bind_convert(std::function<void(IvyClientPtr, ivy::ConvertStatus, long)>{}, "^PEER_FUNCTION (.*)$");
+    (void)bus.bind_convert(std::move_only_function<void(IvyClientPtr, ivy::ConvertStatus, long) const & noexcept>{}, "^PEER_MOVE_FUNCTION (.*)$");
     (void)bus.bind_convert([value = std::make_unique<int>(42)](ivy::ConvertStatus, long) mutable { ++*value; }, "^MOVE");
     (void)bus.bind_convert([](ivy::ConvertStatus) {}, "^EMPTY$");
-    (void)bus.bind_convert([](ivy::ConvertStatus, IvyClientPtr) {}, "^PEER_ONLY$");
+    (void)bus.bind_convert([](IvyClientPtr, ivy::ConvertStatus) {}, "^PEER_ONLY$");
     (void)bus.bind_convert(std::function<void(ivy::ConvertStatus, long)>{}, "^FUNCTION");
     (void)bus.bind_convert(std::move_only_function<void(ivy::ConvertStatus, long) const & noexcept>{}, "^MOVE_FUNCTION");
 #elif IVY_COMPILE_CASE == 1
@@ -140,7 +167,7 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
 #elif IVY_COMPILE_CASE == 33
     (void)bus.bind_convert([](ivy::ConvertStatus, long) {}, "^VALUE {:d} (.*)$", "wrong type");
 #elif IVY_COMPILE_CASE == 34
-    (void)bus.bind_convert([](ivy::ConvertStatus, IvyClientPtr, IvyClientPtr) {}, "^VALUE (.*)$");
+    (void)bus.bind_convert([](IvyClientPtr, ivy::ConvertStatus, IvyClientPtr) {}, "^VALUE (.*)$");
 #elif IVY_COMPILE_CASE == 35
     (void)bus.bind_convert([](ivy::ConvertStatus, long) { return 42; }, "^VALUE (.*)$");
 #elif IVY_COMPILE_CASE == 36
@@ -150,7 +177,7 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
 #elif IVY_COMPILE_CASE == 38
     (void)bus.bind_convert([](long) {}, "^MISSING_STATUS (.*)$");
 #elif IVY_COMPILE_CASE == 39
-    (void)bus.bind_convert([](IvyClientPtr, ivy::ConvertStatus, long) {}, "^WRONG_ORDER (.*)$");
+    (void)bus.bind_convert([](ivy::ConvertStatus, IvyClientPtr, long) {}, "^WRONG_ORDER (.*)$");
 #elif IVY_COMPILE_CASE == 40
     (void)bus.bind_convert([](const ivy::ConvertStatus&, long) {}, "^STATUS_REFERENCE (.*)$");
 #elif IVY_COMPILE_CASE == 41
@@ -163,5 +190,17 @@ void compile_check(ivy::Bus& bus, ivy::Subscription& subscription, std::string d
     (void)bus.bind(message, "^OLD_NAME (.*)$");
 #elif IVY_COMPILE_CASE == 45
     (void)bus.bind_unanchored(message, "OLD_NAME (.*)$");
+#elif IVY_COMPILE_CASE == 46
+    (void)bus.bind_raw([]() {}, "^MISSING_CAPTURES$");
+#elif IVY_COMPILE_CASE == 47
+    (void)bus.bind_raw([](std::span<const std::string_view>, IvyClientPtr) {}, "^WRONG_ORDER (.*)$");
+#elif IVY_COMPILE_CASE == 48
+    (void)bus.bind_convert([](IvyClientPtr, long) {}, "^PEER_MISSING_STATUS (.*)$");
+#elif IVY_COMPILE_CASE == 49
+    (void)bus.bind_raw([](auto args) { (void)args.size(); }, "RAW (.*)$");
+#elif IVY_COMPILE_CASE == 50
+    (void)bus.bind_raw([](auto args) { (void)args.size(); }, dynamic);
+#elif IVY_COMPILE_CASE == 51
+    (void)bus.bind_raw([](auto args) { (void)args.size(); }, "^RAW {:d} (.*)$", "wrong type");
 #endif
 }

@@ -17,7 +17,8 @@
 #pragma once
 
 // IVY_CPP_API_BEGIN
-    /// @brief Regexp callback: borrowed peer and capture views, valid only during the call.
+    /// @brief Regexp callback with sender: borrowed peer and capture views, valid only during the call.
+    /// bind_raw() also accepts callbacks taking only std::span<const std::string_view>.
     using MessageCallback =
         std::move_only_function<void(IvyClientPtr, std::span<const std::string_view>)>;
 
@@ -32,8 +33,11 @@
 
     /**
      * @brief Subscribe to messages matching a constant anchored regexp.
-     * @tparam Callback Callable compatible with MessageCallback.
-     * @param callback Receives peer and captured groups; the capture views last only for the call.
+     * @tparam Callback Callable taking capture views, optionally preceded by IvyClientPtr.
+     * @param callback Takes (IvyClientPtr, std::span<const std::string_view>) or just
+     * (std::span<const std::string_view>); peer and capture views are borrowed during the call.
+     * Generic lambdas and overloaded callables are supported; if both forms match,
+     * the form with the sender is used.
      * @param regexp Constant regexp beginning with ^; braces and percent signs are literal.
      * @return Owned subscription on success. IVY_EUNANCHORED if the expanded expression is not
      * anchored, IVY_EINVAL for invalid input/syntax, IVY_ENOMEM for allocation failure,
@@ -47,8 +51,11 @@
 
     /**
      * @brief Subscribe using a dynamic anchored regexp.
-     * @tparam Callback Callable compatible with MessageCallback.
-     * @param callback Receives peer and captured groups; the capture views last only for the call.
+     * @tparam Callback Callable taking capture views, optionally preceded by IvyClientPtr.
+     * @param callback Takes (IvyClientPtr, std::span<const std::string_view>) or just
+     * (std::span<const std::string_view>); peer and capture views are borrowed during the call.
+     * Generic lambdas and overloaded callables are supported; if both forms match,
+     * the form with the sender is used.
      * @param regexp Use runtime_regexp(text); text is consumed during this call.
      * @return Owned subscription on success. The same validation, lifecycle and allocation
      * errors as the constant anchored overload.
@@ -61,9 +68,9 @@
     /**
      * @brief Subscribe with automatic conversion of captured groups.
      * @tparam Callback Callable with one explicit, non-overloaded signature returning void.
-     * @param callback Takes ConvertStatus first, then one value per capture: only
-     * long, double, std::string_view or bool. An optional IvyClientPtr immediately
-     * after the status receives the borrowed sender.
+     * @param callback Takes an optional IvyClientPtr first (the borrowed sender),
+     * then ConvertStatus, then one value per capture: only long, double,
+     * std::string_view or bool. The sender comes first when present, as in bind_raw().
      * Generic lambdas, overloaded call operators and reference parameters are rejected.
      * Move-only captures, mutable/noexcept lambdas and function pointers are supported.
      * @param regexp Constant regexp beginning with ^; braces and percent signs are literal.
@@ -143,15 +150,18 @@
 
     /**
      * @brief Subscribe with an explicit unanchored search.
-     * @tparam Callback Callable compatible with MessageCallback.
-     * @param callback Receives peer and captured groups; the capture views last only for the call.
+     * @tparam Callback Callable taking capture views, optionally preceded by IvyClientPtr.
+     * @param callback Takes (IvyClientPtr, std::span<const std::string_view>) or just
+     * (std::span<const std::string_view>); peer and capture views are borrowed during the call.
+     * Generic lambdas and overloaded callables are supported; if both forms match,
+     * the form with the sender is used.
      * @param regexp Text consumed during the call; no local PCRE2 anchoring validation.
      * @return Owned subscription on success. The same lifecycle/input/allocation/callback
      * errors as bind_raw(), without its anchoring check.
      * Keep the subscription or its expected alive; an empty callback is invalid.
      * @see @ref cpp_quickstart @ref cpp_formatting
      */
-    template<class Callback> requires std::constructible_from<MessageCallback, Callback>
+    template<class Callback>
     [[nodiscard]] BindResult bind_raw_unanchored(Callback&& callback, std::string_view regexp) noexcept;
 
     /**
@@ -170,33 +180,33 @@
 
     /**
      * @brief Format and register an anchored regexp subscription.
-     * @tparam Callback Callable compatible with MessageCallback.
+     * @tparam Callback Callable taking capture views, optionally preceded by IvyClientPtr.
      * @tparam Args Types of the formatting arguments.
-     * @param callback Receives peer and capture views valid during the call.
+     * @param callback Takes capture views, optionally preceded by the borrowed sender,
+     * as in the unformatted overload. Views are valid only during the call.
      * @param format Constant format string beginning with ^.
      * @param args Values inserted without escaping regexp syntax.
      * @return Same subscription/result as the text overload, plus formatting errors.
      * Double literal regexp braces, e.g. `R"(^TRACK {} ([0-9]{{2}})$)"` with an integer ID.
      * @see @ref cpp_formatting
      */
-    template<class Callback, class... Args>
-        requires (sizeof...(Args) > 0 && std::constructible_from<MessageCallback, Callback>)
+    template<class Callback, class... Args> requires (sizeof...(Args) > 0)
     [[nodiscard]] BindResult bind_raw(Callback&& callback,
                                  AnchoredFormat<Args...> format, Args&&... args) noexcept;
 
     /**
      * @brief Format and register an unanchored regexp subscription.
-     * @tparam Callback Callable compatible with MessageCallback.
+     * @tparam Callback Callable taking capture views, optionally preceded by IvyClientPtr.
      * @tparam Args Types of the formatting arguments.
-     * @param callback Receives peer and capture views valid during the call.
+     * @param callback Takes capture views, optionally preceded by the borrowed sender,
+     * as in the unformatted overload. Views are valid only during the call.
      * @param format Constant format string.
      * @param args Values inserted without escaping regexp syntax.
      * @return Same subscription/result as the text overload, plus formatting errors.
      * Double literal regexp braces, e.g. `R"(^TRACK {} ([0-9]{{2}})$)"` with an integer ID.
      * @see @ref cpp_formatting
      */
-    template<class Callback, class... Args>
-        requires (sizeof...(Args) > 0 && std::constructible_from<MessageCallback, Callback>)
+    template<class Callback, class... Args> requires (sizeof...(Args) > 0)
     [[nodiscard]] BindResult bind_raw_unanchored(Callback&& callback,
                                            std::format_string<Args...> format, Args&&... args) noexcept;
 // IVY_CPP_API_END

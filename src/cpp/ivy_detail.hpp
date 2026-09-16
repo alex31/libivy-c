@@ -25,6 +25,29 @@
 namespace ivy {
 
 namespace detail {
+template<class Callback>
+Bus::MessageCallback raw_callback(Callback&& callback) {
+    // Prefer the existing peer-taking form for generic or overloaded callables
+    // accepting both signatures.
+    if constexpr (std::constructible_from<Bus::MessageCallback, Callback>) {
+        return Bus::MessageCallback(std::forward<Callback>(callback));
+    } else {
+        using Stored = std::decay_t<Callback>;
+        static_assert(std::is_invocable_r_v<void, Stored&, std::span<const std::string_view>>,
+            "bind_raw requires a callback taking an optional IvyClientPtr first, "
+            "then std::span<const std::string_view>");
+        // Reject empty callables before hiding them inside a nonempty adapter.
+        if constexpr (!std::is_function_v<std::remove_reference_t<Callback>> &&
+                      requires { static_cast<bool>(callback); }) {
+            if (!static_cast<bool>(callback)) return {};
+        }
+        return [function = Stored(std::forward<Callback>(callback))]
+            (IvyClientPtr, std::span<const std::string_view> arguments) mutable {
+                std::invoke(function, std::move(arguments));
+            };
+    }
+}
+
 // Invocation-local diagnostics: owner identity survives Bus moves, and a stack
 // preserves outer callbacks' views during nested or concurrent dispatch.
 struct ConversionContext {
@@ -49,13 +72,6 @@ struct CaptureArguments {
     static constexpr bool valid = (capture_type<Args> && ...);
 };
 
-template<class... Args>
-struct CaptureArguments<IvyClientPtr, Args...> : CaptureArguments<Args...> {
-    static constexpr bool with_peer = true;
-    // Check the remaining arguments directly: a second peer is not a capture.
-    static constexpr bool valid = (capture_type<Args> && ...);
-};
-
 template<class Signature>
 struct CaptureSignature {
     static constexpr bool valid = false;
@@ -64,6 +80,11 @@ struct CaptureSignature {
 template<class R, class... Args>
 struct CaptureSignature<R(ConvertStatus, Args...)> : CaptureArguments<Args...> {
     static constexpr bool valid = std::same_as<R, void> && CaptureArguments<Args...>::valid;
+};
+
+template<class R, class... Args>
+struct CaptureSignature<R(IvyClientPtr, ConvertStatus, Args...)> : CaptureSignature<R(ConvertStatus, Args...)> {
+    static constexpr bool with_peer = true;
 };
 
 template<class R, class... Args>
@@ -187,7 +208,7 @@ void invoke_converted(Callback& callback, const void* owner, IvyClientPtr peer,
     }
     const ConversionContext context(owner, error);
     if constexpr (Signature::with_peer)
-        std::invoke(callback, status, peer, std::get<I>(values)...);
+        std::invoke(callback, peer, status, std::get<I>(values)...);
     else
         std::invoke(callback, status, std::get<I>(values)...);
 }
@@ -197,8 +218,8 @@ Bus::MessageCallback converted_callback(Callback&& callback, const void* owner) 
     using Stored = std::decay_t<Callback>;
     using Signature = CaptureCallback<Stored>;
     static_assert(Signature::valid,
-        "bind_convert requires a non-generic, unambiguous void callback taking ConvertStatus first, "
-        "an optional IvyClientPtr, then only long, double, std::string_view or bool by value");
+        "bind_convert requires a non-generic, unambiguous void callback taking an optional IvyClientPtr first, "
+        "then ConvertStatus, then only long, double, std::string_view or bool by value");
     if constexpr (Signature::valid) {
         // Preserve bind_raw's rejection of null function pointers and empty std::function /
         // std::move_only_function objects before hiding them inside a nonempty lambda.
@@ -366,14 +387,14 @@ std::expected<void, std::error_code> Bus::set_transport_error_callback(Callback&
 template<class Callback>
 Bus::BindResult Bus::bind_raw(Callback&& callback, AnchoredRegexp regexp) noexcept {
     return detail::guard<BindResult>(make_error_code(Error::callback_failed), [&] {
-        return bind_impl(MessageCallback(std::forward<Callback>(callback)), regexp.get(), true);
+        return bind_impl(detail::raw_callback(std::forward<Callback>(callback)), regexp.get(), true);
     });
 }
 
 template<class Callback>
 Bus::BindResult Bus::bind_raw(Callback&& callback, RuntimeRegexp regexp) noexcept {
     return detail::guard<BindResult>(make_error_code(Error::callback_failed), [&] {
-        return bind_impl(MessageCallback(std::forward<Callback>(callback)), regexp.text, true);
+        return bind_impl(detail::raw_callback(std::forward<Callback>(callback)), regexp.text, true);
     });
 }
 
@@ -400,10 +421,10 @@ Bus::BindResult Bus::bind_convert(Callback&& callback,
     });
 }
 
-template<class Callback> requires std::constructible_from<Bus::MessageCallback, Callback>
+template<class Callback>
 Bus::BindResult Bus::bind_raw_unanchored(Callback&& callback, std::string_view regexp) noexcept {
     return detail::guard<BindResult>(make_error_code(Error::callback_failed), [&] {
-        return bind_impl(MessageCallback(std::forward<Callback>(callback)), regexp, false);
+        return bind_impl(detail::raw_callback(std::forward<Callback>(callback)), regexp, false);
     });
 }
 
@@ -414,8 +435,7 @@ Bus::DirectBindResult Bus::bind_direct(Callback&& callback) noexcept {
     });
 }
 
-template<class Callback, class... Args>
-    requires (sizeof...(Args) > 0 && std::constructible_from<Bus::MessageCallback, Callback>)
+template<class Callback, class... Args> requires (sizeof...(Args) > 0)
 Bus::BindResult Bus::bind_raw(Callback&& callback, AnchoredFormat<Args...> format, Args&&... args) noexcept {
     return detail::guard<BindResult>(make_error_code(Error::formatter_failed), [&] {
         return bind_raw(std::forward<Callback>(callback),
@@ -423,8 +443,7 @@ Bus::BindResult Bus::bind_raw(Callback&& callback, AnchoredFormat<Args...> forma
     });
 }
 
-template<class Callback, class... Args>
-    requires (sizeof...(Args) > 0 && std::constructible_from<Bus::MessageCallback, Callback>)
+template<class Callback, class... Args> requires (sizeof...(Args) > 0)
 Bus::BindResult Bus::bind_raw_unanchored(Callback&& callback,
     std::format_string<Args...> format, Args&&... args) noexcept {
     return detail::guard<BindResult>(make_error_code(Error::formatter_failed), [&] {

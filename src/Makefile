@@ -379,7 +379,7 @@ installpkgconf: pkgconf
 	install -m 644 *.pc	$(DESTDIR)$(PREFIX)/lib/pkgconfig
 
 
-# Build the four Debian/Ubuntu packages using the maintained debian/ rules.
+# Build the two Debian/Ubuntu packages using the maintained debian/ rules.
 # Outputs go to ../build/debian; the working tree is copied before cleaning.
 deb:
 	+../debian/build.sh $(DEB_BUILD_FLAGS)

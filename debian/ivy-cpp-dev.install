@@ -1,8 +1,0 @@
-usr/lib/libivy-cpp.so
-usr/lib/libivy-cpp-glib.so
-usr/lib/libivy-cpp.a
-usr/lib/libivy-cpp-glib.a
-usr/include/Ivy/*.hpp
-usr/include/Ivy/api/*.hpp
-usr/lib/pkgconfig/ivy-cpp.pc
-usr/lib/pkgconfig/ivy-cpp-glib.pc

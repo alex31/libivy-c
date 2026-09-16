@@ -1,8 +1,10 @@
 ivy-c (3.18.0) UNRELEASED; urgency=medium
 
-  * split C++23 native and GLib libraries into ivy-cpp and ivy-cpp-dev
-  * build all four binary packages through the Debian packaging rules
-  * keep C and C++ development files separate and require matching runtimes
+  * ship C and C++23 native and GLib libraries together in ivy-c and ivy-c-dev
+  * replace the former ivy-cpp and ivy-cpp-dev packages, preserving their
+    names as versioned virtual packages for existing dependents
+  * build and install the Doxygen PDF reference in ivy-c-dev
+  * verify both binary packages and require a matching runtime for development
   * add user data to pong callbacks and their contextual and legacy
     registration functions; callers must update their signatures and rebuild
   * update ivyprobe and regression tests for per-context pong user data

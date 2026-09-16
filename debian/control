@@ -2,7 +2,9 @@ Source: ivy-c
 Priority: optional
 Section: devel
 Maintainer: Alexandre Bustico <alexandre.bustico@cena.fr>
-Build-Depends: debhelper (>= 13), g++ (>= 4:13), pkg-config, libxt-dev, libx11-dev, tcl-dev, libglib2.0-dev, libpcre2-dev, libreadline-dev
+Build-Depends: debhelper (>= 13), g++ (>= 4:13), pkg-config, libxt-dev, libx11-dev, tcl-dev, libglib2.0-dev, libpcre2-dev, libreadline-dev,
+ python3, doxygen, graphviz, texlive-latex-base, texlive-latex-recommended,
+ texlive-latex-extra, texlive-fonts-recommended
 Rules-Requires-Root: no
 Standards-Version: 3.9.2
 Homepage: http://www2.tls.cena.fr/products/ivy/
@@ -11,38 +13,30 @@ Package: ivy-c-dev
 Section: libdevel
 Architecture: any
 Depends: ivy-c (= ${binary:Version}), ${misc:Depends}, libc6-dev, libx11-dev, libglib2.0-dev, libpcre2-dev
+Conflicts: ivy-cpp-dev
+Replaces: ivy-cpp-dev
+Provides: ivy-cpp-dev (= ${binary:Version})
 Suggests: tclsh, wish
-Description: Ivy software bus. development Package
- This package is needed for compiling applications using ivy-c.
+Description: Ivy software bus - C and C++23 development files
+ Headers, static libraries, linker symlinks and pkg-config metadata for
+ building C and C++23 applications with Ivy. Both native and GLib variants
+ are included; select one variant per application.
+ This package also contains the C and C++ API reference in PDF format.
  Ivy is mostly a communication convention between processes, implemented
  through libraries in several languages and for several platforms,
  from C to Perl, from Macintosh or WindowsNT to Linux or Unix.
-
-Package: ivy-cpp
-Section: libs
-Architecture: any
-Depends: ivy-c (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
-Description: Ivy software bus - C++23 runtime libraries
- C++23 bindings for the Ivy software bus, with owned buses, scoped
- subscriptions and checked error results.
- This package contains the native and GLib shared library variants.
-
-Package: ivy-cpp-dev
-Section: libdevel
-Architecture: any
-Depends: ivy-cpp (= ${binary:Version}), ivy-c-dev (= ${binary:Version}), ${misc:Depends}
-Description: Ivy software bus - C++23 development files
- Headers, static libraries, linker symlinks and pkg-config metadata for
- building C++23 applications with Ivy. Both native and GLib variants
- are included; select one variant per application.
 
 Package: ivy-c
 Section: libs
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Suggests: tclsh, wish
-Conflicts: ivy-tcl
-Description: Ivy software bus. runtime Package
+Conflicts: ivy-tcl, ivy-cpp
+Replaces: ivy-cpp
+Provides: ivy-cpp (= ${binary:Version})
+Description: Ivy software bus - C and C++23 runtime libraries
+ Native and GLib shared libraries for the C API and C++23 wrapper,
+ together with the Ivy command-line tools and manual pages.
  Ivy is mostly a communication convention between processes, implemented
  through libraries in several languages and for several platforms,
  from C to Perl, from Macintosh or WindowsNT to Linux or Unix.

@@ -13,7 +13,8 @@ archive=$repo_dir/src/build/cpp/libivy-cpp.a
 "$cxx" -std=c++23 -fsyntax-only -I"$repo_dir/src/cpp" -I"$repo_dir/src" \
     "$repo_dir/tests/cpp/compile_test.cpp"
 for compile_case in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 \
-    22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45; do
+    22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 \
+    46 47 48 49 50 51; do
     if "$cxx" -std=c++23 -fsyntax-only -DIVY_COMPILE_CASE="$compile_case" \
         -I"$repo_dir/src/cpp" -I"$repo_dir/src" "$repo_dir/tests/cpp/compile_test.cpp" \
         >"$tmp_dir/compile-$compile_case.log" 2>&1; then
@@ -79,7 +80,9 @@ for api_header in "$stage/usr/include/Ivy/api/"*.hpp; do
 static_assert(std::is_move_constructible_v<ivy::Bus>);
 void header_check(ivy::Bus& bus) {
     (void)bus.bind_raw([](IvyClientPtr, auto) {}, "^HEADER (.*)$");
+    (void)bus.bind_raw([](auto args) { (void)args.size(); }, "^CAPTURES (.*)$");
     (void)bus.bind_convert([](ivy::ConvertStatus, long, double, std::string_view, bool) {}, "^TYPED (.*) (.*) (.*) (.*)$");
+    (void)bus.bind_convert([](IvyClientPtr, ivy::ConvertStatus, long) {}, "^TYPED_PEER (.*)$");
     (void)bus.bind_direct([](IvyClientPtr, int, std::string_view) {});
     (void)bus.bind_event([](IvyClientPtr, int) {}, ivy::pong);
     (void)bus.send("HEADER {}", 42);

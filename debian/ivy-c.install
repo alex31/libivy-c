@@ -1,5 +1,7 @@
 usr/lib/libivy.so.*
 usr/lib/libglibivy.so.*
+usr/lib/libivy-cpp.so.*
+usr/lib/libivy-cpp-glib.so.*
 usr/bin/*
 doc/ivy-c.1 usr/share/man/man1
 doc/ivy-c-functions.1 usr/share/man/man1

@@ -6,3 +6,11 @@ usr/include/Ivy/*.h
 usr/lib/pkgconfig/ivy-c.pc
 usr/lib/pkgconfig/ivy-glib.pc
 usr/lib/pkgconfig/ivy-tcl.pc
+usr/lib/libivy-cpp.so
+usr/lib/libivy-cpp-glib.so
+usr/lib/libivy-cpp.a
+usr/lib/libivy-cpp-glib.a
+usr/include/Ivy/*.hpp
+usr/include/Ivy/api/*.hpp
+usr/lib/pkgconfig/ivy-cpp.pc
+usr/lib/pkgconfig/ivy-cpp-glib.pc
