@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file lifecycle.hpp
+ * @ingroup ivy_cpp_api
  * @brief Creating, starting and stopping ivy::Bus, with a complete receiving example.
  *
  * This is a section of the public API assembled by ivy.hpp.
@@ -80,7 +81,7 @@
      * Error::callback_failed if user callback construction fails.
      * Callback storage is constructed inside the checked operation. Pass lambdas
      * or functors directly; use std::move for an already owned move-only callback.
-     * @see cpp_quickstart
+     * @see @ref cpp_quickstart
      */
     template<class Application = ApplicationCallback, class Die = DieCallback>
         requires (std::constructible_from<ApplicationCallback, Application> &&

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<doxygenlayout version="1.0">
+  <!-- Other page kinds retain Doxygen's default layout. -->
+  <class>
+    <briefdescription visible="yes"/>
+    <includes visible="$SHOW_HEADERFILE"/>
+    <inheritancegraph visible="$CLASS_GRAPH"/>
+    <collaborationgraph visible="yes"/>
+    <memberdecl>
+      <membergroups visible="yes"/>
+      <publicstaticmethods title="Creation helpers"/>
+      <publicmethods title="Operations"/>
+      <publicattributes title="Data fields"/>
+      <publictypes title="Callback and result types"/>
+      <publicstaticattributes title=""/>
+      <nestedclasses visible="yes" title=""/>
+      <friends title=""/>
+      <related title="" subtitle=""/>
+    </memberdecl>
+    <detaileddescription title=""/>
+    <memberdef>
+      <functions title="Operation reference"/>
+      <constructors title="Construction and ownership"/>
+      <variables title="Data fields"/>
+      <typedefs title="Callback and result types"/>
+      <enums title=""/>
+      <inlineclasses title=""/>
+      <related title=""/>
+    </memberdef>
+    <allmemberslink visible="yes"/>
+    <usedfiles visible="$SHOW_USED_FILES"/>
+    <authorsection visible="yes"/>
+  </class>
+</doxygenlayout>

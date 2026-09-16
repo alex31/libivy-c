@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file applications.hpp
+ * @ingroup ivy_cpp_api
  * @brief Owned application snapshots and peer lookup on ivy::Bus.
  *
  * This is a section of the public API assembled by ivy.hpp.

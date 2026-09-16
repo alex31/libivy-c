@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file timers.hpp
+ * @ingroup ivy_cpp_api
  * @brief Periodic, limited and one-shot timer registration on ivy::Bus.
  *
  * This is a section of the public API assembled by ivy.hpp.
@@ -19,7 +20,7 @@
     /// @brief Timer notification: lateness relative to its scheduled expiry, in milliseconds.
     using TimerCallback = std::move_only_function<void(std::chrono::milliseconds)>;
 
-    /// @brief Scoped periodic timer, or its registration error.
+    /// @brief Scoped periodic, limited or one-shot timer, or its registration error.
     using TimerBindResult = std::expected<TimerSubscription, std::error_code>;
 
     /**
@@ -33,7 +34,7 @@
      * Each registration creates an independent timer, repeating indefinitely or
      * for schedule.count invocations. Keep it alive and run the bus's event loop
      * to receive ticks. Can be called before start().
-     * @see TimerSubscription::set_period() cpp_event_callbacks
+     * @see TimerSubscription::set_period() @ref cpp_event_callbacks
      */
     template<class Callback>
     [[nodiscard]] TimerBindResult bind_event(Callback&& callback, Every schedule) noexcept;
@@ -43,7 +44,8 @@
      * @tparam Callback Callable compatible with TimerCallback.
      * @param callback Receives lateness relative to the requested expiry, in milliseconds.
      * @param schedule Use ivy::after(delay); zero delay is allowed, negative is invalid.
-     * @return TimerSubscription, or the same lifecycle/allocation/input errors as every().
+     * @return TimerSubscription, or the same lifecycle/allocation/input errors as
+     * the periodic bind_event() overload.
      * The token becomes inactive when its only callback is selected. Retain it until
      * then; destruction cancels an invocation that has not yet been selected.
      */

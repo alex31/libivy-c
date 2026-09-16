@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file send.hpp
+ * @ingroup ivy_cpp_api
  * @brief Broadcasts, send reports, direct messages and control sends on ivy::Bus.
  *
  * This is a section of the public API assembled by ivy.hpp.
@@ -49,7 +50,7 @@
      * else
      *     std::cout << *sent << " frames accepted locally\n";
      * @endcode
-     * @see cpp_sending
+     * @see @ref cpp_sending
      */
     [[nodiscard]] SendResult send(std::string_view message) noexcept;
 
@@ -71,7 +72,7 @@
      *         std::cerr << report.system_error.message() << '\n';
      * }
      * @endcode
-     * @see cpp_sending SendReport
+     * @see @ref cpp_sending SendReport
      */
     [[nodiscard]] SendReport send_report(std::string_view message) noexcept;
 
@@ -89,7 +90,7 @@
      * if (!sent)
      *     std::cerr << sent.error().message() << '\n';
      * @endcode
-     * @see cpp_sending
+     * @see @ref cpp_sending
      */
     [[nodiscard]] std::expected<void, std::error_code>
     send(IvyClientPtr peer, int id, std::string_view message) noexcept;
@@ -100,7 +101,7 @@
      * @param format Constant std::format string.
      * @param args Values inserted into the message.
      * @return Same result as the text overload, including formatting errors.
-     * @see cpp_formatting cpp_results
+     * @see @ref cpp_formatting @ref cpp_results
      */
     template<class... Args> requires (sizeof...(Args) > 0)
     [[nodiscard]] SendResult send(std::format_string<Args...> format, Args&&... args) noexcept;
@@ -111,7 +112,7 @@
      * @param format Constant std::format string.
      * @param args Values inserted into the message.
      * @return Same result as the text overload, including formatting errors in SendReport::error.
-     * @see cpp_formatting cpp_results
+     * @see @ref cpp_formatting @ref cpp_results
      */
     template<class... Args> requires (sizeof...(Args) > 0)
     [[nodiscard]] SendReport send_report(std::format_string<Args...> format, Args&&... args) noexcept;
@@ -124,7 +125,7 @@
      * @param format Constant std::format string.
      * @param args Values inserted into the message.
      * @return Same result as the text overload, including formatting errors.
-     * @see cpp_formatting cpp_results
+     * @see @ref cpp_formatting @ref cpp_results
      */
     template<class... Args> requires (sizeof...(Args) > 0)
     [[nodiscard]] std::expected<void, std::error_code>

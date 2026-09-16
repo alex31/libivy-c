@@ -6,6 +6,7 @@
 /**
  * @file ivy_thread.hpp
  * @brief Optional owner of a thread running a borrowed ivy::Bus.
+ * @ingroup ivy_cpp_api
  * @section cpp_loop_thread A native loop thread with checked results
  * LoopThread::create() runs an already started Bus on a new thread. The Bus
  * stays at its original address and must outlive the helper; callbacks may keep
@@ -38,7 +39,9 @@
  */
 namespace ivy {
 
-/** @brief Movable owner of a loop thread; borrows a stable, live Bus. */
+/** @brief Movable owner of a loop thread; borrows a stable, live Bus.
+ * @ingroup ivy_cpp_api
+ */
 class LoopThread {
 public:
     /// @brief Executed once on the worker after run(), including on driver failure.

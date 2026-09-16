@@ -1,0 +1,66 @@
+/**
+ * @mainpage Ivy C and C++23 API reference
+ *
+ * @section api_languages Choose the API for your application
+ *
+ * This manual documents two interfaces to the same Ivy bus library. Their
+ * entry points and ownership rules are different; choose one interface for
+ * your application code and follow its reference below.
+ *
+ * Interface | Public header | Entry points | Ownership and errors
+ * --------- | ------------- | ------------ | --------------------
+ * @ref ivy_c_api | `<Ivy/ivy.h>` | `IvyContextCreate`, `IvyContextBindMsg`, etc. | Explicit `IvyContext*`, handles and `IvyStatus` results
+ * @ref ivy_cpp_api | `<Ivy/ivy.hpp>` | `ivy::Bus::create`, `bind_raw`, `bind_convert`, `bind_direct`, `bind_event` | RAII objects, scoped subscriptions and `std::expected`
+ *
+ * @section api_c_reading C API: explicit contexts and legacy compatibility
+ *
+ * Start with @ref ivy_context_api for new C applications. Each operation takes
+ * the owning `IvyContext*`, allowing several independent buses. Its filtering
+ * operations are documented separately in @ref ivy_filters.
+ *
+ * @ref ivy_legacy_api is the C compatibility interface. In particular,
+ * @ref ivy_legacy_filters documents `IvySetFilter`, `IvyAddFilter` and
+ * `IvyRemoveFilter`, which use the calling thread's current/default context.
+ * They are not the explicit-context filtering API.
+ *
+ * @section api_cpp_reading C++23 API: owned buses and typed callbacks
+ *
+ * Start with @ref cpp_quickstart and @ref cpp_overview, then consult
+ * @ref ivy_cpp_api. The C++ filtering methods are `ivy::Bus::set_filters`,
+ * `ivy::Bus::add_filter`, `ivy::Bus::remove_filter` and `ivy::Bus::clear_filters`;
+ * see @ref cpp_filters. These methods operate on their owning Bus.
+ *
+ * C++ callback signatures reuse a few C types such as `IvyClientPtr` and
+ * `IvyBindEvent`. Those shared types remain documented under @ref ivy_types;
+ * their use does not make `ivy::Bus` methods part of the C API.
+ *
+ * @section api_reading_order Reading order inside each API
+ *
+ * Reference entries follow the common application workflow: initialization and
+ * event-loop execution, message subscriptions, broadcast sends, direct
+ * messages, filtering, then events and optional inspection/integration tools.
+ * The C context and legacy references remain separate. Within the C++ type
+ * chapter, `ivy::Bus` comes first, followed by message subscriptions and send
+ * results; direct/event/timer tokens and optional helpers come later.
+ * Alphabetical indexes remain available for looking up a known symbol.
+ */
+
+/**
+ * @defgroup ivy_c_api C API
+ * @brief C entry points: explicit contexts, shared types, timers and legacy compatibility.
+ * Include `<Ivy/ivy.h>` and link with `ivy-c` (native loop) or `ivy-glib`.
+ * New applications should use @ref ivy_context_api. The separate
+ * @ref ivy_legacy_api group is provided for existing C applications.
+ * The C++ wrapper is documented under @ref ivy_cpp_api.
+ */
+
+/**
+ * @defgroup ivy_cpp_api C++23 API
+ * @brief C++ wrappers in namespace ivy: owned buses, scoped subscriptions and checked results.
+ * Include `<Ivy/ivy.hpp>` and link with `ivy-cpp`, or include
+ * `<Ivy/ivy_glib.hpp>` and link with `ivy-cpp-glib` for a GLib host loop.
+ * See @ref cpp_quickstart for a complete receiving example, @ref cpp_overview
+ * for the API tour, and @ref cpp_filters for per-Bus filters.
+ * C functions named `IvyContext...` or legacy `Ivy...` are documented under
+ * @ref ivy_c_api, rather than as C++ Bus methods.
+ */

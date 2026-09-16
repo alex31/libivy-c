@@ -24,6 +24,7 @@
 /**
  * @file ivy.hpp
  * @brief C++23 API for Ivy: owned buses, scoped subscriptions and checked sends.
+ * @ingroup ivy_cpp_api
  *
  * Include `<Ivy/ivy.hpp>` and link with `libivy-cpp`. The definitions needed by
  * templates are included automatically from ivy_detail.hpp.
@@ -144,7 +145,9 @@
  * (section @ref cpp_quickstart in the generated documentation).
  */
 
-/// @brief C++23 bus ownership, subscriptions and error results.
+/** @brief C++23 bus ownership, subscriptions and error results.
+ * @ingroup ivy_cpp_api
+ */
 namespace ivy { class Bus; }
 
 // Public sections are included in namespace or class scope as appropriate.
@@ -159,6 +162,7 @@ namespace ivy {
 
 /**
  * @brief Owns one independent Ivy context, created through create().
+ * @ingroup ivy_cpp_api
  *
  * The bus is movable and cannot be copied. Creation does not start the bus.
  *
@@ -172,7 +176,7 @@ namespace ivy {
  * Peer handles are borrowed from this context and remain valid only while the
  * peer is connected. Captured references must outlive callbacks; synchronize
  * shared mutable state used from several threads.
- * @see cpp_quickstart cpp_sending cpp_results
+ * @see @ref cpp_quickstart @ref cpp_sending @ref cpp_results
  */
 class Bus {
 public:

@@ -188,6 +188,32 @@ the repository root to generate both C and C++ API documentation in
 `doc/doxygen_cpp_filter.py` assembles the declarations for Doxygen, which does
 not inline headers inside class declarations. The compiler reads the original
 headers directly, and Doxygen reads each section's guide on its own file page.
+The reference opens with a C/C++ API comparison and has two top-level groups:
+**C API** (explicit contexts, shared types, low-level timers and legacy wrappers)
+and **C++23 API** (the `ivy` types and `Bus` methods). C filtering is split into
+explicit-context operations and legacy current/default-context wrappers;
+C++ per-Bus filtering has its own guide.
+The PDF has separate **C API** and **C++23 API** parts, including each family's
+types and headers. `doc/organize_pdf.py` arranges the generated LaTeX using
+Doxygen's XML index while preserving all reference sections and labels.
+Within those parts, the reference follows usage order: initialization, message
+subscriptions, broadcasts, direct messages, filters, events and optional helpers.
+`ivy::Bus` and message subscriptions precede the less frequently needed types.
+`doc/reference_order.py` defines this order; the Doxygen filter reorders only its
+documentation input, and `doc/DoxygenLayout.xml` puts operations before callback
+typedefs and ownership machinery. Header declarations used by the compiler are
+not reordered. Add new operations to that ordering policy when extending the
+API; unknown declarations cause documentation generation to fail explicitly.
+Alphabetical indexes are retained for symbol lookup.
+
+Generate the PDF reference with `sh doc/build_pdf.sh`. The script checks for
+Python 3, Doxygen, Graphviz (`dot`), Make, `pdflatex` and `makeindex`, then writes
+`doc/doxygen/ivy-api.pdf`. A TeX Live installation with the LaTeX base,
+recommended/extra packages, plain/generic packages and recommended fonts is required. Intermediate
+LaTeX files are written to `doc/doxygen/latex/`; generated documentation is
+excluded from version control.
+The PDF uses printed cross-references to avoid incorrect C++ alias hyperlinks
+produced by Doxygen 1.9.x.
 
 The Linux build has separate targets for the wrapper. Building the C library
 and tools does not enable C++23:

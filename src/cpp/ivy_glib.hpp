@@ -6,6 +6,7 @@
 /**
  * @file ivy_glib.hpp
  * @brief Create an ivy::Bus attached to a GLib main context.
+ * @ingroup ivy_cpp_api
  * @section cpp_glib Using an application-owned GLib or GTK loop
  * Include this optional header and link with pkg-config package ivy-cpp-glib.
  * It replaces ivy-cpp for this application; the two C backends export the same
@@ -55,6 +56,7 @@ private:
 
 /**
  * @brief Create a bus attached to the supplied GLib main context.
+ * @ingroup ivy_cpp_api
  * @param context Borrowed context. NULL selects the thread-default/global default.
  * @param application_name Application name, copied during creation.
  * @param ready Optional ready message, copied during creation.
@@ -62,7 +64,7 @@ private:
  * @param die_callback Remote die handler; accepts move-only captures.
  * @return Bus::CreateResult, with the errors of Bus::create(), or IVY_ESTATE
  * if another thread owns the requested GLib context.
- * @see cpp_glib
+ * @see @ref cpp_glib
  */
 template<class Application = Bus::ApplicationCallback, class Die = Bus::DieCallback>
     requires (std::constructible_from<Bus::ApplicationCallback, Application> &&
@@ -78,13 +80,14 @@ template<class Application = Bus::ApplicationCallback, class Die = Bus::DieCallb
 }
 
 /** @brief Create a bus on the thread-default GLib context (or global default).
+ * @ingroup ivy_cpp_api
  * @param application_name Application name, copied during creation.
  * @param ready Optional ready message, copied during creation.
  * @param application_callback Application handler; accepts move-only captures.
  * @param die_callback Remote die handler; accepts move-only captures.
  * @return Bus::CreateResult with the errors of Bus::create(), or IVY_ESTATE
  * if another thread owns the selected context.
- * @see cpp_glib Bus::create
+ * @see @ref cpp_glib Bus::create
  */
 template<class Application = Bus::ApplicationCallback, class Die = Bus::DieCallback>
     requires (std::constructible_from<Bus::ApplicationCallback, Application> &&

@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file subscriptions.hpp
+ * @ingroup ivy_cpp_api
  * @brief Message and event subscription ownership, cancellation and lifetime.
  *
  * This is a section of the public API assembled by ivy.hpp.
@@ -16,6 +17,10 @@
 
 // IVY_CPP_API_BEGIN
 namespace ivy {
+
+/** @addtogroup ivy_cpp_api
+ * @{
+ */
 
 /**
  * @brief Owns one regexp subscription; destruction unsubscribes.
@@ -78,7 +83,7 @@ public:
      * Peer updates are asynchronous; messages in flight may reflect the old regexp.
      * If unbind wins a race with change, the token remains inactive and change
      * reports IVY_ESTATE. Native removal waits for ongoing changes to finish.
-     * @see cpp_formatting
+     * @see @ref cpp_formatting
      */
     [[nodiscard]] std::expected<void, std::error_code> change(AnchoredRegexp regexp) noexcept;
 
@@ -102,7 +107,7 @@ public:
      * @param format Constant format string beginning with ^.
      * @param args Values inserted into the regexp; they are not escaped.
      * @return Same result as the text overload, plus formatting errors.
-     * @see cpp_formatting
+     * @see @ref cpp_formatting
      */
     template<class... Args>
         requires (sizeof...(Args) > 0)
@@ -115,7 +120,7 @@ public:
      * @param format Constant format string.
      * @param args Values inserted into the regexp; they are not escaped.
      * @return Same result as the text overload, plus formatting errors.
-     * @see cpp_formatting
+     * @see @ref cpp_formatting
      */
     template<class... Args>
         requires (sizeof...(Args) > 0)
@@ -238,6 +243,8 @@ private:
     explicit EventSubscription(Subscription subscription) noexcept;
     friend class Bus;
 };
+
+/** @} */
 
 } // namespace ivy
 // IVY_CPP_API_END

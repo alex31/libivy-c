@@ -1,13 +1,17 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file filters.hpp
- * @brief Per-bus filters: replacement, addition, removal, parameter packs and ranges.
+ * @ingroup ivy_cpp_api
+ * @brief C++23 per-Bus filters: replacement, addition, removal, parameter packs and ranges.
  *
  * This is a section of the public API assembled by ivy.hpp.
  * Applications can continue to include only <Ivy/ivy.hpp>.
  * The declarations below are public members of ivy::Bus.
  *
- * @section cpp_filters Per-bus message-class filters
+ * @section cpp_filters C++23 per-Bus message-class filters
+ * These are methods of ivy::Bus. C functions with an explicit IvyContext are
+ * documented in @ref ivy_filters; C compatibility wrappers are in
+ * @ref ivy_legacy_filters.
  * set_filters() replaces only this bus's list. It accepts individual words,
  * initializer lists or input ranges of strings/string_views. Inputs are copied
  * during the call, including temporary strings produced by a view.

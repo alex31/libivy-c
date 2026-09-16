@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../../version.h for the copyright notice. */
 /**
  * @file mainloop.hpp
+ * @ingroup ivy_cpp_api
  * @brief Blocking event-loop execution on the calling thread.
  * @section cpp_mainloop Running the native loop
  * After start(), run() services I/O, timers and controls until stop(). No thread
@@ -38,7 +39,7 @@
      * stop but remains separate: run() does not consume or return that failure.
      * Call take_callback_error() after run() returns to retrieve it.
      * No thread is created. Destruction/movement must not race with this call.
-     * @see cpp_mainloop stop take_callback_error
+     * @see @ref cpp_mainloop stop take_callback_error
      */
     [[nodiscard]] std::expected<void, std::error_code> run() noexcept;
 

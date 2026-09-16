@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file results.hpp
+ * @ingroup ivy_cpp_api
  * @brief Error codes, send reports and result conventions.
  *
  * This is a section of the public API assembled by ivy.hpp.
@@ -18,6 +19,8 @@
  * IVY_EINVAL. Other user callback/formatter failures use ivy::Error. Callbacks
  * that fail request a bus stop; collect the first error with
  * ivy::Bus::take_callback_error() after servicing and joining the loop.
+ * Capture errors in bind_convert() are reported through ConvertStatus and
+ * Bus::conversion_error() during the callback; they do not request a bus stop.
  *
  */
 
@@ -30,6 +33,10 @@
 
 // IVY_CPP_API_BEGIN
 namespace ivy {
+
+/** @addtogroup ivy_cpp_api
+ * @{
+ */
 
 /** @brief Result of converting one message for a bind_convert callback. */
 enum class ConvertStatus {
@@ -76,6 +83,8 @@ struct SendReport {
     std::error_code error; ///< First failure, or a false-testing code on success.
     std::error_code system_error; ///< OS error associated with the first failure, or zero if none is available.
 };
+
+/** @} */
 
 } // namespace ivy
 // IVY_CPP_API_END

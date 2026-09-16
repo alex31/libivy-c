@@ -18,6 +18,7 @@
 /**
  * @file ivy.h
  * @brief Public C API for the Ivy bus library.
+ * @ingroup ivy_c_api
  *
  * @details
  * Ivy is a lightweight publish/subscribe bus. Applications advertise their
@@ -29,8 +30,8 @@
  * ::IvyContextMainLoop(), and pass the context explicitly to every operation.
  * This is the API new applications should use. The legacy functions without an
  * ::IvyContext argument are kept so older applications continue to compile;
- * they operate on a process default context and are documented in the
- * compatibility group.
+ * most use the calling thread's current context, falling back to the process
+ * default context. Context selection is documented for each compatibility entry.
  *
  * Typical MT-safe application:
  *
@@ -102,6 +103,7 @@ extern "C" {
 
 /**
  * @defgroup ivy_types Public Types And Status Codes
+ * @ingroup ivy_c_api
  * @brief Opaque handles, status codes, events, and callback signatures.
  * @{
  */
@@ -168,9 +170,9 @@ typedef enum {
  * A peer with several matching subscriptions is counted once per subscription.
  */
 typedef struct {
-	size_t matched;
+	size_t matched; /**< Matching remote subscriptions, including multiple matches on one peer. */
 	size_t accepted; /**< Complete frames written or queued locally. */
-	size_t failed;
+	size_t failed; /**< Matching frames that could not be accepted locally. */
 	int system_error; /**< errno/WSA error for the first failure, or zero. */
 } IvySendReport;
 
@@ -365,8 +367,9 @@ typedef struct _msg_rcv *MsgRcvPtr;
 /** @} */
 
 /**
- * @defgroup ivy_context_api Contextual MT-safe API
- * @brief Preferred API for new applications.
+ * @defgroup ivy_context_api C API with explicit contexts (MT-safe)
+ * @ingroup ivy_c_api
+ * @brief Preferred C API for new applications; each bus has an explicit IvyContext.
  * @{
  */
 
@@ -564,15 +567,26 @@ int IvyContextSetPongCallback(IvyContext *ctx,
 			  IvyPongCallback pong_callback,
 			  void *pong_data );
 
-/** Install an optional transport-error callback. NULL disables it.
+/** @brief Install an optional transport-error callback. NULL disables it.
+ * @param ctx Context to configure.
+ * @param callback Error notification callback, or NULL to disable it.
+ * @param user_data Borrowed user pointer passed to the callback.
+ * @return IVY_OK, IVY_EINVAL for a NULL context, or IVY_ESTOPPED after stop.
+ *
  * Called by the event loop outside internal locks. No notification is promised
  * after the loop stops; immediate send failures are always returned to callers.
  * Replacing the callback does not wait for an invocation already in progress;
  * keep its user_data valid until that invocation returns.
- * Returns IVY_OK, IVY_EINVAL for a NULL context, or IVY_ESTOPPED after stop.
  */
 int IvyContextSetTransportErrorCallback(IvyContext *ctx,
 	IvyTransportErrorCallback callback, void *user_data);
+/** @brief Set the transport-error callback on the current/default context.
+ * @ingroup ivy_legacy_api
+ * @param callback Error notification callback, or NULL to disable it.
+ * @param user_data Borrowed user pointer passed to the callback.
+ * @return Same result as IvyContextSetTransportErrorCallback().
+ * @deprecated Use IvyContextSetTransportErrorCallback() with an explicit context.
+ */
 int IvySetTransportErrorCallback(IvyTransportErrorCallback callback, void *user_data);
 
 /**
@@ -711,14 +725,28 @@ __attribute__((format(printf,4,5))) ;
 int IvyContextSendMsg(IvyContext *ctx, const char *fmt_message, ... )
 __attribute__((format(printf,2,3)));
 
-/** Send with a report, including on partial failure. Returns IVY_OK only if
- * every matching frame was accepted locally; otherwise the first error.
+/** @brief Send with a report, including on partial failure.
+ * @param ctx Context to send on.
+ * @param report Non-NULL output for matching, accepted and failed frame counts.
+ * @param fmt_message printf-style format string for the message.
+ * @param ... Arguments for @p fmt_message.
+ * @return IVY_OK if every matching frame was accepted locally; otherwise the
+ * first error, or IVY_EINVAL for a NULL context/report. Zero matches is success.
+ *
  * Sending continues to the remaining subscriptions after an individual failure.
  * matched == accepted + failed; errors before matching leave all counts zero.
  * report must not be NULL. A negative result does not undo accepted frames.
  */
 int IvyContextSendMsgEx(IvyContext *ctx, IvySendReport *report, const char *fmt_message, ...)
 __attribute__((format(printf,3,4)));
+/** @brief Send with a report on the calling thread's current/default context.
+ * @ingroup ivy_legacy_api
+ * @param report Non-NULL output for matching, accepted and failed frame counts.
+ * @param fmt_message printf-style format string for the message.
+ * @param ... Arguments for @p fmt_message.
+ * @return Same result and partial-send semantics as IvyContextSendMsgEx().
+ * @deprecated Use IvyContextSendMsgEx() with an explicit context.
+ */
 int IvySendMsgEx(IvySendReport *report, const char *fmt_message, ...)
 __attribute__((format(printf,2,3)));
 
@@ -978,8 +1006,9 @@ IvyStatus IvyGetLastError(void);
 /** @} */
 
 /**
- * @defgroup ivy_filters Filtering API
- * @brief Per-context filtering of regexp subscriptions advertised by peers.
+ * @defgroup ivy_filters C filtering with an explicit context
+ * @ingroup ivy_context_api
+ * @brief IvyContextSetFilter, IvyContextAddFilter and IvyContextRemoveFilter.
  *
  * Each context owns an initially empty list of message-class words. An empty
  * list accepts every regexp. With a nonempty list, Ivy checks the first literal
@@ -992,6 +1021,8 @@ IvyStatus IvyGetLastError(void);
  * advertisements generate IvyFilterBind outside internal locks. Configure filters
  * before start when the policy must apply to all initial advertisements.
  * Operations are serialized with subscription processing within the owning context.
+ * The C compatibility wrappers are documented in @ref ivy_legacy_filters.
+ * C++ applications use the methods described in @ref cpp_filters.
  * @{
  */
 
@@ -1031,6 +1062,18 @@ int IvyContextAddFilter(IvyContext *ctx, const char *arg);
  */
 int IvyContextRemoveFilter(IvyContext *ctx, const char *arg);
 
+/** @} */
+
+/**
+ * @defgroup ivy_legacy_filters C legacy filtering (current/default context)
+ * @ingroup ivy_legacy_api
+ * @brief Compatibility wrappers without an explicit IvyContext argument.
+ * These functions use the calling thread's current context, falling back to
+ * the process default context. From a native callback, the current context is
+ * that callback's bus. For new C code, use @ref ivy_filters instead.
+ * @{
+ */
+
 /**
  * @brief Replace filters for the calling thread's current/default context.
  * @param argc Number of class words; zero disables filtering.
@@ -1039,6 +1082,7 @@ int IvyContextRemoveFilter(IvyContext *ctx, const char *arg);
  * In 3.18 this really replaces the list; older implementations appended to it.
  * From a native Ivy callback, the current context is the callback's bus.
  * @see IvyContextSetFilter()
+ * @deprecated Use IvyContextSetFilter() with an explicit context.
  */
 int IvySetFilter(int argc, const char **argv);
 
@@ -1047,6 +1091,7 @@ int IvySetFilter(int argc, const char **argv);
  * @param arg Class word to copy.
  * @return Same status as IvyContextAddFilter().
  * @see IvyContextAddFilter()
+ * @deprecated Use IvyContextAddFilter() with an explicit context.
  */
 int IvyAddFilter(const char *arg);
 
@@ -1055,14 +1100,16 @@ int IvyAddFilter(const char *arg);
  * @param arg Class word to remove.
  * @return Same status as IvyContextRemoveFilter().
  * @see IvyContextRemoveFilter()
+ * @deprecated Use IvyContextRemoveFilter() with an explicit context.
  */
 int IvyRemoveFilter(const char *arg);
 
 /** @} */
 
 /**
- * @defgroup ivy_legacy_api Legacy Compatibility API
- * @brief Wrappers operating on the process default context.
+ * @defgroup ivy_legacy_api C legacy compatibility API
+ * @ingroup ivy_c_api
+ * @brief Compatibility entry points; each function documents its context selection.
  *
  * @details
  * These functions remain public so existing source code keeps compiling. New
@@ -1196,7 +1243,7 @@ int IvySetPongCallback(
  * IvyStart("127:2010");
  * @endcode
  */
-int IvyStart (const char*);
+int IvyStart (const char *bus);
 
 /**
  * @brief Stop the process default context.

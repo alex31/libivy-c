@@ -1,17 +1,31 @@
 #!/usr/bin/env python3
-"""Assemble public API sections for Doxygen, which does not inline class includes.
+"""Assemble and order public API declarations for Doxygen.
 
-The compiler uses the original headers. Doxygen reads each section's file-level
-guide separately; only its declarations are inserted into the owning ivy.hpp.
+The compiler uses the original headers. Doxygen reads each C++ section's
+file-level guide separately; its declarations are inserted into ivy.hpp.
+C and C++ operations are presented in reading order, rather than alphabetically.
 """
 
 from pathlib import Path
 import re
 import sys
 
+from reference_order import CPP_OBJECT_METHODS, order_c_header, order_cpp_bus, order_cpp_class
+
 
 def filter_header(path: Path) -> str:
     source = path.read_text()
+    if path.name == "ivy.h":
+        return order_c_header(source)
+    if path.name == "ivy_thread.hpp":
+        return order_cpp_class(source, "LoopThread", [
+            ("Operations", CPP_OBJECT_METHODS["LoopThread"]),
+            ("Construction and ownership", ["LoopThread", "~LoopThread", "operator="])],
+            prefix="LoopThread: ")
+    if path.parent.name == "api":
+        # Declarations are already inserted into ivy.hpp below. Parsing them a
+        # second time from the section headers duplicates API documentation.
+        return source.split("#if !defined(IVY_CPP_API_HEADERS)", 1)[0]
     if path.name != "ivy.hpp":
         return source
 
@@ -25,7 +39,8 @@ def filter_header(path: Path) -> str:
     source = re.sub(r"^#(?:define|undef) IVY_CPP_API_HEADERS\n", "", source, flags=re.M)
     # Doxygen 1.9.x can carry a class's final private access into a reopened
     # namespace. Adjacent namespace blocks are equivalent to a single block.
-    return re.sub(r"^} // namespace ivy\s*\nnamespace ivy {", "", source, flags=re.M)
+    source = re.sub(r"^} // namespace ivy\s*\nnamespace ivy {", "", source, flags=re.M)
+    return order_cpp_bus(source)
 
 
 if __name__ == "__main__":

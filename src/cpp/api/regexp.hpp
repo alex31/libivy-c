@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file regexp.hpp
+ * @ingroup ivy_cpp_api
  * @brief Regexp types, standalone validation and formatting conventions.
  *
  * This is a section of the public API assembled by ivy.hpp.
@@ -12,7 +13,7 @@
  * checked at compile time. Double literal braces (`{{` and `}}`) in formatted
  * regexps. Values inserted into regexps are not escaped.
  *
- * Constant regexps passed to bind_raw()/change() must begin with `^` and contain
+ * Constant regexps passed to bind_raw(), bind_convert() or change() must begin with `^` and contain
  * no NUL; invalid constants fail compilation. Use ivy::runtime_regexp(text)
  * for dynamic anchored regexps, or bind_raw_unanchored()/change_unanchored() to
  * allow searching away from the start. Anchored forms validate the final
@@ -32,13 +33,17 @@
 // IVY_CPP_API_BEGIN
 namespace ivy {
 
+/** @addtogroup ivy_cpp_api
+ * @{
+ */
+
 namespace detail {
 template<class... Args> class AnchoredFormat;
 } // namespace detail
 /**
  * @brief Constant regexp checked for a leading ^ and absence of NUL at compile time.
  *
- * Usually supplied implicitly by a string literal in bind_raw() or change().
+ * Usually supplied implicitly by a string literal in bind_raw(), bind_convert() or change().
  */
 class AnchoredRegexp {
 public:
@@ -63,19 +68,19 @@ private:
 /**
  * @brief Format string checked for a leading ^, absence of NUL and valid format syntax.
  * @tparam Args Types of values inserted into the regexp.
- * @see cpp_formatting
+ * @see @ref cpp_formatting
  */
 template<class... Args>
 using AnchoredFormat = detail::AnchoredFormat<std::type_identity_t<Args>...>;
 
 /// @brief Explicit dynamic regexp that still requires start anchoring.
 struct RuntimeRegexp {
-    std::string_view text; ///< Borrowed regexp text; validation occurs during bind_raw/change.
+    std::string_view text; ///< Borrowed regexp text; validation occurs during registration/change.
 };
 
 /**
- * @brief Mark a dynamic regexp for bind_raw() or change().
- * @param text Regexp storage, valid until the bind_raw/change call returns.
+ * @brief Mark a dynamic regexp for bind_raw(), bind_convert() or change().
+ * @param text Regexp storage, valid until the registration/change call returns.
  * @return Borrowed view tagged for runtime anchoring validation.
  * No validation or allocation occurs in this helper.
  */
@@ -102,6 +107,8 @@ validate_anchored_regexp(std::string_view expression) noexcept;
 template<class... Args> requires (sizeof...(Args) > 0)
 [[nodiscard]] std::expected<void, std::error_code>
 validate_anchored_regexp(std::format_string<Args...> format, Args&&... args) noexcept;
+
+/** @} */
 
 } // namespace ivy
 // IVY_CPP_API_END

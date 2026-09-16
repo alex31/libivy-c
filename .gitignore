@@ -22,3 +22,5 @@ debian/ivy-cpp/
 debian/ivy-cpp-dev/
 build/debian/
 examples/ivyqt/build/
+doc/doxygen/
+doc/__pycache__/

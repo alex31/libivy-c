@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file messages.hpp
+ * @ingroup ivy_cpp_api
  * @brief Message callbacks and regexp/direct subscriptions on ivy::Bus.
  *
  * This is a section of the public API assembled by ivy.hpp.
@@ -39,7 +40,7 @@
      * IVY_ESTATE for a moved-from bus or unavailable validator, IVY_ESTOPPED for a stopped bus,
      * or Error::callback_failed for callback construction failure.
      * Keep the subscription or its expected alive; an empty callback is invalid.
-     * @see cpp_quickstart cpp_formatting
+     * @see @ref cpp_quickstart @ref cpp_formatting
      */
     template<class Callback>
     [[nodiscard]] BindResult bind_raw(Callback&& callback, AnchoredRegexp regexp) noexcept;
@@ -52,7 +53,7 @@
      * @return Owned subscription on success. The same validation, lifecycle and allocation
      * errors as the constant anchored overload.
      * Keep the subscription or its expected alive; an empty callback is invalid.
-     * @see cpp_quickstart cpp_formatting
+     * @see @ref cpp_quickstart @ref cpp_formatting
      */
     template<class Callback>
     [[nodiscard]] BindResult bind_raw(Callback&& callback, RuntimeRegexp regexp) noexcept;
@@ -148,7 +149,7 @@
      * @return Owned subscription on success. The same lifecycle/input/allocation/callback
      * errors as bind_raw(), without its anchoring check.
      * Keep the subscription or its expected alive; an empty callback is invalid.
-     * @see cpp_quickstart cpp_formatting
+     * @see @ref cpp_quickstart @ref cpp_formatting
      */
     template<class Callback> requires std::constructible_from<MessageCallback, Callback>
     [[nodiscard]] BindResult bind_raw_unanchored(Callback&& callback, std::string_view regexp) noexcept;
@@ -176,7 +177,7 @@
      * @param args Values inserted without escaping regexp syntax.
      * @return Same subscription/result as the text overload, plus formatting errors.
      * Double literal regexp braces, e.g. `R"(^TRACK {} ([0-9]{{2}})$)"` with an integer ID.
-     * @see cpp_formatting
+     * @see @ref cpp_formatting
      */
     template<class Callback, class... Args>
         requires (sizeof...(Args) > 0 && std::constructible_from<MessageCallback, Callback>)
@@ -192,7 +193,7 @@
      * @param args Values inserted without escaping regexp syntax.
      * @return Same subscription/result as the text overload, plus formatting errors.
      * Double literal regexp braces, e.g. `R"(^TRACK {} ([0-9]{{2}})$)"` with an integer ID.
-     * @see cpp_formatting
+     * @see @ref cpp_formatting
      */
     template<class Callback, class... Args>
         requires (sizeof...(Args) > 0 && std::constructible_from<MessageCallback, Callback>)

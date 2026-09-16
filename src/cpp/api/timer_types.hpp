@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file timer_types.hpp
+ * @ingroup ivy_cpp_api
  * @brief Timer settings and scoped timer subscription lifetime.
  *
  * This is a section of the public API assembled by ivy.hpp.
@@ -16,6 +17,10 @@
 
 // IVY_CPP_API_BEGIN
 namespace ivy {
+
+/** @addtogroup ivy_cpp_api
+ * @{
+ */
 
 /// @brief Periodic timer settings used by bind_event(callback, every(period)).
 struct Every {
@@ -38,7 +43,8 @@ struct After {
 /** @brief Select a periodic timer with a limited number of invocations.
  * @param period Positive interval in milliseconds.
  * @param count Positive number of callback invocations; bind_event() rejects zero/negative values.
- * @return Timer settings; the returned token becomes inactive on the last invocation.
+ * @return Timer settings. The subscription created by bind_event() with these
+ * settings becomes inactive when its last invocation is selected.
  */
 [[nodiscard]] constexpr Every every(std::chrono::milliseconds period, int count) noexcept;
 
@@ -107,6 +113,8 @@ private:
     explicit TimerSubscription(std::shared_ptr<State> state) noexcept;
     friend class Bus;
 };
+
+/** @} */
 
 } // namespace ivy
 // IVY_CPP_API_END

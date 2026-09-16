@@ -1,6 +1,7 @@
 /* C++ interface to Ivy. See ../version.h for the copyright notice. */
 /**
  * @file callbacks.hpp
+ * @ingroup ivy_cpp_api
  * @brief Pong, remote subscription and transport error callbacks on ivy::Bus.
  *
  * This is a section of the public API assembled by ivy.hpp.
