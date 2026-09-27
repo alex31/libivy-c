@@ -11,7 +11,7 @@ for tool in python3 doxygen pdflatex makeindex make dot; do
     fi
 done
 
-doxygen Doxyfile
+python3 doc/generate_reference.py
 python3 doc/organize_pdf.py doc/doxygen
 make -C doc/doxygen/latex
 cp doc/doxygen/latex/refman.pdf doc/doxygen/ivy-api.pdf

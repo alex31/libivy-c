@@ -1,0 +1,9 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{ivy-reference}[2026/09/27 Ivy reference compatibility]
+% New Doxygen tables use NoHyper even when PDF_HYPERLINKS is disabled.
+% With no hyperref links to suppress, the environment has no work to do.
+\makeatletter
+\AtBeginDocument{%
+  \@ifundefined{NoHyper}{\newenvironment{NoHyper}{}{}}{}%
+}
+\makeatother

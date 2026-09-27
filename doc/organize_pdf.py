@@ -34,7 +34,20 @@ def place_context_filters(output: Path) -> None:
             raise ValueError(f"Unexpected filter/event layout in {group}")
         text = text.replace(include, "")
         introduction = include + "\n" + r"\doxysubsubsection{Events and optional operations}" + "\n"
-        path.write_text(text.replace(anchor, introduction + anchor, 1))
+        # Recent Doxygen puts the label inside the signature's font group.
+        # Insert before the function heading/indexes, never inside that group.
+        heading = re.search(r"^\\(?:doxy)?(?:sub)*section\{[^\n]*" + re.escape(first_event) +
+                            r"\(\)[^\n]*", text, re.MULTILINE)
+        if heading is None:
+            raise ValueError(f"Missing event heading in {group}")
+        position = min(text.index(anchor), heading.start())
+        while position > 0:
+            previous = text.rfind("\n", 0, position - 1) + 1
+            line = text[previous:position].strip()
+            if line and not line.startswith(r"\index{"):
+                break
+            position = previous
+        path.write_text(text[:position] + "\n" + introduction + text[position:])
 
 
 def organize(output: Path) -> None:

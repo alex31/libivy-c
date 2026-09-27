@@ -1,5 +1,5 @@
 PROJECT_NAME           = "ivy-c"
-PROJECT_NUMBER         = "3.18"
+PROJECT_NUMBER         = "3.18.1"
 PROJECT_BRIEF          = "Public C and C++23 APIs for the Ivy bus library"
 OUTPUT_DIRECTORY       = doc/doxygen
 
@@ -41,6 +41,7 @@ USE_PDFLATEX           = YES
 # Doxygen 1.9.x mislinks unrelated tokens to the C++ AnchoredFormat alias.
 # Printed cross-references keep the PDF accurate with the distro toolchain.
 PDF_HYPERLINKS         = NO
+LATEX_EXTRA_STYLESHEET = doc/ivy-reference.sty
 LATEX_BATCHMODE        = YES
 PAPER_TYPE             = a4
 GENERATE_MAN           = NO

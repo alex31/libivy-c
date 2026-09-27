@@ -29,7 +29,7 @@ et std::format. Le backend GLib est inclus dans les deux paquets.
     sudo apt install build-essential debhelper pkg-config python3 \
         libxt-dev libx11-dev tcl-dev libglib2.0-dev libpcre2-dev libreadline-dev \
         doxygen graphviz texlive-latex-base texlive-latex-recommended \
-        texlive-latex-extra texlive-fonts-recommended poppler-utils
+        texlive-latex-extra texlive-plain-generic texlive-fonts-recommended poppler-utils
 
 list.h est fourni dans les sources ; aucun paquet utils-c-dev n'est requis.
 Qt n'est pas nécessaire pour construire les bibliothèques C++ ou les paquets.

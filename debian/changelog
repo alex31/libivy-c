@@ -1,3 +1,19 @@
+ivy-c (3.18.1) unstable; urgency=medium
+
+  * release per-thread PCRE2 match caches when worker threads exit
+  * free client application names and remaining subscriptions during cleanup
+    and disconnection, including clients without an application name
+  * add an ASan/UBSan/LeakSanitizer regression test for binding cache cleanup
+  * expose the patch version in version.h and all pkg-config modules while
+    preserving shared-library filenames and SONAMEs
+  * check package version metadata and adapt installed-consumer tests
+  * merge documentation layout overrides with Doxygen defaults so newer
+    Doxygen versions retain the complete API reference and PDF; handle
+    NoHyper table environments when PDF hyperlinks are disabled
+  * declare the texlive-plain-generic dependency needed by the PDF build
+
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Sun, 27 Sep 2026 08:04:51 +0200
+
 ivy-c (3.18.0) UNRELEASED; urgency=medium
 
   * ship C and C++23 native and GLib libraries together in ivy-c and ivy-c-dev

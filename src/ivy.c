@@ -1012,7 +1012,6 @@ static void IvyCleanup()
 {
 	IvyContext *ctx = IvyGetCurrentContext();
 	RWIvyClientPtr clnt,next;
-	GlobRegPtr   regLst;
 
 	IvyBindingsWriteLock(ctx);
 
@@ -1022,13 +1021,7 @@ static void IvyCleanup()
 		/* on dit au revoir */
 	  MsgSendTo( clnt, Bye, 0, "" );
 		SocketClose( clnt->client );
-		IVY_LIST_EACH (clnt->srcRegList, regLst) {
-		  if (regLst->str_regexp != NULL) {
-		    free (regLst->str_regexp);
-		    regLst->str_regexp = NULL;
-		  }
-		}
-		IVY_LIST_EMPTY( clnt->srcRegList );
+		freeClient(clnt);
 		IVY_LIST_REMOVE (allClients, clnt);
 	}
 	IVY_LIST_EMPTY( allClients );
@@ -1250,6 +1243,7 @@ static void Receive( Client client, const void *data, char *line )
 #endif // OPENMP
 
 			IvyBindingsWriteLock(ctx);
+			free(clnt->app_name);
 			clnt->app_name = strdup( arg );
 			clnt->app_port = id;
 			other =  CheckConnected(  clnt->client );
@@ -3329,18 +3323,14 @@ static void freeClient ( RWIvyClientPtr client)
   GlobRegPtr srcReg;
 
   /* on libere la chaine nom de l'appli*/
-  if (client->app_name != NULL) {
-    free (client->app_name);
-    client->app_name = NULL;
-    /* on libere la liste des clients */
-    IVY_LIST_EACH (client->srcRegList, srcReg) {
-      if (srcReg->str_regexp != NULL) {
-	free (srcReg->str_regexp);
-	srcReg->str_regexp = NULL;
-      }
-    }
-    IVY_LIST_EMPTY (client->srcRegList);
+  free (client->app_name);
+  client->app_name = NULL;
+  /* Release subscriptions even if the client has no application name. */
+  IVY_LIST_EACH (client->srcRegList, srcReg) {
+    free (srcReg->str_regexp);
+    srcReg->str_regexp = NULL;
   }
+  IVY_LIST_EMPTY (client->srcRegList);
 }
 
 
@@ -3600,8 +3590,8 @@ static void delOneClient (const Client client)
       }
 
 
-      /* on libere la liste de regexp source */
-      IVY_LIST_EMPTY (client_itr->srcRegList);
+      /* Release the client's name and any remaining source regexps. */
+      freeClient(client_itr);
       /* on enleve l'entree correspondant a ce client dans la liste globale */
       IVY_LIST_REMOVE (allClients, client_itr);
 

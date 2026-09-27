@@ -53,11 +53,13 @@ make -C "$repo_dir/src" includes installpkgconf install-cpp DESTDIR="$stage" PRE
 test ! -e "$stage/usr/include/Ivy/ivy_query_internal.h"
 version=$(pkg-config --modversion "$repo_dir/src/ivy-c.pc")
 major=${version%%.*}
-install -m644 "$repo_dir/src/libivy.a" "$repo_dir/src/libivy.so.$version" "$stage/usr/lib/"
-ln -s "libivy.so.$version" "$stage/usr/lib/libivy.so"
-ln -s "libivy.so.$version" "$stage/usr/lib/libivy.so.$major"
-test "$(readlink "$stage/usr/lib/libivy-cpp.so")" = "libivy-cpp.so.$version"
-test "$(readlink "$stage/usr/lib/libivy-cpp.so.$major")" = "libivy-cpp.so.$version"
+# Patch releases retain the major.minor shared-library filenames.
+library_version=$(printf '%s\n' "$version" | cut -d. -f1,2)
+install -m644 "$repo_dir/src/libivy.a" "$repo_dir/src/libivy.so.$library_version" "$stage/usr/lib/"
+ln -s "libivy.so.$library_version" "$stage/usr/lib/libivy.so"
+ln -s "libivy.so.$library_version" "$stage/usr/lib/libivy.so.$major"
+test "$(readlink "$stage/usr/lib/libivy-cpp.so")" = "libivy-cpp.so.$library_version"
+test "$(readlink "$stage/usr/lib/libivy-cpp.so.$major")" = "libivy-cpp.so.$library_version"
 test -f "$stage/usr/lib/libivy-cpp.a"
 test "$(readelf -d "$stage/usr/lib/libivy-cpp.so" | awk '/SONAME/ { print $NF }')" = "[libivy-cpp.so.$major]"
 dependencies=$(readelf -d "$stage/usr/lib/libivy-cpp.so")

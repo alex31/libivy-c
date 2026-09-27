@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <doxygenlayout version="1.0">
-  <!-- Other page kinds retain Doxygen's default layout. -->
+  <!-- generate_reference.py merges these overrides into Doxygen's full default layout. -->
   <class>
     <briefdescription visible="yes"/>
     <includes visible="$SHOW_HEADERFILE"/>

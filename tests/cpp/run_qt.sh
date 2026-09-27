@@ -8,9 +8,11 @@ make -C "$repo_dir/src" cpp
 make -C "$repo_dir/src" includes installpkgconf install-cpp PREFIX="$qt_stage"
 version=$(pkg-config --modversion "$repo_dir/src/ivy-c.pc")
 major=${version%%.*}
-install -m644 "$repo_dir/src/libivy.a" "$repo_dir/src/libivy.so.$version" "$qt_stage/lib/"
-ln -s "libivy.so.$version" "$qt_stage/lib/libivy.so"
-ln -s "libivy.so.$version" "$qt_stage/lib/libivy.so.$major"
+# Patch releases retain the major.minor shared-library filenames.
+library_version=$(printf '%s\n' "$version" | cut -d. -f1,2)
+install -m644 "$repo_dir/src/libivy.a" "$repo_dir/src/libivy.so.$library_version" "$qt_stage/lib/"
+ln -s "libivy.so.$library_version" "$qt_stage/lib/libivy.so"
+ln -s "libivy.so.$library_version" "$qt_stage/lib/libivy.so.$major"
 export PKG_CONFIG_PATH=$qt_stage/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
 export LD_LIBRARY_PATH=$qt_stage/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export IVY_QT_TEST_BUS=${IVY_QT_TEST_BUS:-127.255.255.255:$((32000 + ($$ % 1000)))}

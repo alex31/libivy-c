@@ -23,6 +23,7 @@ $(error Unsupported BACKEND '$(BACKEND)'; choose select or glib)
 endif
 MAJOR ?= $(shell sed -n 's/^\#define IVYMAJOR_VERSION //p' ../version.h)
 MINOR ?= $(shell sed -n 's/^\#define IVYMINOR_VERSION //p' ../version.h)
+MINOR2 ?= $(shell sed -n 's/^\#define IVYMINOR2_VERSION //p' ../version.h)
 
 ARCHIVE = $(BUILD_DIR)/lib$(LIBNAME).a
 SHARED = $(BUILD_DIR)/lib$(LIBNAME).so.$(MAJOR).$(MINOR)
@@ -60,7 +61,7 @@ $(SHARED_LINKS): $(SHARED)
 
 # Regenerate when PREFIX or LIB changes, as for the C pkg-config files.
 $(PKGCONF): ivy-cpp.pc.in ../version.h FORCE | $(BUILD_DIR)
-	sed -e 's,@PREFIX@,$(PREFIX),g; s,@LIB@,$(LIB),g; s,@MAJOR@,$(MAJOR),g; s,@MINOR@,$(MINOR),g; s,@THREADLIB@,$(THREADLIB),g; s,@LIBNAME@,$(LIBNAME),g; s,@CORE_PACKAGE@,$(CORE_PACKAGE),g' $< > $@
+	sed -e 's,@PREFIX@,$(PREFIX),g; s,@LIB@,$(LIB),g; s,@MAJOR@,$(MAJOR),g; s,@MINOR@,$(MINOR),g; s,@MINOR2@,$(MINOR2),g; s,@THREADLIB@,$(THREADLIB),g; s,@LIBNAME@,$(LIBNAME),g; s,@CORE_PACKAGE@,$(CORE_PACKAGE),g' $< > $@
 
 install: all
 	install -d $(DESTDIR)$(PREFIX)$(LIB) $(DESTDIR)$(PREFIX)/include/Ivy/api $(DESTDIR)$(PREFIX)/lib/pkgconfig

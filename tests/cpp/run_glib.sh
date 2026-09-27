@@ -22,11 +22,13 @@ stage=$tmp_dir/stage
 make -C "$repo_dir/src" includes installpkgconf install-cpp-glib DESTDIR="$stage" PREFIX=/usr
 version=$(pkg-config --modversion "$repo_dir/src/ivy-glib.pc")
 major=${version%%.*}
-install -m644 "$repo_dir/src/libglibivy.a" "$repo_dir/src/libglibivy.so.$version" "$stage/usr/lib/"
-ln -s "libglibivy.so.$version" "$stage/usr/lib/libglibivy.so"
-ln -s "libglibivy.so.$version" "$stage/usr/lib/libglibivy.so.$major"
-test "$(readlink "$stage/usr/lib/libivy-cpp-glib.so")" = "libivy-cpp-glib.so.$version"
-test "$(readlink "$stage/usr/lib/libivy-cpp-glib.so.$major")" = "libivy-cpp-glib.so.$version"
+# Patch releases retain the major.minor shared-library filenames.
+library_version=$(printf '%s\n' "$version" | cut -d. -f1,2)
+install -m644 "$repo_dir/src/libglibivy.a" "$repo_dir/src/libglibivy.so.$library_version" "$stage/usr/lib/"
+ln -s "libglibivy.so.$library_version" "$stage/usr/lib/libglibivy.so"
+ln -s "libglibivy.so.$library_version" "$stage/usr/lib/libglibivy.so.$major"
+test "$(readlink "$stage/usr/lib/libivy-cpp-glib.so")" = "libivy-cpp-glib.so.$library_version"
+test "$(readlink "$stage/usr/lib/libivy-cpp-glib.so.$major")" = "libivy-cpp-glib.so.$library_version"
 test "$(readelf -d "$stage/usr/lib/libivy-cpp-glib.so" | awk '/SONAME/ { print $NF }')" = "[libivy-cpp-glib.so.$major]"
 dependencies=$(readelf -d "$stage/usr/lib/libivy-cpp-glib.so")
 case "$dependencies" in

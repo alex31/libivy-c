@@ -22,6 +22,13 @@ Start with the [C++ quick start](#quick-start), then use the
 in the [Debian/Ubuntu packages](#debian--ubuntu-packages) and the
 [Doxygen reference](#api-reference-and-source-layout).
 
+## Patch release 3.18.1
+
+This release fixes client/subscription cleanup and releases each thread's PCRE2
+match cache when the thread exits. The public API and shared-library SONAMEs are
+unchanged. `version.h` exposes `IVYMINOR2_VERSION`, and all pkg-config modules
+report the full release version (`3.18.1`); library filenames retain `3.18`.
+
 ## Current development status
 
 The current development line has been migrated through
@@ -274,7 +281,7 @@ and their message callbacks, `ivy_events.cpp` handles single event callbacks,
 `ivy_timer.cpp` handles timers, `ivy_filters.cpp` configures filters, and
 `ivy_send.cpp` handles sending and `ivy_application.cpp` handles application queries.
 They share private state
-through `ivy_internal.hpp`, which is not installed. Run `doxygen Doxyfile` from
+through `ivy_internal.hpp`, which is not installed. Run `python3 doc/generate_reference.py` from
 the repository root to generate both C and C++ API documentation in
 `doc/doxygen/html/`. Documentation generation also requires Python 3:
 `doc/doxygen_cpp_filter.py` assembles the declarations for Doxygen, which does
@@ -292,8 +299,9 @@ Within those parts, the reference follows usage order: initialization, message
 subscriptions, broadcasts, direct messages, filters, events and optional helpers.
 `ivy::Bus` and message subscriptions precede the less frequently needed types.
 `doc/reference_order.py` defines this order; the Doxygen filter reorders only its
-documentation input, and `doc/DoxygenLayout.xml` puts operations before callback
-typedefs and ownership machinery. Header declarations used by the compiler are
+documentation input. `doc/generate_reference.py` merges the layout overrides
+with the installed Doxygen version’s defaults, and `doc/DoxygenLayout.xml` puts
+operations before callback typedefs and ownership machinery. Header declarations used by the compiler are
 not reordered. Add new operations to that ordering policy when extending the
 API; unknown declarations cause documentation generation to fail explicitly.
 Alphabetical indexes are retained for symbol lookup.
@@ -1008,6 +1016,11 @@ root:
 ./tests/run_phase11_interval_regexp.sh
 ./tests/run_glib_backend.sh
 ```
+
+`./tests/run_binding_thread_cleanup.sh` checks PCRE match-cache growth and reuse
+across 32 worker lifetimes with ASan, UBSan and LeakSanitizer. It requires PCRE2
+development headers and builds in a temporary directory. `CC`, `PCRE_CFLAGS`
+and `PCRE_LIBS` can select a compiler or a nonstandard PCRE2 installation.
 
 GLib/GTK applications can link against `libglibivy` (pkg-config: `ivy-glib`).
 This backend requires GLib 2.36 or newer and implements the contextual channel,

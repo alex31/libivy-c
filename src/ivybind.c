@@ -69,22 +69,84 @@ static IVY_TLS PCRE2_SIZE *thread_ovector = NULL;
 static IVY_TLS int thread_nb_match = 0;
 static IVY_TLS IvyBinding thread_last_bind = NULL;
 
+/* Compiler TLS does not destroy the PCRE allocation when a worker exits.
+ * Keep the fast TLS cache, but register its allocation with a thread destructor. */
+#ifdef WIN32
+static VOID CALLBACK IvyBindingDestroyMatchData(PVOID data)
+#else
+static void IvyBindingDestroyMatchData(void *data)
+#endif
+{
+	pcre2_match_data_free(data);
+	if (thread_match_data == data) {
+		thread_match_data = NULL;
+		thread_capture_count = 0;
+		thread_ovector = NULL;
+		thread_nb_match = 0;
+		thread_last_bind = NULL;
+	}
+}
+
+#ifdef WIN32
+static INIT_ONCE match_data_once = INIT_ONCE_STATIC_INIT;
+static DWORD match_data_key = FLS_OUT_OF_INDEXES;
+
+static BOOL CALLBACK IvyBindingCreateMatchDataKey(PINIT_ONCE once, PVOID parameter, PVOID *context)
+{
+	(void)once;
+	(void)parameter;
+	(void)context;
+	match_data_key = FlsAlloc(IvyBindingDestroyMatchData);
+	return match_data_key != FLS_OUT_OF_INDEXES;
+}
+
+static int IvyBindingRegisterMatchData(pcre2_match_data *data)
+{
+	if (!InitOnceExecuteOnce(&match_data_once, IvyBindingCreateMatchDataKey, NULL, NULL))
+		return 0;
+	return FlsSetValue(match_data_key, data) != 0;
+}
+#else
+static pthread_once_t match_data_once = PTHREAD_ONCE_INIT;
+static pthread_key_t match_data_key;
+static int match_data_key_status = -1;
+
+static void IvyBindingCreateMatchDataKey(void)
+{
+	match_data_key_status = pthread_key_create(&match_data_key, IvyBindingDestroyMatchData);
+}
+
+static int IvyBindingRegisterMatchData(pcre2_match_data *data)
+{
+	if (pthread_once(&match_data_once, IvyBindingCreateMatchDataKey) != 0 || match_data_key_status != 0)
+		return 0;
+	return pthread_setspecific(match_data_key, data) == 0;
+}
+#endif
+
 static int IvyBindingPrepareMatchData(IvyBinding bind)
 {
 	uint32_t required_capture_count;
+	pcre2_match_data *data;
 
 	required_capture_count = bind->capture_count + 1;
 	if (thread_match_data != NULL && thread_capture_count >= required_capture_count)
 		return 1;
 
-	if (thread_match_data != NULL)
-		pcre2_match_data_free(thread_match_data);
-
-	thread_match_data = pcre2_match_data_create(required_capture_count, NULL);
-	if (thread_match_data == NULL)
+	data = pcre2_match_data_create(required_capture_count, NULL);
+	if (data == NULL)
 		return 0;
+	if (!IvyBindingRegisterMatchData(data)) {
+		pcre2_match_data_free(data);
+		return 0;
+	}
 
+	pcre2_match_data_free(thread_match_data);
+	thread_match_data = data;
 	thread_capture_count = required_capture_count;
+	thread_ovector = NULL;
+	thread_nb_match = 0;
+	thread_last_bind = NULL;
 	return 1;
 }
 #endif /* USE_PCRE_REGEX */

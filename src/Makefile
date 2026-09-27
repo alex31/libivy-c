@@ -18,7 +18,7 @@
 # change this in version.h too !!!!
 MAJOR=3
 MINOR=18
-MINOR2=0
+MINOR2=1
 
 LIB = /lib
 
@@ -371,7 +371,7 @@ rpm::
 
 pkgconf:
 	for f in *.pc.in ; do \
-		sed -e 's,/lib64,/lib,; s,@PREFIX@,$(PREFIX),; s,@MAJOR@,$(MAJOR),; s,@MINOR@,$(MINOR),; s,@PCRELIB@,$(PCRELIB),; s,@EXTRALIB@,$(EXTRALIB),' $$f > $$(echo $$f | cut -f 1,2 -d .) ; \
+		sed -e 's,/lib64,/lib,; s,@PREFIX@,$(PREFIX),; s,@MAJOR@,$(MAJOR),; s,@MINOR@,$(MINOR),; s,@MINOR2@,$(MINOR2),; s,@PCRELIB@,$(PCRELIB),; s,@EXTRALIB@,$(EXTRALIB),' $$f > $$(echo $$f | cut -f 1,2 -d .) ; \
 	done
 
 installpkgconf: pkgconf

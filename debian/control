@@ -4,7 +4,7 @@ Section: devel
 Maintainer: Alexandre Bustico <alexandre.bustico@cena.fr>
 Build-Depends: debhelper (>= 13), g++ (>= 4:13), pkg-config, libxt-dev, libx11-dev, tcl-dev, libglib2.0-dev, libpcre2-dev, libreadline-dev,
  python3, doxygen, graphviz, texlive-latex-base, texlive-latex-recommended,
- texlive-latex-extra, texlive-fonts-recommended
+ texlive-latex-extra, texlive-plain-generic, texlive-fonts-recommended
 Rules-Requires-Root: no
 Standards-Version: 3.9.2
 Homepage: http://www2.tls.cena.fr/products/ivy/

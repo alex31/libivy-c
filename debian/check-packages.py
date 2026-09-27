@@ -50,9 +50,11 @@ def inspect_packages(directory, extracted):
     version = versions.pop()
     require(architectures == {run("dpkg", "--print-architecture")},
             "Run consumer checks on the architecture used to build the packages")
-    numbers = re.match(r"(?:\d+:)?(\d+)\.(\d+)", version)
+    numbers = re.match(r"(?:\d+:)?(\d+)\.(\d+)(?:\.(\d+))?", version)
     require(numbers, f"Unrecognized Ivy version: {version}")
-    major, minor = numbers.groups()
+    major, minor, patch = numbers.groups()
+    patch = patch or "0"
+    upstream_version = f"{major}.{minor}.{patch}"
 
     require(re.search(r"\bivy-c\s*\(=\s*" + re.escape(version) + r"\)", metadata["ivy-c-dev"].get("Depends", "")),
             f"ivy-c-dev: missing exact dependency on ivy-c {version}")
@@ -113,6 +115,13 @@ def inspect_packages(directory, extracted):
                     f"Wrong C backend linked by {library}")
     for pc in ("ivy-c", "ivy-glib", "ivy-tcl", "ivy-cpp", "ivy-cpp-glib"):
         required[f"usr/lib/pkgconfig/{pc}.pc"] = "ivy-c-dev"
+        contents = (extracted / f"usr/lib/pkgconfig/{pc}.pc").read_text()
+        require(re.search(r"^Version:\s*" + re.escape(upstream_version) + r"$", contents, re.MULTILINE),
+                f"{pc}: pkg-config must report the full version {upstream_version}")
+    header = (extracted / "usr/include/Ivy/version.h").read_text()
+    for macro, value in (("IVYMAJOR_VERSION", major), ("IVYMINOR_VERSION", minor), ("IVYMINOR2_VERSION", patch)):
+        require(re.search(r"^#define " + macro + r"\s+" + value + r"$", header, re.MULTILINE),
+                f"version.h: expected {macro} {value}")
     required["usr/share/doc/ivy-c-dev/ivy-api.pdf"] = "ivy-c-dev"
     for filename, package in required.items():
         require(owners.get(filename) == package, f"{filename}: expected in {package}, found {owners.get(filename)}")
