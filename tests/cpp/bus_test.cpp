@@ -77,6 +77,7 @@ static std::move_only_function<void()> during_change;
 static int unbind_count = 0;
 static int live_contexts = 0;
 static int destroyed_contexts = 0;
+static std::move_only_function<void(IvyContext*)> during_context_destroy;
 static IvyStatus send_error = IVY_OK;
 static IvySendReport next_send_report{};
 static std::string sent_message;
@@ -132,6 +133,8 @@ int IvyContextDestroy(IvyContext* ctx) {
     assert(!ctx->in_callback);
     if (ctx->state == IVY_CTX_RUNNING)
         IvyContextStop(ctx);
+    if (during_context_destroy)
+        during_context_destroy(ctx);
     for (auto* binding : ctx->bindings)
         delete binding;
     for (auto* timer : ctx->timers)
@@ -426,6 +429,60 @@ void move_only_callbacks() {
     application_event(context, &peer, IvyApplicationConnected);
     die_event(context, &peer, 5);
     assert(application_result == 42 && die_result == 12);
+}
+
+// Context destruction can call back into C++ while subscriptions still exist.
+// Their captures must survive that call, then be released even if tokens outlive Bus.
+void context_destruction_lifetimes() {
+    for (bool throw_on_disconnect : {false, true}) {
+        const int live_before = live_contexts;
+        const int destroyed_before = destroyed_contexts;
+        int disconnects = 0;
+        std::weak_ptr<int> application_capture, message_capture, timer_capture;
+        ivy::Subscription subscription;
+        ivy::TimerSubscription timer;
+        {
+            auto application_value = std::make_shared<int>(11);
+            auto message_value = std::make_shared<int>(22);
+            auto timer_value = std::make_shared<int>(33);
+            application_capture = application_value;
+            message_capture = message_value;
+            timer_capture = timer_value;
+            auto bus = require_bus(ivy::Bus::create("destruction", std::nullopt,
+                [value = std::move(application_value), &disconnects, throw_on_disconnect]
+                (IvyClientPtr, IvyApplicationEvent event) {
+                    assert(event == IvyApplicationDisconnected && *value == 11);
+                    ++disconnects;
+                    if (throw_on_disconnect)
+                        throw std::runtime_error("disconnect");
+                }));
+            auto bound = bus.bind_raw([value = std::move(message_value)](auto) {
+                assert(*value == 22);
+            }, "^UNUSED$");
+            assert(bound);
+            subscription = std::move(*bound);
+            auto scheduled = bus.bind_event([value = std::move(timer_value)](auto) {
+                assert(*value == 33);
+            }, ivy::after(std::chrono::milliseconds(1000)));
+            assert(scheduled);
+            timer = std::move(*scheduled);
+            assert(bus.start());
+            during_context_destroy = [&](IvyContext* ctx) {
+                assert(!application_capture.expired());
+                assert(!message_capture.expired());
+                assert(!timer_capture.expired());
+                application_event(ctx, nullptr, IvyApplicationDisconnected);
+            };
+        }
+        during_context_destroy = {};
+        assert(disconnects == 1);
+        assert(live_contexts == live_before);
+        assert(destroyed_contexts == destroyed_before + 1);
+        assert(application_capture.expired());
+        assert(message_capture.expired());
+        assert(timer_capture.expired());
+        assert(!subscription.is_bound() && !timer.is_bound());
+    }
 }
 
 void errors_and_callback_exceptions() {
@@ -1860,6 +1917,7 @@ int main() {
     nonthrowing_boundaries();
     strings_and_lifecycle();
     move_only_callbacks();
+    context_destruction_lifetimes();
     errors_and_callback_exceptions();
     subscriptions_and_formats();
     raw_callbacks_without_sender();

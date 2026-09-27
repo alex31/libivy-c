@@ -26,13 +26,13 @@ bool valid_message(std::string_view message) noexcept {
 SendReport Bus::send_report(std::string_view message) noexcept {
     SendReport result;
     const auto owner = impl_;
-    const auto state = send_state(owner ? owner->context : nullptr);
+    const auto state = send_state(owner ? owner->context.get() : nullptr);
     if (state != IVY_OK || !valid_message(message)) {
         result.error = make_error_code(state != IVY_OK ? state : IVY_EINVAL);
         return result;
     }
     IvySendReport report{};
-    const int status = IvyContextSendMsgEx(owner->context, &report, "%.*s",
+    const int status = IvyContextSendMsgEx(owner->context.get(), &report, "%.*s",
         static_cast<int>(message.size()), message.empty() ? "" : message.data());
     result.matched = report.matched;
     result.accepted = report.accepted;
@@ -51,12 +51,12 @@ Bus::SendResult Bus::send(std::string_view message) noexcept {
 
 std::expected<void, std::error_code> Bus::send(IvyClientPtr peer, int id, std::string_view message) noexcept {
     const auto owner = impl_;
-    const auto state = send_state(owner ? owner->context : nullptr);
+    const auto state = send_state(owner ? owner->context.get() : nullptr);
     if (state != IVY_OK) return detail::status_result(state);
     if (!peer || !valid_message(message)) return detail::status_result(IVY_EINVAL);
     try {
         std::string text(message);
-        return detail::status_result(IvyContextSendDirectMsg(owner->context, peer, id, text.data()));
+        return detail::status_result(IvyContextSendDirectMsg(owner->context.get(), peer, id, text.data()));
     } catch (const std::bad_alloc&) {
         return detail::status_result(IVY_ENOMEM);
     } catch (const std::length_error&) {
@@ -66,9 +66,9 @@ std::expected<void, std::error_code> Bus::send(IvyClientPtr peer, int id, std::s
 
 std::expected<void, std::error_code> Bus::send_ping(IvyClientPtr peer) noexcept {
     const auto owner = impl_;
-    const auto state = send_state(owner ? owner->context : nullptr);
+    const auto state = send_state(owner ? owner->context.get() : nullptr);
     if (state != IVY_OK) return detail::status_result(state);
-    if (!peer || !IvyContextGetApplicationName(owner->context, peer))
+    if (!peer || !IvyContextGetApplicationName(owner->context.get(), peer))
         return detail::status_result(IVY_EINVAL);
     {
         std::lock_guard lock(owner->subscriptions_mutex);
@@ -77,24 +77,24 @@ std::expected<void, std::error_code> Bus::send_ping(IvyClientPtr peer) noexcept 
     }
     // Sending can synchronously invoke application callbacks. They may unbind
     // or replace pong, so release the wrapper lock before entering C.
-    return detail::status_result(IvyContextSendPing(owner->context, peer));
+    return detail::status_result(IvyContextSendPing(owner->context.get(), peer));
 }
 
 std::expected<void, std::error_code> Bus::send_die(IvyClientPtr peer) noexcept {
     const auto owner = impl_;
-    const auto state = send_state(owner ? owner->context : nullptr);
+    const auto state = send_state(owner ? owner->context.get() : nullptr);
     if (state != IVY_OK) return detail::status_result(state);
     if (!peer) return detail::status_result(IVY_EINVAL);
-    return detail::status_result(IvyContextSendDieMsg(owner->context, peer));
+    return detail::status_result(IvyContextSendDieMsg(owner->context.get(), peer));
 }
 
 std::expected<void, std::error_code>
 Bus::send_error(IvyClientPtr peer, int id, std::string_view message) noexcept {
     const auto owner = impl_;
-    const auto state = send_state(owner ? owner->context : nullptr);
+    const auto state = send_state(owner ? owner->context.get() : nullptr);
     if (state != IVY_OK) return detail::status_result(state);
     if (!peer || !valid_message(message)) return detail::status_result(IVY_EINVAL);
-    return detail::status_result(IvyContextSendError(owner->context, peer, id, "%.*s",
+    return detail::status_result(IvyContextSendError(owner->context.get(), peer, id, "%.*s",
         static_cast<int>(message.size()), message.empty() ? "" : message.data()));
 }
 

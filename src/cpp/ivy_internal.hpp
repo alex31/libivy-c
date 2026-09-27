@@ -5,6 +5,7 @@
 #include "ivy.hpp"
 
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -63,9 +64,13 @@ struct TimerSubscription::State {
 };
 
 struct Bus::Impl {
+    struct ContextDeleter {
+        void operator()(IvyContext* context) const noexcept;
+    };
+
     ApplicationCallback application_callback;
     DieCallback die_callback;
-    IvyContext* context = nullptr;
+    std::unique_ptr<IvyContext, ContextDeleter> context;
     std::mutex callback_mutex;
     std::error_code callback_error;
     std::shared_ptr<TransportCallback> transport_callback;

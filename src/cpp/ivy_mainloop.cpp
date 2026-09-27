@@ -5,6 +5,6 @@ namespace ivy {
 std::expected<void, std::error_code> Bus::run() noexcept {
     if (!impl_)
         return detail::status_result(IVY_ESTATE);
-    return detail::status_result(IvyContextRun(impl_->context));
+    return detail::status_result(IvyContextRun(impl_->context.get()));
 }
 } // namespace ivy

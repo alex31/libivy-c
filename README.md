@@ -22,6 +22,18 @@ Start with the [C++ quick start](#quick-start), then use the
 in the [Debian/Ubuntu packages](#debian--ubuntu-packages) and the
 [Doxygen reference](#api-reference-and-source-layout).
 
+## Patch release 3.18.3
+
+The C++ wrapper now owns its C context through a unique_ptr with a custom
+deleter. Context destruction runs while callback captures and locks are still
+alive, and subscription/timer captures are then released even if their tokens
+outlive the bus. Regression tests cover disconnect callbacks and exceptions
+during destruction.
+
+The public API and shared-library SONAMEs are unchanged from 3.18.2.
+All pkg-config modules report `3.18.3`; library filenames retain `3.18`.
+See [the release validation report](VALIDATION_3.18.3.md) for coverage.
+
 ## Patch release 3.18.2
 
 This release fixes a GLib poll-mask data race when another thread enables or

@@ -12,7 +12,7 @@ TimerSubscription::State::schedule(std::chrono::milliseconds period) noexcept {
     if (!context_owner) return detail::status_result(IVY_ESTATE);
     if (period.count() < 0 || (!one_shot && period.count() == 0) || !std::in_range<long>(period.count()))
         return detail::status_result(IVY_EINVAL);
-    if (detail::stopped(context_owner->context)) return detail::status_result(IVY_ESTOPPED);
+    if (detail::stopped(context_owner->context.get())) return detail::status_result(IVY_ESTOPPED);
     return detail::guard<std::expected<void, std::error_code>>(
         make_error_code(IVY_EINVAL), [&]() -> std::expected<void, std::error_code> {
             auto relay = std::make_unique<Registration>(this);
@@ -24,7 +24,7 @@ TimerSubscription::State::schedule(std::chrono::milliseconds period) noexcept {
             }
             // C may post to the loop and wait. Never hold a wrapper lock here.
             // The pending relay also covers expiry before this call returns.
-            const auto timer = IvyContextTimerRepeatAfter(context_owner->context,
+            const auto timer = IvyContextTimerRepeatAfter(context_owner->context.get(),
                 TIMER_LOOP, static_cast<long>(period.count()), on_timer, registration);
             const auto error = timer ? IVY_OK : IvyGetLastError();
             {
@@ -37,7 +37,7 @@ TimerSubscription::State::schedule(std::chrono::milliseconds period) noexcept {
                 }
                 registration->pending = false;
                 if (!handler) return detail::status_result(IVY_ESTATE);
-                if (detail::stopped(context_owner->context))
+                if (detail::stopped(context_owner->context.get()))
                     return detail::status_result(IVY_ESTOPPED);
                 current = registration;
             }
@@ -54,7 +54,7 @@ void TimerSubscription::State::on_timer(TimerId timer, void* data, unsigned long
     {
         std::lock_guard lock(owner->subscriptions_mutex);
         if (registration.pending) return;
-        if (state.current == &registration && !detail::stopped(owner->context))
+        if (state.current == &registration && !detail::stopped(owner->context.get()))
             handler = state.handler;
         if (handler && state.remaining && --*state.remaining == 0) {
             // Count actual selected invocations, not native expirations while a
@@ -81,7 +81,7 @@ void TimerSubscription::State::on_timer(TimerId timer, void* data, unsigned long
     bool retired;
     {
         std::lock_guard lock(owner->subscriptions_mutex);
-        retired = !state.handler || state.current != &registration || detail::stopped(owner->context);
+        retired = !state.handler || state.current != &registration || detail::stopped(owner->context.get());
     }
     if (retired) TimerRemove(timer); // Includes self-unbind or a period change in the callback.
 }
@@ -114,7 +114,7 @@ std::expected<void, std::error_code> TimerSubscription::unbind() noexcept {
 bool TimerSubscription::is_bound() const noexcept {
     if (!state_) return false;
     const auto owner = state_->owner.lock();
-    if (!owner || detail::stopped(owner->context)) return false;
+    if (!owner || detail::stopped(owner->context.get())) return false;
     std::lock_guard lock(owner->subscriptions_mutex);
     return state_->handler && state_->current;
 }

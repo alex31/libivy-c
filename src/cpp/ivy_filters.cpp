@@ -20,7 +20,7 @@ std::expected<void, std::error_code>
 Bus::set_filters_impl(std::span<const std::string> words) noexcept {
     const auto owner = impl_;
     if (!owner) return detail::status_result(IVY_ESTATE);
-    if (detail::stopped(owner->context)) return detail::status_result(IVY_ESTOPPED);
+    if (detail::stopped(owner->context.get())) return detail::status_result(IVY_ESTOPPED);
     if (!std::in_range<int>(words.size())) return detail::status_result(IVY_EINVAL);
     return detail::guard<std::expected<void, std::error_code>>(
         make_error_code(IVY_EINVAL), [&]() -> std::expected<void, std::error_code> {
@@ -30,7 +30,7 @@ Bus::set_filters_impl(std::span<const std::string> words) noexcept {
                 if (word.find('\0') != std::string::npos) return detail::status_result(IVY_EINVAL);
                 pointers.push_back(word.c_str());
             }
-            return detail::status_result(IvyContextSetFilter(owner->context,
+            return detail::status_result(IvyContextSetFilter(owner->context.get(),
                 static_cast<int>(pointers.size()), pointers.data()));
         });
 }
@@ -43,28 +43,28 @@ Bus::set_filters(std::initializer_list<std::string_view> classes) noexcept {
 std::expected<void, std::error_code> Bus::add_filter(std::string_view word) noexcept {
     const auto owner = impl_;
     if (!owner) return detail::status_result(IVY_ESTATE);
-    if (detail::stopped(owner->context)) return detail::status_result(IVY_ESTOPPED);
+    if (detail::stopped(owner->context.get())) return detail::status_result(IVY_ESTOPPED);
     if (word.find('\0') != std::string_view::npos) return detail::status_result(IVY_EINVAL);
     return detail::guard<std::expected<void, std::error_code>>(make_error_code(IVY_EINVAL), [&] {
         const std::string text(word);
-        return detail::status_result(IvyContextAddFilter(owner->context, text.c_str()));
+        return detail::status_result(IvyContextAddFilter(owner->context.get(), text.c_str()));
     });
 }
 
 std::expected<void, std::error_code> Bus::remove_filter(std::string_view word) noexcept {
     const auto owner = impl_;
     if (!owner) return detail::status_result(IVY_ESTATE);
-    if (detail::stopped(owner->context)) return detail::status_result(IVY_ESTOPPED);
+    if (detail::stopped(owner->context.get())) return detail::status_result(IVY_ESTOPPED);
     if (word.find('\0') != std::string_view::npos) return detail::status_result(IVY_EINVAL);
     return detail::guard<std::expected<void, std::error_code>>(make_error_code(IVY_EINVAL), [&] {
         const std::string text(word);
-        return detail::status_result(IvyContextRemoveFilter(owner->context, text.c_str()));
+        return detail::status_result(IvyContextRemoveFilter(owner->context.get(), text.c_str()));
     });
 }
 
 std::expected<void, std::error_code> Bus::clear_filters() noexcept {
     if (!impl_) return detail::status_result(IVY_ESTATE);
-    return detail::status_result(IvyContextSetFilter(impl_->context, 0, nullptr));
+    return detail::status_result(IvyContextSetFilter(impl_->context.get(), 0, nullptr));
 }
 
 } // namespace ivy

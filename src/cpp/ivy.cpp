@@ -54,11 +54,16 @@ std::error_code make_error_code(Error error) noexcept {
 Bus::Impl::Impl(ApplicationCallback application, DieCallback die)
     : application_callback(std::move(application)), die_callback(std::move(die)) {}
 
-Bus::Impl::~Impl() {
+void Bus::Impl::ContextDeleter::operator()(IvyContext* context) const noexcept {
     // Releasing callback storage after a rejected destruction would leave
     // dangling C user_data pointers. Destruction from a callback is forbidden.
-    if (context && IvyContextDestroy(context) != IVY_OK)
+    if (IvyContextDestroy(context) != IVY_OK)
         std::terminate();
+}
+
+Bus::Impl::~Impl() {
+    // C destruction may invoke callbacks: keep their storage and locks alive.
+    context.reset();
     // Tokens may survive the Bus, but must not retain user captures then.
     // No token can lock its weak owner once this destructor has begun.
     for (const auto& subscription : subscriptions)
@@ -73,7 +78,9 @@ void Bus::Impl::save_callback_error(std::error_code error) noexcept {
         if (!callback_error)
             callback_error = error;
     }
-    (void)IvyContextStop(context);
+    // reset() clears the owner before invoking C destruction callbacks.
+    if (context)
+        (void)IvyContextStop(context.get());
 }
 
 void Bus::Impl::on_application(IvyClientPtr app, void* data,
@@ -127,14 +134,14 @@ Bus::CreateResult Bus::create_impl(std::string_view application_name,
         const std::string name(application_name);
         const auto ready_message = ready ? std::optional<std::string>(*ready) : std::nullopt;
         auto impl = std::make_shared<Impl>(std::move(application), std::move(die));
-        impl->context = IvyContextCreate(
+        impl->context.reset(IvyContextCreate(
             name.c_str(), ready_message ? ready_message->c_str() : nullptr,
             impl->application_callback ? Impl::on_application : nullptr, impl.get(),
-            impl->die_callback ? Impl::on_die : nullptr, impl.get());
+            impl->die_callback ? Impl::on_die : nullptr, impl.get()));
         if (!impl->context)
             return std::unexpected(make_error_code(IvyGetLastError()));
         const auto registered = detail::status_result(
-            IvyContextSetTransportErrorCallback(impl->context, Impl::on_transport, impl.get()));
+            IvyContextSetTransportErrorCallback(impl->context.get(), Impl::on_transport, impl.get()));
         if (!registered)
             return std::unexpected(registered.error());
         return Bus(std::move(impl));
@@ -148,7 +155,7 @@ Bus& Bus::operator=(Bus&&) noexcept = default;
 std::expected<void, std::error_code> Bus::start() noexcept {
     if (!impl_)
         return detail::status_result(IVY_ESTATE);
-    return detail::status_result(IvyContextStart(impl_->context, nullptr));
+    return detail::status_result(IvyContextStart(impl_->context.get(), nullptr));
 }
 
 std::expected<void, std::error_code> Bus::start(std::string_view bus) noexcept {
@@ -158,7 +165,7 @@ std::expected<void, std::error_code> Bus::start(std::string_view bus) noexcept {
         return detail::status_result(IVY_EINVAL);
     try {
         const std::string address(bus);
-        return detail::status_result(IvyContextStart(impl_->context, address.c_str()));
+        return detail::status_result(IvyContextStart(impl_->context.get(), address.c_str()));
     } catch (const std::bad_alloc&) {
         return detail::status_result(IVY_ENOMEM);
     } catch (const std::length_error&) {
@@ -169,19 +176,19 @@ std::expected<void, std::error_code> Bus::start(std::string_view bus) noexcept {
 std::expected<void, std::error_code> Bus::stop() noexcept {
     if (!impl_)
         return {};
-    return detail::status_result(IvyContextStop(impl_->context));
+    return detail::status_result(IvyContextStop(impl_->context.get()));
 }
 
 std::expected<void, std::error_code> Bus::request_stop() noexcept {
     if (!impl_)
         return {};
-    return detail::status_result(IvyContextRequestStop(impl_->context));
+    return detail::status_result(IvyContextRequestStop(impl_->context.get()));
 }
 
 std::expected<void, std::error_code> Bus::set_transport_error_callback_impl(TransportCallback callback) noexcept {
     const auto owner = impl_;
     if (!owner) return detail::status_result(IVY_ESTATE);
-    if (detail::stopped(owner->context)) return detail::status_result(IVY_ESTOPPED);
+    if (detail::stopped(owner->context.get())) return detail::status_result(IVY_ESTOPPED);
     try {
         auto replacement = callback ? std::make_shared<TransportCallback>(std::move(callback)) : nullptr;
         {
@@ -195,11 +202,11 @@ std::expected<void, std::error_code> Bus::set_transport_error_callback_impl(Tran
 }
 
 IvyContextState Bus::state() const noexcept {
-    return impl_ ? IvyContextGetState(impl_->context) : IVY_CTX_DESTROYED;
+    return impl_ ? IvyContextGetState(impl_->context.get()) : IVY_CTX_DESTROYED;
 }
 
 IvyContext* Bus::native_handle() const noexcept {
-    return impl_ ? impl_->context : nullptr;
+    return impl_ ? impl_->context.get() : nullptr;
 }
 
 std::expected<void, std::error_code> Bus::take_callback_error() noexcept {

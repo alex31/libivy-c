@@ -39,7 +39,7 @@ Bus::BindResult Subscription::State::subscribe(const std::shared_ptr<Bus::Impl>&
         {
             std::lock_guard lock(owner->subscriptions_mutex);
             owner->subscriptions.push_back(subscription);
-            const int status = subscription->set_native(owner->context, true);
+            const int status = subscription->set_native(owner->context.get(), true);
             if (status != IVY_OK) {
                 owner->subscriptions.pop_back();
                 return std::unexpected(make_error_code(static_cast<IvyStatus>(status)));
@@ -57,7 +57,7 @@ Bus::BindResult Subscription::State::subscribe(const std::shared_ptr<Bus::Impl>&
 void Subscription::State::on_pong(IvyClientPtr app, void* data, int delay) noexcept {
     auto& state = *static_cast<State*>(data);
     const auto owner = state.owner.lock();
-    if (!owner || detail::stopped(owner->context)) return;
+    if (!owner || detail::stopped(owner->context.get())) return;
     std::shared_ptr<Handler> handler;
     {
         std::lock_guard lock(owner->subscriptions_mutex);
@@ -77,7 +77,7 @@ void Subscription::State::on_remote_bindings(IvyClientPtr app, void* data, int i
     const char* regexp, IvyBindEvent event) noexcept {
     auto& state = *static_cast<State*>(data);
     const auto owner = state.owner.lock();
-    if (!owner || detail::stopped(owner->context)) return;
+    if (!owner || detail::stopped(owner->context.get())) return;
     std::shared_ptr<Handler> handler;
     {
         std::lock_guard lock(owner->subscriptions_mutex);

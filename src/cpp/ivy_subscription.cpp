@@ -34,7 +34,7 @@ std::expected<void, std::error_code> validate_anchored_regexp(std::string_view e
 void Subscription::State::on_message(IvyClientPtr app, void* data, int argc, char** argv) noexcept {
     auto& state = *static_cast<State*>(data);
     const auto owner = state.owner.lock();
-    if (!owner || detail::stopped(owner->context))
+    if (!owner || detail::stopped(owner->context.get()))
         return;
     std::shared_ptr<Handler> handler;
     {
@@ -63,7 +63,7 @@ void Subscription::State::on_message(IvyClientPtr app, void* data, int argc, cha
 void Subscription::State::on_direct(IvyClientPtr app, void* data, int id, char* message) noexcept {
     auto& state = *static_cast<State*>(data);
     const auto owner = state.owner.lock();
-    if (!owner || detail::stopped(owner->context))
+    if (!owner || detail::stopped(owner->context.get()))
         return;
     std::shared_ptr<Handler> handler;
     {
@@ -112,7 +112,7 @@ std::expected<void, std::error_code> Subscription::unbind() noexcept {
             auto& slot = state_->slot(*owner);
             if (slot == state_.get()) {
                 // C setters do not invoke user callbacks synchronously.
-                status = state_->set_native(owner->context, false);
+                status = state_->set_native(owner->context.get(), false);
                 slot = nullptr;
             }
         } else if (state_->active_changes == 0) {
@@ -121,7 +121,7 @@ std::expected<void, std::error_code> Subscription::unbind() noexcept {
     }
     // Unbind may synchronously dispatch application events, so release the lock.
     if (binding)
-        status = IvyContextUnbindMsg(owner->context, binding);
+        status = IvyContextUnbindMsg(owner->context.get(), binding);
     // A stopped context will free its remaining C registrations on destruction.
     return detail::status_result(status == IVY_ESTOPPED ? IVY_OK : status);
 }
@@ -130,7 +130,7 @@ bool Subscription::is_bound() const noexcept {
     if (!state_)
         return false;
     const auto owner = state_->owner.lock();
-    if (!owner || detail::stopped(owner->context))
+    if (!owner || detail::stopped(owner->context.get()))
         return false;
     std::lock_guard lock(owner->subscriptions_mutex);
     return state_->handler != nullptr;
@@ -157,7 +157,7 @@ std::expected<void, std::error_code> Subscription::change_impl(std::string_view 
         return detail::status_result(IVY_ESTATE);
     if (regexp.find('\0') != std::string_view::npos)
         return detail::status_result(IVY_EINVAL);
-    if (detail::stopped(owner->context))
+    if (detail::stopped(owner->context.get()))
         return detail::status_result(IVY_ESTOPPED);
     try {
         const std::string pattern(regexp);
@@ -177,7 +177,7 @@ std::expected<void, std::error_code> Subscription::change_impl(std::string_view 
 
         // C may invoke application callbacks here. Pin the handle rather than
         // holding a wrapper lock: callbacks can change/unbind this same token.
-        const auto changed = IvyContextChangeMsg(owner->context, binding, "%s", pattern.c_str());
+        const auto changed = IvyContextChangeMsg(owner->context.get(), binding, "%s", pattern.c_str());
         int status = changed ? IVY_OK : IvyGetLastError();
         MsgRcvPtr pending_removal = nullptr;
         {
@@ -191,7 +191,7 @@ std::expected<void, std::error_code> Subscription::change_impl(std::string_view 
             }
         }
         if (pending_removal)
-            (void)IvyContextUnbindMsg(owner->context, pending_removal);
+            (void)IvyContextUnbindMsg(owner->context.get(), pending_removal);
         return detail::status_result(status);
     } catch (const std::bad_alloc&) {
         return detail::status_result(IVY_ENOMEM);
@@ -235,7 +235,7 @@ Bus::BindResult Bus::bind_impl(MessageCallback callback, std::string_view regexp
             std::lock_guard lock(owner->subscriptions_mutex);
             owner->subscriptions.push_back(subscription);
         }
-        const auto binding = IvyContextBindMsg(owner->context, Subscription::State::on_message,
+        const auto binding = IvyContextBindMsg(owner->context.get(), Subscription::State::on_message,
                                                subscription.get(), "%s", pattern.c_str());
         if (!binding) {
             const auto error = IvyGetLastError();
