@@ -1188,6 +1188,12 @@ int IvyInit(
  *
  * @return ::IVY_OK on success, or a negative ::IvyStatus.
  *
+ * @details Stop and join the legacy loop before terminating. This closes its
+ * sockets and releases bindings, timers and pending controls. Disconnect
+ * callbacks can run during cleanup, so their user data must remain valid.
+ * All borrowed peer, binding, channel and timer handles from this default
+ * context become invalid. A later ::IvyInit() starts with a fresh default state.
+ *
  * @deprecated Use ::IvyContextDestroy() for explicit contexts.
  *
  * @code{.c}

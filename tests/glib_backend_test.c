@@ -25,7 +25,7 @@ struct fixture {
   int sockets[2];
   gint received_a, received_b, ticks, controls, reads, writes, deletes;
   gint timer_modified, cancelled_calls;
-  gint ready;
+  gint ready, stopping_a;
 };
 
 static void wait_count(gint *value, gint target)
@@ -46,11 +46,14 @@ static void message(IvyClientPtr app, void *data, int argc, char **argv)
 static void broadcast(TimerId timer, void *data, unsigned long delta)
 {
   struct fixture *f = data;
+  int sent;
   (void)timer;
   (void)delta;
   CHECK(g_main_context_is_owner(f->main_context));
   g_atomic_int_inc(&f->ticks);
-  CHECK(IvyContextSendMsg(f->a, "glib hello") >= 0);
+  sent = IvyContextSendMsg(f->a, "glib hello");
+  /* A callback already in flight can see the concurrent stop request. */
+  CHECK(sent >= 0 || (sent == IVY_ESTOPPED && g_atomic_int_get(&f->stopping_a)));
   CHECK(IvyContextSendMsg(f->b, "glib hello") >= 0);
 }
 
@@ -135,6 +138,7 @@ static void external_loop_test(gboolean private_context, const char *bus)
   TimerId repeating, modified, cancelled;
   char byte;
   gint ticks;
+  int request;
 
   f.main_context = private_context ? g_main_context_new() :
     g_main_context_ref(g_main_context_default());
@@ -177,18 +181,23 @@ static void external_loop_test(gboolean private_context, const char *bus)
 
   CHECK(IvyChannelPostControlFor(f.channels, control, &f) == 0);
   wait_count(&f.controls, 1);
-  IvyChannelAddWritableEvent(f.channel);
-  wait_count(&f.writes, 1);
-  CHECK(read(f.sockets[1], &byte, 1) == 1 && byte == 'y');
+  /* Toggle from outside the GLib thread while it repeatedly prepares poll.
+   * Each write callback clears the request on the loop thread. */
+  for (request = 1; request <= 100; ++request) {
+    IvyChannelAddWritableEvent(f.channel);
+    wait_count(&f.writes, request);
+    CHECK(read(f.sockets[1], &byte, 1) == 1 && byte == 'y');
+  }
   /* Repeated registration is idempotent. */
   IvyChannelClearWritableEvent(f.channel);
   IvyChannelClearWritableEvent(f.channel);
   CHECK(write(f.sockets[1], "x", 1) == 1);
   wait_count(&f.deletes, 1);
   CHECK(g_atomic_int_get(&f.reads) == 1);
-  CHECK(g_atomic_int_get(&f.writes) == 1);
+  CHECK(g_atomic_int_get(&f.writes) == 100);
   CHECK(close(f.sockets[1]) == 0);
 
+  g_atomic_int_set(&f.stopping_a, 1);
   CHECK(IvyContextStop(f.a) == IVY_OK);
   ticks = g_atomic_int_get(&f.ticks);
   /* A stopped state must not stop the application's loop or the other bus. */

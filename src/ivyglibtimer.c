@@ -169,15 +169,24 @@ void IvyGlibTimerSetStopped(IvyTimerState *state, gboolean stopped)
 
 void TimerStateDestroy(IvyTimerState *state)
 {
-  if (!state || state == default_state)
+  if (!state)
     return;
   IvyGlibTimerSetStopped(state, TRUE);
-  g_source_destroy((GSource *)state);
+  if (state != default_state)
+    g_source_destroy((GSource *)state);
   g_mutex_lock(&state->mutex);
   while (state->scanning && !g_main_context_is_owner(state->context))
     g_cond_wait(&state->scan_done, &state->mutex);
+  if (state == default_state) {
+    while (state->timers) {
+      TimerId timer = state->timers;
+      state->timers = timer->next;
+      g_free(timer);
+    }
+  }
   g_mutex_unlock(&state->mutex);
-  g_source_unref((GSource *)state);
+  if (state != default_state)
+    g_source_unref((GSource *)state);
 }
 
 TimerId TimerRepeatAfterFor(IvyTimerState *state, int count, long timeout,

@@ -218,14 +218,17 @@ static void DeleteServerSocket(void *data);
 
 void SocketStateDestroy(SocketState *state)
 {
-	if (!state || state == &default_socket_state)
+	if (!state)
 		return;
 
 	while (state->clients_list)
 		DeleteSocket(state->clients_list);
 	while (state->servers_list)
 		DeleteServerSocket(state->servers_list);
-	free(state);
+	if (state == &default_socket_state)
+		memset(state, 0, sizeof(*state));
+	else
+		free(state);
 }
 
 static int InitClientSendLock(Client client)

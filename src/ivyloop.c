@@ -221,7 +221,7 @@ IvyChannelStateDestroy(IvyChannelState *state)
   Channel channel;
   struct _control_event *event;
 
-  if (!state || state == &default_channel_state)
+  if (!state)
     return;
 
   while (state->channels_list) {
@@ -240,9 +240,14 @@ IvyChannelStateDestroy(IvyChannelState *state)
 
   if (state->control_mutex_initialized)
     IvyMutexDestroy(&state->control_mutex);
-  if (state->owns_timer_state)
-    TimerStateDestroy(state->timer_state);
-  free(state);
+  if (state->owns_timer_state || state == &default_channel_state)
+    TimerStateDestroy(IvyChannelGetTimerState(state));
+  if (state == &default_channel_state) {
+    memset(state, 0, sizeof(*state));
+    IvyChannelStateInitFields(state);
+  } else {
+    free(state);
+  }
 }
 
 static int

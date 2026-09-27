@@ -817,6 +817,7 @@ int IvyContextDestroy(IvyContext *ctx)
 {
 	MsgRcvPtr msg;
 	MsgRcvPtr next_msg;
+	IvyContext *previous_ctx;
 
 	if (!ctx)
 		return IvyReturnStatus(IVY_EINVAL);
@@ -839,10 +840,18 @@ int IvyContextDestroy(IvyContext *ctx)
 			return status;
 	}
 
+	previous_ctx = IvyPushCurrentContext(ctx);
+	/* Channel deletion closes sockets and invokes ClientDelete. Both contextual
+	 * and legacy callbacks still need this context and its bindings here. */
+	SocketStateSetTransportErrorCallback(ctx->ivy_sockets, NULL, NULL);
+	IvyChannelStateDestroy(ctx->ivy_loop);
+	ctx->ivy_loop = NULL;
+	SocketStateDestroy(ctx->ivy_sockets);
+	ctx->ivy_sockets = NULL;
+	delAllRegexpsFromDictionary();
+	IvyPopCurrentContext(previous_ctx == ctx ? NULL : previous_ctx);
 	if (ctx == default_ctx)
 		default_ctx = NULL;
-	if (ivy_current_context == ctx)
-		ivy_current_context = NULL;
 
 	free(ctx->ivy_application_name);
 	free(ctx->ivy_ready_message);
@@ -860,12 +869,6 @@ int IvyContextDestroy(IvyContext *ctx)
 	}
 	ctx->ivy_msg_recv = NULL;
 
-	/* The legacy SocketState is static and outlives its default context. */
-	SocketStateSetTransportErrorCallback(ctx->ivy_sockets, NULL, NULL);
-	IvyChannelStateDestroy(ctx->ivy_loop);
-	ctx->ivy_loop = NULL;
-	SocketStateDestroy(ctx->ivy_sockets);
-	ctx->ivy_sockets = NULL;
 #ifdef OPENMP
 	free(ctx->ivy_omp_dict_cache.msgPtrArray);
 	ctx->ivy_omp_dict_cache.msgPtrArray = NULL;
@@ -3435,12 +3438,11 @@ static void delOneClientFromDictionaryEntry (MsgSndDictPtr msgSendDict,
 
 static void delAllRegexpsFromDictionary ()
 {
-  MsgSndDictPtr msgSendDict;
+  MsgSndDictPtr msgSendDict, next;
   RWIvyClientPtr  client;
 
   /* pour toutes les entrees du dictionnaire des regexps */
-  for (msgSendDict=messSndByRegexp; msgSendDict ;
-       msgSendDict= (MsgSndDictPtr) msgSendDict->hh.next) {
+  HASH_ITER(hh, messSndByRegexp, msgSendDict, next) {
     /* on efface le binding */
     IvyBindingFree (msgSendDict->binding);
     /* pour chaque client abonne a cette regexp */
@@ -3454,7 +3456,7 @@ static void delAllRegexpsFromDictionary ()
     /* on efface la clef (regexp source) */
     free (msgSendDict->regexp_src);
     /* on libère la structure */
-    //    free (msgSendDict);
+    free (msgSendDict);
   }
 
 #ifdef OPENMP

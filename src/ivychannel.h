@@ -42,6 +42,8 @@ typedef void (*IvyControlCallback)(void *data);
 
 /* fonction appele par le bus pour initialisation */
 extern IvyChannelState *IvyChannelStateCreate(void);
+/* Destroy after the loop has stopped. The backend-owned default state is
+ * cleared for legacy termination and can be initialized again. */
 extern void IvyChannelStateDestroy(IvyChannelState *state);
 extern IvyChannelState *IvyChannelGetDefaultState(void);
 extern IvyTimerState *IvyChannelGetTimerState(IvyChannelState *state);

@@ -22,6 +22,21 @@ Start with the [C++ quick start](#quick-start), then use the
 in the [Debian/Ubuntu packages](#debian--ubuntu-packages) and the
 [Doxygen reference](#api-reference-and-source-layout).
 
+## Patch release 3.18.2
+
+This release fixes a GLib poll-mask data race when another thread enables or
+disables writable events. Poll masks are now updated on the GLib context thread.
+
+Terminating the legacy C API now closes its sockets, releases subscriptions,
+cancels pending timers and controls, and resets the default state for reuse.
+Disconnect callbacks run while their context and bindings are still valid.
+The throughput tool no longer allocates an unnecessary bus-address copy.
+
+The public API and shared-library SONAMEs are unchanged from 3.18.1.
+All pkg-config modules report `3.18.2`; library filenames retain `3.18`.
+See [the sanitizer validation report](VALIDATION_3.18.2.md) for coverage and
+reproduction details.
+
 ## Patch release 3.18.1
 
 This release fixes client/subscription cleanup and releases each thread's PCRE2

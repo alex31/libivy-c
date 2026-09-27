@@ -97,13 +97,20 @@ void TimerStateDestroy(IvyTimerState *state)
 	TimerId timer;
 	TimerId next;
 
-	if (!state || state == &default_timer_state)
+	if (!state)
 		return;
 
 	IVY_LIST_EACH_SAFE(state->timers, timer, next) {
 		IVY_LIST_REMOVE(state->timers, timer);
 	}
-	free(state);
+	if (state == &default_timer_state) {
+		state->timeoutptr = NULL;
+		state->selectTimeout.tv_sec = BIGVALUE;
+		state->selectTimeout.tv_usec = 0;
+		state->nextTimeout = BIGVALUE;
+	} else {
+		free(state);
+	}
 }
 
 static void SetNewTimeout(IvyTimerState *state, unsigned long current, unsigned long when )

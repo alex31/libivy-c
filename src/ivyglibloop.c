@@ -20,6 +20,7 @@ struct _channel {
   void *data;
   gboolean removed;
   gboolean writable;
+  gboolean events_changed;
   ChannelHandleDelete handle_delete;
   ChannelHandleRead handle_read;
   ChannelHandleWrite handle_write;
@@ -71,12 +72,23 @@ static gboolean pending_locked(IvyChannelState *state)
   return FALSE;
 }
 
+static GIOCondition channel_events(Channel channel);
+
 static gboolean prepare(GSource *source, gint *timeout)
 {
   IvyChannelState *state = (IvyChannelState *)source;
   gboolean ready;
+  Channel channel;
   *timeout = -1;
   g_mutex_lock(&state->mutex);
+  /* GLib reads poll masks on the context thread without our mutex.
+   * Apply requests here, before that thread builds its next poll array. */
+  for (channel = state->channels; channel; channel = channel->next) {
+    if (channel->events_changed && channel->poll_tag) {
+      g_source_modify_unix_fd(source, channel->poll_tag, channel_events(channel));
+      channel->events_changed = FALSE;
+    }
+  }
   ready = pending_locked(state);
   g_mutex_unlock(&state->mutex);
   return ready;
@@ -252,13 +264,14 @@ void IvyChannelStateDestroy(IvyChannelState *state)
 {
   Channel channels;
   GMainContext *context;
-  if (!state || state == default_state)
+  if (!state)
     return;
   IvyChannelStopFor(state);
   g_mutex_lock(&state->mutex);
   state->destroying = TRUE;
   g_mutex_unlock(&state->mutex);
-  g_source_destroy((GSource *)state);
+  if (state != default_state)
+    g_source_destroy((GSource *)state);
   g_mutex_lock(&state->mutex);
   while (state->dispatching && !g_main_context_is_owner(state->context))
     g_cond_wait(&state->dispatch_done, &state->mutex);
@@ -267,6 +280,22 @@ void IvyChannelStateDestroy(IvyChannelState *state)
   g_mutex_unlock(&state->mutex);
   delete_channels(channels);
   TimerStateDestroy(state->timers);
+  if (state == default_state) {
+    /* The legacy source remains attached, but no callback or descriptor from
+     * the terminated context may survive the next IvyInit. */
+    g_mutex_lock(&state->mutex);
+    while (state->control_head) {
+      struct _control_event *event = state->control_head;
+      state->control_head = event->next;
+      g_free(event);
+    }
+    state->control_tail = NULL;
+    state->before = state->after = NULL;
+    state->before_data = state->after_data = NULL;
+    state->destroying = FALSE;
+    g_mutex_unlock(&state->mutex);
+    return;
+  }
   /* GLib still uses the context while finalizing the source. Keep it alive
    * until g_source_unref returns, even if no application reference remains. */
   context = g_main_context_ref(state->context);
@@ -421,9 +450,7 @@ static void set_writable(IvyChannelState *state, Channel channel, gboolean enabl
   g_mutex_lock(&state->mutex);
   if (!channel->removed) {
     channel->writable = enabled;
-    if (channel->poll_tag)
-      g_source_modify_unix_fd((GSource *)state, channel->poll_tag,
-                             channel_events(channel));
+    channel->events_changed = TRUE;
   }
   g_mutex_unlock(&state->mutex);
   IvyChannelWakeFor(state);

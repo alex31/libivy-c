@@ -162,7 +162,7 @@ int main(int argc, char *argv[])
 {
   int c;
   int testDuration = 10;
-  char *bus ;
+  const char *bus = getenv("IVYBUS");
   char  regexpFile[1024] = "testivy/regexp.txt";
   char  messageFile[1024] = "testivy/messages.ivy";
   ListOfString messages, regexps;
@@ -186,11 +186,8 @@ int main(int argc, char *argv[])
 	    "\t -V \t verify delivery with receiver acknowledgements and payload checks\n" ;
 
 
-  if (getenv("IVYBUS") != NULL) {
-    bus = strdup (getenv("IVYBUS"));
-  } else {
-    bus = strdup ("127.0.0.1:2000") ;
-  }
+  if (!bus)
+    bus = "127.0.0.1:2000";
 
   while ((c = getopt(argc, argv, "Vvpb:r:m:R:M:n:t:d:")) != EOF)
     switch (c) {
@@ -198,12 +195,7 @@ int main(int argc, char *argv[])
       verifyDelivery = true;
       break;
     case 'b':
-      free(bus);
-      bus = strdup(optarg);
-      if (!bus) {
-	fprintf(stderr, "unable to allocate bus string\n");
-	exit(1);
-      }
+      bus = optarg;
       break;
     case 'v':
       printf("ivy c library version %d.%d\n",IVYMAJOR_VERSION, IVYMINOR_VERSION);

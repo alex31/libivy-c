@@ -1,3 +1,16 @@
+ivy-c (3.18.2) unstable; urgency=medium
+
+  * update GLib writable poll masks on the event-loop thread to avoid a race
+    with GLib's poll array construction
+  * clean up and reset legacy sockets, channels, timers and queued controls
+    during termination, preserving the context until disconnect callbacks finish
+  * free all regexp dictionary entries safely during bulk cleanup
+  * avoid leaking the bus address in ivythroughput
+  * add legacy reinitialization and repeated cross-thread GLib write regressions
+  * preserve the public API and shared-library SONAMEs
+
+ -- Alexandre Bustico <alexandre.bustico@enac.fr>  Sun, 27 Sep 2026 09:55:27 +0200
+
 ivy-c (3.18.1) unstable; urgency=medium
 
   * release per-thread PCRE2 match caches when worker threads exit

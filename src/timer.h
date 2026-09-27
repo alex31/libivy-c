@@ -57,7 +57,9 @@ typedef void (*TimerCb)( TimerId id , void *user_data, unsigned long delta );
  */
 IvyTimerState *TimerStateCreate(void);
 /** @brief Release a timer collection and its remaining timers.
- * @param state Owned collection with no active dispatch; NULL and the default state are ignored.
+ * @param state Collection with no active dispatch; NULL is ignored.
+ * @details The backend-owned default collection is cleared for legacy termination,
+ * but its storage remains valid. Borrowed timer handles are invalidated.
  */
 void TimerStateDestroy(IvyTimerState *state);
 /** @brief Access the backend's default timer collection.
