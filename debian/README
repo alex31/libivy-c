@@ -22,7 +22,8 @@ pour les applications qui en dépendent.
 Prérequis
 ---------
 
-La construction vise Ubuntu 24.04 ou une distribution disposant de GCC 13
+La compilation et la génération des paquets visent Ubuntu 24.04 et 26.04,
+ou une distribution disposant de GCC 13
 ou plus récent et de libstdc++ avec std::expected, std::move_only_function
 et std::format. Le backend GLib est inclus dans les deux paquets.
 
@@ -56,6 +57,15 @@ sont copiés dans build/debian/ après une construction réussie. Les anciens
 dans build/debian/legacy-cpp/ pour ne pas les inclure dans une installation
 avec un joker (*.deb).
 IVY_DEB_OUTPUT_DIR permet de choisir un autre répertoire de sortie.
+Pour conserver des binaires spécifiques à chaque Ubuntu, utiliser par exemple
+sur Ubuntu 26.04 :
+
+    IVY_DEB_OUTPUT_DIR=build/debian/ubuntu26.04 ./debian/build.sh
+    python3 debian/check-packages.py build/debian/ubuntu26.04
+
+Sur Ubuntu 24.04, utiliser ubuntu24.04 comme nom de répertoire. Les dépendances
+système sont calculées pour la distribution de construction ; un build 26.04
+n'est pas destiné à être installé sur 24.04.
 Les arguments du script sont transmis à dpkg-buildpackage ; par exemple :
 
     ./debian/build.sh -j4

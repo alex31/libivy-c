@@ -131,7 +131,9 @@ def inspect_packages(directory, extracted):
     pdf = extracted / "usr/share/doc/ivy-c-dev/ivy-api.pdf"
     require(pdf.read_bytes().startswith(b"%PDF-"), "API reference is not a PDF")
     text = run("pdftotext", "-layout", str(pdf), "-")
-    for topic in ("C API", "C++23 API", "bind_raw", "bind_convert"):
+    for topic in ("C API", "C++23 API", "bind_raw", "bind_convert", "IvyContextCreate",
+                  "IvyContextSetFilter", "IvyContextSetBindCallback", "IvySetFilter",
+                  "IvySetBindCallback"):
         require(topic in text, f"API PDF is missing {topic}")
     print("PASS ivy-c-dev: readable C/C++ API PDF in /usr/share/doc/ivy-c-dev/ivy-api.pdf")
 

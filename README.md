@@ -328,7 +328,9 @@ subscriptions, broadcasts, direct messages, filters, events and optional helpers
 `doc/reference_order.py` defines this order; the Doxygen filter reorders only its
 documentation input. `doc/generate_reference.py` merges the layout overrides
 with the installed Doxygen version’s defaults, and `doc/DoxygenLayout.xml` puts
-operations before callback typedefs and ownership machinery. Header declarations used by the compiler are
+operations before callback typedefs and ownership machinery. This supports
+Doxygen 1.9 on Ubuntu 24.04 and Doxygen 1.15 on Ubuntu 26.04.
+Header declarations used by the compiler are
 not reordered. Add new operations to that ordering policy when extending the
 API; unknown declarations cause documentation generation to fail explicitly.
 Alphabetical indexes are retained for symbol lookup.

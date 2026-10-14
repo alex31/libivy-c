@@ -13,6 +13,11 @@ done
 
 python3 doc/generate_reference.py
 python3 doc/organize_pdf.py doc/doxygen
-make -C doc/doxygen/latex
+if ! make -C doc/doxygen/latex; then
+    if [ -f doc/doxygen/latex/refman.log ]; then
+        cat doc/doxygen/latex/refman.log >&2
+    fi
+    exit 1
+fi
 cp doc/doxygen/latex/refman.pdf doc/doxygen/ivy-api.pdf
 echo "PDF generated: $repo_dir/doc/doxygen/ivy-api.pdf"
